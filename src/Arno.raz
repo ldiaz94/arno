@@ -21,17 +21,19 @@
    request that failed or a conversation not found, 2 for a mistake on
    the command line, 130 for a turn stopped by ^C.
 
-   With no prompt, arno runs a session (Asession): each line of
-   standard input is a message to the model, or a command such as /help
-   or /load; what a command says goes to standard output, an error to
-   standard error. ^C stops a turn, not the session; the end of the
-   input, or /quit, ends it. On a terminal, a "> " asks for each line.
+   With no prompt, arno runs a session (Asession): on a terminal, on
+   the full screen (Ascreen); else each line of standard input is a
+   message to the model, or a command such as /help or /load; what a
+   command says goes to standard output, an error to standard error.
+   ^C stops a turn, not the session; the end of the input, or /quit,
+   ends it. With standard input alone a terminal, a "> " asks for each
+   line.
 
-   Depends on Asession and Awire. Leaves out, for the stages after
-   this one, what the Pascal arno has besides: the screen, --serve and
+   Depends on Asession, Ascreen and Awire. Leaves out, for the stages
+   after this one, what the Pascal arno has besides: --serve and
    --attach. *)
 module Arno;
-import Asession, Awire, Buf, Str, Sys, Files, Out, Heap;
+import Asession, Ascreen, Awire, Buf, Str, Sys, Files, Out, Heap;
 
 const Usage = `
     usage: arno
@@ -223,6 +225,13 @@ begin
         return 2;
     end;
 
+    if (ARGC() < 2) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
+        Asession.init(ADR(s), Ascreen.front(), Ascreen.show, nil);
+        s.changed := Ascreen.changed;
+        if Ascreen.run(ADR(s)) then return 0; end;
+        say("arno: the terminal can't be used\n", "", "");
+        return 1;
+    end;
     Buf.init(ADR(answer), Heap.heap);
     Asession.init(ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
         stopped: interrupted}, shown, nil);

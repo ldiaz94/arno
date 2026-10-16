@@ -162,10 +162,20 @@ one or more commits that build with `-Werror`.
      counts each request at its own model's price, a worker's too.
      `/models` waits for completion, `/test` and `/stage` for stage 4,
      `/clear-cache` for a cache of tool results, if one is wanted.
-   - [ ] b. The screen on rtui: the Board, the transcript, the input,
+   - [x] b. The screen on rtui: the Board, the transcript, the input,
      the status line (with the context in use, which `/usage` then
      shows too), a turn on its own thread waking the loop, questions
-     and their detail, shift-tab for the mode.
+     and their detail, shift-tab for the mode. `Aboard` is the
+     transcript and its layout, done afresh at each draw for only the
+     entries on the screen; `Ascreen` the loop, the input (rtui's
+     editor, emacs's keys), the rule and the status line. Each line
+     typed, a command too, runs as a job on a thread of its own, the
+     first job preparing the session; a job's events reach the loop
+     through a queue under a mutex, and an answer comes back by a pipe.
+     A conversation /new, /load, /clear or /compact changes is shown
+     again from its messages (`Asession.changed`). Shift-tab during a
+     turn sets the mode for the next. A stop is heard at the next read
+     of the reply, until raz can signal one thread.
    - [ ] c. The input's extras: history, completion of `/` and `@`
      (and `/models`), `@path` attachments, `^V` images, `^X ^E`.
    - [ ] d. Copy mode.
@@ -185,9 +195,17 @@ one or more commits that build with `-Werror`.
   `Conn.pending` counts both (a transport reports its own through
   `Conn.held`). arno's reads block on their own thread and don't need
   it.
+- **raz: a signal to one thread.** A stop on the screen must break
+  into the turn's wait for the server, as `^C` does in one-shot mode;
+  `Sys.kill` signals the process, which any thread may take. Asked of
+  raz: `pthread_kill`, or a `Thread.signal`. Until then a stop waits
+  for the next read.
+- **rtui: the rows an editor's text takes.** The input grows with its
+  text, so arno counts the rows `TuiEdit.draw` will wrap it to, a copy
+  of `TuiEdit`'s layout (`Ascreen.rows`). Asked of rtui: that count.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
-  thread made by C; check that nothing else in rtui needs raz's
-  `Thread`.
+  thread made by C; nothing else in rtui uses raz's `Thread`, and a
+  job's thread wakes the loop as it should (3b).
 
 ## Open
 

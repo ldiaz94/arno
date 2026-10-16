@@ -60,6 +60,7 @@ type
         ask*: Atools.Ask;                          (* the human asked; nil if nobody is there *)
         why*: Atools.Why;                          (* after a no, why; nil not to ask *)
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
+        counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
         arg*: ^U8;
     end;
 
@@ -79,6 +80,7 @@ type
         requests*: INT;       (* how many there were *)
         spent*: F64;          (* dollars, at list price, of those priced *)
         unpriced*: INT;       (* those whose model has no known price *)
+        held*: I64;           (* tokens the conversation's last request held, in and out; 0 if unknown *)
         human: Atools.Human;  (* the front's ask and why *)
         client: Http.Client;
         mem: Arena.Arena;     (* a call's work *)
@@ -262,6 +264,9 @@ begin
     INC(a^.requests);
     price, priced := Aprice.price(a^.prov);
     if priced then a^.spent := a^.spent + Aprice.cost(price, u); else INC(a^.unpriced); end;
+    (* a worker's context is not the conversation's *)
+    if not a^.working and (u.inp + u.out > 0) then a^.held := u.inp + u.out; end;
+    if a^.front.counted # nil then a^.front.counted(a^.front.arg); end;
     if (err = nil) or (LEN(reply.text) > 0) then
         Msgs.push(ADR(c^.msgs), reply);
     else

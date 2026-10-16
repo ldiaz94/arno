@@ -1,0 +1,614 @@
+(* Ascreen: the full screen, arno's session on rtui's loop.
+
+   The screen is, from the top: the transcript (Aboard), a rule that
+   says what is going on, the input, which grows to eight rows as it
+   is typed, and the status line, the session's mode, model, context
+   in use and cost, and the conversation's title (Asession.status).
+
+   What the human types runs on a thread of its own, a job: a message
+   is a turn, a command is run, and the first job prepares the session,
+   which may ask about context files. The loop's thread only shows: a
+   job tells it what happens by events put in a queue, under a mutex,
+   and TuiLoop.wake; the loop takes them into the board when woken. A
+   job that asks the human, a path outside the project or a change to
+   a file, puts its question in the queue and waits on a pipe for the
+   answer, which the loop writes there when a key gives it. Only one
+   job runs at a time: while one runs, Enter types nothing to send.
+
+   The keys are emacs's, over rtui's editor (TuiEdit): RET sends, M-RET
+   breaks the line, C-c stops the turn or, with none, empties the
+   input, C-d on an empty input ends arno, S-TAB steps to the next
+   mode, TAB opens or closes the newest call and C-o every one, Page Up
+   and Page Down, and S-<up> and S-<down>, scroll the transcript, C-l
+   draws the screen again. A question takes one of its keys; C-c, Esc
+   or RET is no, and C-c stops the turn too. After a no to a change,
+   the rule asks why, a line that RET gives and C-g or Esc leaves empty.
+
+   A stop is heard after the next read of the reply: the human's C-c
+   can't yet break into a wait for the server, since raz has no way to
+   signal one thread (PLAN.md, asked of raz).
+
+   Depends on Asession, Agent, Aboard, Astore, Amsg, Aprompt, rtui
+   (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiLine, TuiWidth),
+   rterm's Term, Thread and Sys. Leaves out, for the steps after this
+   one: the input's history, completion, @path attachments, ^V images
+   and ^X ^E; copy mode; the mouse; vim's keys. *)
+module Ascreen;
+import Asession, Agent, Aboard, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiLine,
+    TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event), Msgs := Vec(Amsg.Msg),
+    Calls := Vec(Amsg.Call);
+
+type
+    (* What a job tells the loop. *)
+    Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, status, ended);
+
+    Event = record
+        sort: Sort;
+        a, b, c: Buf.Buf;   (* its texts: a question's, its detail and keys *)
+        going: BOOL;        (* ended: the session goes on *)
+    end;
+
+const
+    MaxInput = 8;   (* rows the input grows to *)
+    Hints = "^O tools \u{B7} S-Tab mode \u{B7} /help";
+    Prompt = "\u{203A} ";
+
+var
+    session: ^Asession.Session;
+
+    (* shared by the loop's thread and a job's, under mutex *)
+    mutex: Thread.Mutex;
+    events: Events.Vec;
+    stopping: BOOL;     (* the human said to stop the turn *)
+    ending: BOOL;       (* the loop has ended: a question is a no, unasked *)
+    reason: Buf.Buf;    (* the human's why, written before the answer *)
+    answerRead, answerWrite: INT;   (* the pipe an answer comes by, a byte *)
+
+    (* a job's own *)
+    job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
+    made: Buf.Buf;      (* the status line it makes *)
+    because: Buf.Buf;   (* the why it was given *)
+
+    (* the loop's own *)
+    thread: ^Thread.Thread;   (* the job running, or nil *)
+    editor: TuiEdit.Editor;   (* the input *)
+    map: TuiMap.Map;
+    reader: TuiMap.Reader;
+    back: INT;          (* rows the transcript is scrolled back *)
+    status: Buf.Buf;    (* the status line *)
+    flash: Buf.Buf;     (* said on the rule until the next key *)
+    question: Buf.Buf;  (* the question being asked, "" for none *)
+    keys: Buf.Buf;      (* the keys that answer it *)
+    no: U8;             (* the one of them that is no *)
+    why: TuiLine.Line;  (* the reason for a no, while why.open *)
+    mode: INT;          (* the mode S-TAB chose during a job, for after it; -1 for none *)
+
+(* A job's side: what it is told, put in the queue *)
+
+(* An event of sort s, with texts a, b and c, put in the queue, and the
+   loop woken to take it. *)
+proc post(s: Sort; a, b, c: []U8; going: BOOL);
+var e: ^Event;
+begin
+    Thread.lock(ADR(mutex));
+    e := Events.add(ADR(events));
+    e^.sort := s;
+    e^.going := going;
+    Buf.init(ADR(e^.a), Heap.heap);
+    Buf.init(ADR(e^.b), Heap.heap);
+    Buf.init(ADR(e^.c), Heap.heap);
+    Buf.str(ADR(e^.a), a);
+    Buf.str(ADR(e^.b), b);
+    Buf.str(ADR(e^.c), c);
+    Thread.unlock(ADR(mutex));
+    TuiLoop.wake;
+end;
+
+proc text(s: []U8; _arg: ^U8);
+begin
+    post(said, s, "", "", false);
+end;
+
+proc call(name, args: []U8; _arg: ^U8);
+begin
+    post(called, name, args, "", false);
+end;
+
+proc result(_name, res: []U8; _arg: ^U8);
+begin
+    post(answered, res, "", "", false);
+end;
+
+proc note(s: []U8; _arg: ^U8);
+begin
+    post(told, s, "", "", false);
+end;
+
+proc show*(s: []U8; bad: BOOL; _arg: ^U8);
+begin
+    if bad then post(failed, s, "", "", false); else post(shown, s, "", "", false); end;
+end;
+
+(* The status line made again, from the job's thread: the session is
+   the job's while it runs. *)
+proc counted(_arg: ^U8);
+begin
+    Buf.reset(ADR(made));
+    Asession.status(session, ADR(made));
+    post(Sort.status, Buf.bytes(ADR(made)), "", "", false);
+end;
+
+proc stopped: BOOL;
+var s: BOOL;
+begin
+    Thread.lock(ADR(mutex));
+    s := stopping;
+    Thread.unlock(ADR(mutex));
+    return s;
+end;
+
+(* Whether the loop has ended, and no one is there to answer. *)
+proc gone: BOOL;
+var g: BOOL;
+begin
+    Thread.lock(ADR(mutex));
+    g := ending;
+    Thread.unlock(ADR(mutex));
+    return g;
+end;
+
+(* The answer the loop writes, a byte. *)
+proc answer: U8;
+var c: [1]U8; n: INT;
+begin
+    repeat n := Sys.read(answerRead, c); until n # -4;
+    if n # 1 then return 'n'; end;
+    return c[0];
+end;
+
+(* The human asked question, after detail: one of keys. *)
+proc ask(q, detail, k: []U8; _arg: ^U8): U8;
+begin
+    if gone() then return 'n'; end;
+    post(asked, q, detail, k, false);
+    return answer();
+end;
+
+(* After a no, why: "" for nothing, and for a no that came of a stop. *)
+proc reasoned(_arg: ^U8): []U8;
+begin
+    if gone() or stopped() then return ""; end;
+    post(Sort.why, "", "", "", false);
+    _ := answer();
+    Thread.lock(ADR(mutex));
+    Buf.reset(ADR(because));
+    Buf.str(ADR(because), Buf.bytes(ADR(reason)));
+    Thread.unlock(ADR(mutex));
+    return Buf.bytes(ADR(because));
+end;
+
+(* The front end a session on the screen tells. *)
+proc front*: Agent.Front;
+begin
+    return {text: text, call: call, result: result, note: note, ask: ask, why: reasoned, stopped: stopped,
+        counted: counted};
+end;
+
+(* c shown again from its start, on the job's thread, which has it: the
+   board cleared, then each message as it was told when it came. *)
+proc changed*(c: ^Astore.Conv; _arg: ^U8);
+var m: []Amsg.Msg; calls: []Amsg.Call; i, k: INT;
+begin
+    post(cleared, "", "", "", false);
+    m := Msgs.all(ADR(c^.msgs));
+    for i := 0 to LEN(m) - 1 do
+        match m[i].role of
+        | user: post(typed, m[i].text, "", "", false);
+        | assistant:
+            post(said, m[i].text, "", "", false);
+            calls := Calls.all(ADR(m[i].calls));
+            for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", false); end;
+        | tool: post(answered, m[i].text, "", "", false);
+        end;
+    end;
+end;
+
+(* A job: the line in job run, or the session prepared if it is "";
+   then the status line made again, and the loop told it ended. *)
+proc work(_arg: ^U8);
+var going: BOOL;
+begin
+    going := true;
+    if job.len = 0 then
+        Asession.prepare(session);
+    else
+        going := Asession.line(session, Buf.bytes(ADR(job)));
+    end;
+    counted(nil);
+    post(ended, "", "", "", going);
+end;
+
+(* The loop's side *)
+
+(* A job started on line, "" to prepare the session. *)
+proc start(line: []U8);
+var err: ERROR;
+begin
+    Buf.reset(ADR(job));
+    Buf.str(ADR(job), line);
+    stopping := false;
+    thread, err := Thread.spawn(work, nil);
+    if err # nil then
+        thread := nil;
+        _ := Aboard.push(Aboard.error, MSG(err));
+    end;
+end;
+
+(* c written to the pipe a job waits on for its answer. *)
+proc reply(c: U8);
+var b: [1]U8;
+begin
+    b[0] := c;
+    _ := Sys.write(answerWrite, b);
+end;
+
+(* A question asked: its keys, and the one that is no, the first that
+   isn't y, which the hint shows in capitals. *)
+proc pose(q, detail, k: []U8);
+var i: INT;
+begin
+    Buf.reset(ADR(keys));
+    Buf.str(ADR(keys), k);
+    no := 'n';
+    for i := 0 to LEN(k) - 1 do
+        if k[i] # 'y' then no := k[i]; break; end;
+    end;
+    Buf.reset(ADR(question));
+    Fmt.write(ADR(question), "{} [", [Fmt.str(q)]);
+    for i := 0 to LEN(k) - 1 do
+        if i > 0 then Buf.add(ADR(question), '/'); end;
+        if k[i] = no then Buf.add(ADR(question), k[i] - 'a' + 'A'); else Buf.add(ADR(question), k[i]); end;
+    end;
+    Buf.add(ADR(question), ']');
+    if LEN(detail) > 0 then Aboard.detail(detail); end;
+    back := 0;
+end;
+
+(* What a job told, taken from the queue into the board. *)
+proc woken;
+var e: []Event; i: INT; finished: BOOL;
+begin
+    finished := false;
+    Thread.lock(ADR(mutex));
+    e := Events.all(ADR(events));
+    for i := 0 to LEN(e) - 1 do
+        match e[i].sort of
+        | said: Aboard.reply(Buf.bytes(ADR(e[i].a)));
+        | called: Aboard.call(Buf.bytes(ADR(e[i].a)), Buf.bytes(ADR(e[i].b))); back := 0;
+        | answered: Aboard.result(Buf.bytes(ADR(e[i].a)));
+        | told, shown: _ := Aboard.push(Aboard.info, Buf.bytes(ADR(e[i].a))); back := 0;
+        | failed: _ := Aboard.push(Aboard.error, Buf.bytes(ADR(e[i].a))); back := 0;
+        | typed: _ := Aboard.push(Aboard.user, Buf.bytes(ADR(e[i].a)));
+        | cleared: Aboard.clear; back := 0;
+        | asked: pose(Buf.bytes(ADR(e[i].a)), Buf.bytes(ADR(e[i].b)), Buf.bytes(ADR(e[i].c)));
+        | Sort.why: TuiLine.start(ADR(why), " why not? ", "", nil);
+        | Sort.status: Buf.reset(ADR(status)); Buf.str(ADR(status), Buf.bytes(ADR(e[i].a)));
+        | ended:
+            finished := true;
+            Buf.reset(ADR(flash));
+            if not e[i].going then TuiLoop.stop; end;
+        end;
+        Buf.done(ADR(e[i].a));
+        Buf.done(ADR(e[i].b));
+        Buf.done(ADR(e[i].c));
+    end;
+    Events.reset(ADR(events));
+    Thread.unlock(ADR(mutex));
+    if finished and (thread # nil) then
+        Thread.join(thread);
+        thread := nil;
+        if mode >= 0 then
+            session^.agent.mode := Aprompt.Mode(mode);
+            mode := -1;
+            Buf.reset(ADR(status));
+            Asession.status(session, ADR(status));
+        end;
+    end;
+end;
+
+(* The first job, once the loop runs: before, a wake would be lost. *)
+proc tick;
+begin
+    start("");
+end;
+
+(* the commands *)
+
+proc send(_n: INT);
+var s: []U8;
+begin
+    if thread # nil then return; end;
+    s := Str.trim(TuiEdit.text(ADR(editor)));
+    if LEN(s) = 0 then return; end;
+    _ := Aboard.push(Aboard.user, s);
+    back := 0;
+    start(s);
+    TuiEdit.setText(ADR(editor), "");
+end;
+
+proc stop(_n: INT);
+begin
+    if thread = nil then TuiEdit.setText(ADR(editor), ""); return; end;
+    Thread.lock(ADR(mutex));
+    stopping := true;
+    Thread.unlock(ADR(mutex));
+    Buf.str(ADR(flash), "stopping");
+end;
+
+proc quit(n: INT);
+begin
+    if (thread = nil) and (LEN(TuiEdit.text(ADR(editor))) = 0) then TuiLoop.stop; return; end;
+    _ := TuiMap.run("edit-delete-char", n);
+end;
+
+(* The next mode, now, or after the job running. *)
+proc nextMode(_n: INT);
+var m: INT;
+begin
+    m := mode;
+    if m < 0 then m := INT(session^.agent.mode); end;
+    m := (m + 1) mod LEN(Aprompt.Modes);
+    if thread = nil then
+        session^.agent.mode := Aprompt.Mode(m);
+        Buf.reset(ADR(status));
+        Asession.status(session, ADR(status));
+    else
+        mode := m;
+        Fmt.write(ADR(flash), "mode {} from the next turn", [Fmt.str(Aprompt.Modes[m].name)]);
+    end;
+end;
+
+proc toggle(_n: INT);
+begin
+    Aboard.toggle;
+end;
+
+proc toggleAll(_n: INT);
+begin
+    Aboard.toggleAll;
+end;
+
+(* The transcript scrolled back n rows, or forward if n is negative; a
+   page is the screen less the input, the rule and the status line. *)
+proc scroll(n: INT);
+begin
+    back := back + n;
+    if back < 0 then back := 0; end;
+end;
+
+proc pageUp(n: INT);
+begin
+    scroll(n * (TuiLoop.theScreen()^.rows - 4));
+end;
+
+proc pageDown(n: INT);
+begin
+    scroll(-n * (TuiLoop.theScreen()^.rows - 4));
+end;
+
+proc lineUp(n: INT);
+begin
+    scroll(n);
+end;
+
+proc lineDown(n: INT);
+begin
+    scroll(-n);
+end;
+
+proc redraw(_n: INT);
+begin
+    TuiScreen.redraw(TuiLoop.theScreen());
+end;
+
+(* A key while a question is asked: one of its keys answers, C-c, Esc
+   and RET are no, C-c stopping the turn too, and the keys that move
+   the transcript move it. *)
+proc answering(ev: TuiKeys.Event);
+var k: INT;
+begin
+    k := ev.key;
+    if (k >= 'A') and (k <= 'Z') then k := k - 'A' + 'a'; end;
+    if (k > 0) and (k < 128) and (Str.find(Buf.bytes(ADR(keys)), [U8(k)]) >= 0) then
+        reply(U8(k));
+    elsif (k = TuiKeys.ctrl('c')) or (k = TuiKeys.Esc) or (k = TuiKeys.Enter) then
+        if k = TuiKeys.ctrl('c') then stop(1); end;
+        reply(no);
+    else
+        if not TuiKeys.printable(k) then _ := TuiMap.feed(ADR(reader), ADR(map), k); end;
+        return;
+    end;
+    Buf.reset(ADR(question));
+end;
+
+proc key(ev: TuiKeys.Event);
+var out: TuiLine.Outcome;
+begin
+    Buf.reset(ADR(flash));
+    if why.open then
+        (* Esc leaves it as C-g does, as it leaves a question *)
+        out := TuiLine.givenUp;
+        if ev.key # TuiKeys.Esc then out := TuiLine.key(ADR(why), ev); end;
+        if out # TuiLine.going then
+            why.open := false;
+            Thread.lock(ADR(mutex));
+            Buf.reset(ADR(reason));
+            if out = TuiLine.taken then Buf.str(ADR(reason), TuiLine.value(ADR(why))); end;
+            Thread.unlock(ADR(mutex));
+            reply('.');
+            TuiEdit.focus(ADR(editor));
+        end;
+        return;
+    end;
+    if question.len > 0 then answering(ev); return; end;
+    if ev.key = TuiKeys.Paste then TuiEdit.paste(ADR(editor), ev.paste); return; end;
+    map.parent := TuiEdit.keymap(ADR(editor));
+    if TuiMap.feed(ADR(reader), ADR(map), ev.key) = TuiMap.unbound then
+        _ := TuiEdit.typeKey(ADR(editor), ev.key);
+    end;
+end;
+
+(* The rows s takes, wrapped at cols as TuiEdit wraps it. *)
+proc rows(s: []U8; cols: INT): INT;
+var i, n, w, cw: INT; c: I32;
+begin
+    if cols < 1 then cols := 1; end;
+    n := 1;
+    w := 0;
+    i := 0;
+    while i < LEN(s) do
+        if s[i] = '\n' then
+            INC(n);
+            w := 0;
+            INC(i);
+        else
+            c, cw := Str.decode(s[i..LEN(s)]);
+            if cw < 1 then cw := 1; end;
+            i := i + cw;
+            cw := TuiWidth.char(c);
+            if (w + cw > cols) and (w > 0) then INC(n); w := 0; end;
+            w := w + cw;
+        end;
+    end;
+    return n;
+end;
+
+(* The rule on row r: what is going on, then a line, then how far the
+   transcript is scrolled back; or the line a reason is typed on. *)
+proc rule(s: ^TuiScreen.Screen; r: INT);
+var col, right: INT; d: Buf.Buf;
+begin
+    if why.open then TuiLine.draw(ADR(why), s, r, 0); return; end;
+    Buf.init(ADR(d), Heap.heap);
+    defer Buf.done(ADR(d));
+    if back > 0 then Fmt.write(ADR(d), " \u{2191}{} ", [Fmt.int(back)]); end;
+    right := s^.cols - TuiWidth.text(Buf.bytes(ADR(d)));
+    col := 0;
+    if question.len > 0 then
+        col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(question)), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
+        col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+    elsif flash.len > 0 then
+        col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(flash)), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
+        col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+    elsif thread # nil then
+        col := TuiScreen.putTo(s, r, 0, right, " \u{25CF} working \u{B7} ^C stops ", TuiScreen.style(Term.info, {}));
+    end;
+    while col < right do col := TuiScreen.put(s, r, col, "\u{2500}", TuiScreen.style(Term.line, {})); end;
+    _ := TuiScreen.put(s, r, right, Buf.bytes(ADR(d)), TuiScreen.style(Term.dim, {}));
+end;
+
+(* The status line on the last row, reversed, the hints at its right
+   if there is room. *)
+proc bottom(s: ^TuiScreen.Screen);
+var st: TuiScreen.Style; r, col, w: INT;
+begin
+    r := s^.rows - 1;
+    st := TuiScreen.style(Term.select, {});
+    TuiScreen.fill(s, r, 0, s^.cols, st);
+    col := TuiScreen.put(s, r, 1, Buf.bytes(ADR(status)), st);
+    w := TuiWidth.text(Hints);
+    if col + w + 3 < s^.cols then _ := TuiScreen.put(s, r, s^.cols - w - 1, Hints, st); end;
+end;
+
+proc draw(s: ^TuiScreen.Screen);
+var n, v: INT;
+begin
+    n := rows(TuiEdit.text(ADR(editor)), s^.cols - 2);
+    if n > MaxInput then n := MaxInput; end;
+    v := s^.rows - n - 2;
+    if v < 1 then v := 1; end;
+    back := Aboard.draw(s, {row: 0, col: 0, rows: v, cols: s^.cols}, back);
+    rule(s, v);
+    _ := TuiScreen.put(s, v + 1, 0, Prompt, TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}));
+    TuiEdit.draw(ADR(editor), s, {row: v + 1, col: 2, rows: n, cols: s^.cols - 2},
+        (question.len = 0) and not why.open);
+    bottom(s);
+end;
+
+proc define;
+begin
+    TuiMap.define("arno-send", "the input sent: a message to the model, or a command", send);
+    TuiMap.define("arno-stop", "the turn stopped, or with none the input emptied", stop);
+    TuiMap.define("arno-quit", "arno ended, on an empty input; else the character deleted", quit);
+    TuiMap.define("arno-mode", "the next mode", nextMode);
+    TuiMap.define("arno-toggle", "the newest tool call opened or closed", toggle);
+    TuiMap.define("arno-toggle-all", "every tool call opened or closed", toggleAll);
+    TuiMap.define("arno-page-up", "the transcript scrolled back a page", pageUp);
+    TuiMap.define("arno-page-down", "the transcript scrolled on a page", pageDown);
+    TuiMap.define("arno-line-up", "the transcript scrolled back a line", lineUp);
+    TuiMap.define("arno-line-down", "the transcript scrolled on a line", lineDown);
+    TuiMap.define("arno-redraw", "the screen drawn again", redraw);
+    TuiMap.init(ADR(map), "arno", nil);
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "RET", "arno-send");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-RET", "edit-newline");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-c", "arno-stop");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-d", "arno-quit");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "<backtab>", "arno-mode");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "TAB", "arno-toggle");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-o", "arno-toggle-all");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "<prior>", "arno-page-up");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "<next>", "arno-page-down");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "S-<up>", "arno-line-up");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "S-<down>", "arno-line-down");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-l", "arno-redraw");
+end;
+
+(* The session s run on the screen until the human ends it: false, at
+   once, if there is no terminal. s was made with front's procedures
+   and show, and changed. A job still running at the end is told to
+   stop, its questions answered no, and waited for. *)
+proc run*(s: ^Asession.Session): BOOL;
+var ran: BOOL;
+begin
+    session := s;
+    answerRead, answerWrite := Sys.pipe();
+    TuiEdit.init(ADR(editor), false);
+    TuiEdit.focus(ADR(editor));
+    TuiLine.init(ADR(why));
+    define();
+    mode := -1;
+    Fmt.write(ADR(made), "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
+        Fmt.str(s^.conf.prov.name)]);
+    _ := Aboard.push(Aboard.info, Buf.bytes(ADR(made)));
+    Asession.status(s, ADR(status));
+    TuiLoop.after(0);
+    ran := TuiLoop.run({key: key, draw: draw, woken: woken, tick: tick});
+    if thread # nil then
+        Thread.lock(ADR(mutex));
+        stopping := true;
+        ending := true;
+        Thread.unlock(ADR(mutex));
+        if (question.len > 0) or why.open then reply(no); end;
+        Thread.join(thread);
+    end;
+    return ran;
+end;
+
+proc init;
+begin
+    Events.init(ADR(events), Heap.heap);
+    Buf.init(ADR(reason), Heap.heap);
+    Buf.init(ADR(job), Heap.heap);
+    Buf.init(ADR(made), Heap.heap);
+    Buf.init(ADR(because), Heap.heap);
+    Buf.init(ADR(status), Heap.heap);
+    Buf.init(ADR(flash), Heap.heap);
+    Buf.init(ADR(question), Heap.heap);
+    Buf.init(ADR(keys), Heap.heap);
+end;
+
+begin
+    init();
+end Ascreen.

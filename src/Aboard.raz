@@ -1,0 +1,543 @@
+(* Aboard: the Board, the transcript the screen keeps, and how it looks.
+
+   The board is a list of entries: what the human typed, the model's
+   replies, each tool call with its result, and what arno says, as
+   information or as an error. Only the loop's thread touches it: what
+   a turn's thread is told reaches it through the screen's queue.
+
+   draw lays the transcript out into a part of the screen, the last
+   rows of it, or rows further up when it is scrolled back. Nothing is
+   kept of a layout: each draw lays out, from the last entry up, only
+   the entries that reach the part shown, so a long session costs
+   nothing to draw but what is on the screen.
+
+   A reply is read as markdown, lightly: a fence of three backquotes
+   starts or ends a block of code, a line of #s and a space is a
+   heading, and **bold** and `code` are styled, their marks dropped. A
+   tool call is a line, its name, its arguments and what came of it,
+   until it is opened: then its arguments in full, the diff its
+   question showed, and its result, 400 lines at most, follow, a diff
+   and git's result coloured as diffs. The newest call stays open
+   while its question is asked.
+
+   Depends on rtui's TuiScreen and TuiWidth, rterm's Term, Buf, Str and
+   Heap. Leaves out what copy mode needs, a row's text kept to move
+   over, which comes with copy mode. *)
+module Aboard;
+import TuiScreen, TuiWidth, Term, Buf, Str, Heap, Fmt, Entries := Vec(Entry);
+
+type
+    Kind* = (user, reply, tool, info, error);
+
+    Entry* = record
+        kind*: Kind;
+        text*: Buf.Buf;     (* what was said; a tool's name *)
+        args*: Buf.Buf;     (* a tool's arguments, JSON as the model wrote them *)
+        res*: Buf.Buf;      (* its result *)
+        detail*: Buf.Buf;   (* the diff its question showed *)
+        done*: BOOL;        (* its result came *)
+        open*: BOOL;        (* shown in full, not as a line *)
+    end;
+
+    (* How a piece of text looks: an index into Styles. *)
+    Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk);
+
+const
+    MaxShown = 400;     (* lines of a result an open call shows *)
+    UserBar = "\u{258C} ";
+    ReplyBar = "\u{258C} ";
+    Gutter = "    \u{2502} ";
+
+var
+    entries: Entries.Vec;
+    styles: [10]TuiScreen.Style;   (* each Look's *)
+    (* the line being laid out: its text, and the Look of each byte *)
+    text, looks: Buf.Buf;
+    (* where a draw puts the rows: the screen, the part of it, the row
+       of the transcript at its top, and the row being laid out *)
+    screen: ^TuiScreen.Screen;
+    area: TuiScreen.Rect;
+    top, row: INT;
+
+(* The entries, oldest first, until one is added. *)
+proc all*: []Entry;
+begin
+    return Entries.all(ADR(entries));
+end;
+
+(* The last entry, or nil if there is none. *)
+proc last*: ^Entry;
+begin
+    if entries.len = 0 then return nil; end;
+    return ADR(Entries.all(ADR(entries))[entries.len - 1]);
+end;
+
+(* A new entry of kind k saying s, at the end. *)
+proc push*(k: Kind; s: []U8): ^Entry;
+var e: ^Entry;
+begin
+    e := Entries.add(ADR(entries));
+    e^.kind := k;
+    Buf.init(ADR(e^.text), Heap.heap);
+    Buf.init(ADR(e^.args), Heap.heap);
+    Buf.init(ADR(e^.res), Heap.heap);
+    Buf.init(ADR(e^.detail), Heap.heap);
+    Buf.str(ADR(e^.text), s);
+    return e;
+end;
+
+(* A piece of the model's text, added to the reply it goes on, or the
+   start of a new one if something came between. *)
+proc reply*(s: []U8);
+var e: ^Entry;
+begin
+    e := last();
+    if (e = nil) or (e^.kind # Kind.reply) then e := push(Kind.reply, ""); end;
+    Buf.str(ADR(e^.text), s);
+end;
+
+(* A tool call, about to run. *)
+proc call*(name, args: []U8);
+begin
+    Buf.str(ADR(push(tool, name)^.args), args);
+end;
+
+(* The first call still running, or nil: the one a result answers, as
+   calls run one after another, and a conversation shown again gives
+   an assistant's calls before their results. *)
+proc running: ^Entry;
+var e: []Entry; i: INT;
+begin
+    e := all();
+    for i := 0 to LEN(e) - 1 do
+        if (e[i].kind = tool) and not e[i].done then return ADR(e[i]); end;
+    end;
+    return nil;
+end;
+
+(* res, the result of the call running. *)
+proc result*(res: []U8);
+var e: ^Entry;
+begin
+    e := running();
+    if e = nil then return; end;
+    Buf.str(ADR(e^.res), res);
+    e^.done := true;
+end;
+
+(* The diff a question about the newest call shows, which opens it. *)
+proc detail*(d: []U8);
+var e: ^Entry;
+begin
+    e := last();
+    if (e = nil) or (e^.kind # tool) then return; end;
+    Buf.reset(ADR(e^.detail));
+    Buf.str(ADR(e^.detail), d);
+    e^.open := true;
+end;
+
+(* Every entry dropped. *)
+proc clear*;
+var e: []Entry; i: INT;
+begin
+    e := all();
+    for i := 0 to LEN(e) - 1 do
+        Buf.done(ADR(e[i].text));
+        Buf.done(ADR(e[i].args));
+        Buf.done(ADR(e[i].res));
+        Buf.done(ADR(e[i].detail));
+    end;
+    Entries.reset(ADR(entries));
+end;
+
+(* The newest call opened, or closed if it is open. *)
+proc toggle*;
+var e: []Entry; i: INT;
+begin
+    e := all();
+    for i := LEN(e) - 1 to 0 by -1 do
+        if e[i].kind = tool then e[i].open := not e[i].open; return; end;
+    end;
+end;
+
+(* Every call opened, or every one closed if any is open. *)
+proc toggleAll*;
+var e: []Entry; i: INT; open: BOOL;
+begin
+    e := all();
+    open := false;
+    for i := 0 to LEN(e) - 1 do
+        if (e[i].kind = tool) and e[i].open then open := true; end;
+    end;
+    for i := 0 to LEN(e) - 1 do
+        if e[i].kind = tool then e[i].open := not open; end;
+    end;
+end;
+
+(* Laying out: the line in text and looks wrapped at w columns, each
+   row after pre, which is drawn in bar. A row out of the part shown is
+   only counted. *)
+
+(* The row of the transcript row is next: drawn if it is in the part
+   shown, pre in bar, then text from a to b, piece by piece in its
+   looks. *)
+proc emit(pre: []U8; bar: Look; a, b: INT);
+var r, col, limit, x: INT; s, l: []U8;
+begin
+    r := row - top;
+    INC(row);
+    if (screen = nil) or (r < 0) or (r >= area.rows) then return; end;
+    limit := area.col + area.cols;
+    col := TuiScreen.putTo(screen, area.row + r, area.col, limit, pre, styles[INT(bar)]);
+    s := Buf.bytes(ADR(text));
+    l := Buf.bytes(ADR(looks));
+    while a < b do
+        x := a;
+        while (x < b) and (l[x] = l[a]) do INC(x); end;
+        col := TuiScreen.putTo(screen, area.row + r, col, limit, s[a..x], styles[l[a]]);
+        a := x;
+    end;
+end;
+
+(* The line in text wrapped at w columns, at a blank where there is
+   one in the row, else where the row is full; the blanks a row breaks
+   at are left out of the next. *)
+proc wrap(pre: []U8; bar: Look; w: INT);
+var s: []U8; a, i, cols, blank, n: INT; c: I32;
+begin
+    s := Buf.bytes(ADR(text));
+    if w < 8 then w := 8; end;
+    if LEN(s) = 0 then emit(pre, bar, 0, 0); return; end;
+    a := 0;
+    while a < LEN(s) do
+        i := a;
+        cols := 0;
+        blank := -1;
+        while i < LEN(s) do
+            c, n := Str.decode(s[i..LEN(s)]);
+            if n < 1 then n := 1; end;
+            if cols + TuiWidth.char(c) > w then break; end;
+            if s[i] = ' ' then blank := i; end;
+            cols := cols + TuiWidth.char(c);
+            i := i + n;
+        end;
+        if i >= LEN(s) then emit(pre, bar, a, LEN(s)); return; end;
+        if s[i] # ' ' then
+            if blank > a then i := blank; elsif i = a then i := a + n; end;
+        end;
+        emit(pre, bar, a, i);
+        a := i;
+        while (a < LEN(s)) and (s[a] = ' ') do INC(a); end;
+    end;
+end;
+
+(* s added to the line being laid out, in look l; a tab as four
+   blanks. *)
+proc add(s: []U8; l: Look);
+var i, k: INT;
+begin
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '\t' then
+            for k := 1 to 4 do
+                Buf.add(ADR(text), ' ');
+                Buf.add(ADR(looks), U8(l));
+            end;
+        else
+            Buf.add(ADR(text), s[i]);
+            Buf.add(ADR(looks), U8(l));
+        end;
+    end;
+end;
+
+proc start;
+begin
+    Buf.reset(ADR(text));
+    Buf.reset(ADR(looks));
+end;
+
+(* Each line of s wrapped after pre, in look l. *)
+proc lines(s, pre: []U8; bar, l: Look; w: INT);
+var line: []U8; ok: BOOL;
+begin
+    repeat
+        line, s, ok := Str.cut(s, "\n");
+        start();
+        add(line, l);
+        wrap(pre, bar, w);
+    until not ok;
+end;
+
+(* Each line of s wrapped after pre, coloured as a diff's: added lines
+   green, taken lines red, a hunk's head in its own, the rest dim. *)
+proc diff(s, pre: []U8; w: INT);
+var line: []U8; l: Look; ok: BOOL;
+begin
+    repeat
+        line, s, ok := Str.cut(s, "\n");
+        l := dim;
+        if Str.hasPrefix(line, "+") then l := green;
+        elsif Str.hasPrefix(line, "-") then l := red;
+        elsif Str.hasPrefix(line, "@") then l := hunk;
+        end;
+        start();
+        add(line, l);
+        wrap(pre, dim, w);
+    until not ok;
+end;
+
+(* A reply's line, as markdown, into text and looks; fence says whether
+   a block of code is open, before and after. *)
+proc markdown(line: []U8; fence: ^BOOL);
+var h, i: INT; bold, quoted: BOOL; l: Look;
+begin
+    start();
+    if Str.hasPrefix(Str.trimLeft(line), "```") then
+        fence^ := not fence^;
+        add(line, dim);
+        return;
+    end;
+    if fence^ then add(line, block); return; end;
+    h := 0;
+    while (h < LEN(line)) and (line[h] = '#') do INC(h); end;
+    if (h > 0) and (h < LEN(line)) and (line[h] = ' ') then
+        add(line[h + 1..LEN(line)], heading);
+        return;
+    end;
+    bold := false;
+    quoted := false;
+    i := 0;
+    while i < LEN(line) do
+        if line[i] = '`' then
+            quoted := not quoted;
+            INC(i);
+        elsif not quoted and (line[i] = '*') and (i + 1 < LEN(line)) and (line[i + 1] = '*') then
+            bold := not bold;
+            INC(i, 2);
+        else
+            l := plain;
+            if quoted then l := mono; elsif bold then l := strong; end;
+            add(line[i..i + 1], l);
+            INC(i);
+        end;
+    end;
+end;
+
+(* s on one line: its line breaks and tabs as blanks. *)
+proc flat(s: []U8; l: Look);
+var i: INT;
+begin
+    for i := 0 to LEN(s) - 1 do
+        if (s[i] = '\n') or (s[i] = '\t') or (s[i] = '\r') then add(" ", l); else add(s[i..i + 1], l); end;
+    end;
+end;
+
+(* How many lines s has, a last one without its line feed counted. *)
+proc count(s: []U8): INT;
+var i, n: INT;
+begin
+    n := 0;
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '\n' then INC(n); end;
+    end;
+    if (LEN(s) > 0) and (s[LEN(s) - 1] # '\n') then INC(n); end;
+    return n;
+end;
+
+(* The start of text, as the line being laid out, cut to what fits in
+   w columns. *)
+proc fit(w: INT);
+var s: []U8; i, cols, n: INT; c: I32;
+begin
+    s := Buf.bytes(ADR(text));
+    i := 0;
+    cols := 0;
+    while i < LEN(s) do
+        c, n := Str.decode(s[i..LEN(s)]);
+        if n < 1 then n := 1; end;
+        if cols + TuiWidth.char(c) > w then break; end;
+        cols := cols + TuiWidth.char(c);
+        i := i + n;
+    end;
+    text.len := i;
+    looks.len := i;
+end;
+
+(* A call's line: open or not, its name and arguments, cut to leave
+   room for what came of it: running, its result if it is a line, or
+   how many lines came; a failure in red. *)
+proc header(e: ^Entry; w: INT);
+var sum: Buf.Buf; res: []U8; n: INT; l: Look;
+begin
+    Buf.init(ADR(sum), Heap.heap);
+    defer Buf.done(ADR(sum));
+    res := Str.trim(Buf.bytes(ADR(e^.res)));
+    n := count(res);
+    if not e^.done then
+        Buf.str(ADR(sum), "running\u{2026}");
+    elsif n <= 1 then
+        Buf.str(ADR(sum), res);
+    else
+        Fmt.write(ADR(sum), "{} lines", [Fmt.int(n)]);
+    end;
+    l := dim;
+    if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then l := red; end;
+    start();
+    if e^.open then add("\u{25BE} ", hunk); else add("\u{25B8} ", hunk); end;
+    add(Buf.bytes(ADR(e^.text)), hunk);
+    add(" ", hunk);
+    flat(Buf.bytes(ADR(e^.args)), hunk);
+    n := w - 2 - TuiWidth.text(Buf.bytes(ADR(sum)));
+    if n < w div 2 then n := w div 2; end;
+    fit(n);
+    add("  ", plain);
+    flat(Buf.bytes(ADR(sum)), l);
+    fit(w);
+    emit("  ", plain, 0, text.len);
+end;
+
+(* The first max lines of s, and how many were left out. *)
+proc head(s: []U8; max: INT): ([]U8, INT);
+var i, n: INT;
+begin
+    n := 0;
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '\n' then
+            INC(n);
+            if n = max then return s[0..i + 1], count(s) - max; end;
+        end;
+    end;
+    return s, 0;
+end;
+
+(* Entry i laid out at w columns, its rows counted from row on. *)
+proc layout(i: INT; w: INT);
+var e: ^Entry; s, line: []U8; fence, ok: BOOL; more: INT; note: Buf.Buf;
+begin
+    e := ADR(all()[i]);
+    s := Buf.bytes(ADR(e^.text));
+    match e^.kind of
+    | user:
+        start();
+        emit("", plain, 0, 0);
+        lines(s, UserBar, typed, typed, w - 2);
+    | Kind.reply:
+        s := Str.trimRight(s);
+        if LEN(s) = 0 then return; end;
+        start();
+        emit("", plain, 0, 0);
+        fence := false;
+        repeat
+            line, s, ok := Str.cut(s, "\n");
+            markdown(line, ADR(fence));
+            wrap(ReplyBar, dim, w - 2);
+        until not ok;
+    | tool:
+        header(e, w - 2);
+        if not e^.open then return; end;
+        lines(Buf.bytes(ADR(e^.args)), Gutter, dim, dim, w - 6);
+        if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(ADR(e^.detail))), Gutter, w - 6); end;
+        s, more := head(Str.trimRight(Buf.bytes(ADR(e^.res))), MaxShown);
+        if LEN(s) > 0 then
+            if Buf.bytes(ADR(e^.text)) = "git" then diff(s, Gutter, w - 6); else lines(s, Gutter, dim, dim, w - 6); end;
+        end;
+        if more > 0 then
+            Buf.init(ADR(note), Heap.heap);
+            defer Buf.done(ADR(note));
+            Fmt.write(ADR(note), "[{} more lines]", [Fmt.int(more)]);
+            lines(Buf.bytes(ADR(note)), Gutter, dim, dim, w - 6);
+        end;
+    | info:
+        if (i > 0) and (all()[i - 1].kind # info) then start(); emit("", plain, 0, 0); end;
+        lines(s, "  ", dim, dim, w - 2);
+    | error:
+        lines(s, "  ", red, red, w - 2);
+    end;
+end;
+
+(* How many rows entry i takes at w columns. *)
+proc rows(i, w: INT): INT;
+begin
+    screen := nil;
+    row := 0;
+    layout(i, w);
+    return row;
+end;
+
+(* The transcript drawn into r of s, back rows up from its end: as many
+   rows back as there are, if back is more. The rows back it was drawn
+   at. Short of filling r, it starts at r's top. *)
+proc draw*(s: ^TuiScreen.Screen; r: TuiScreen.Rect; back: INT): INT;
+var i, total, first: INT;
+begin
+    if (r.rows < 1) or (r.cols < 1) or (back < 0) then back := 0; end;
+    (* the entries from the last up, until they fill r back rows up *)
+    total := 0;
+    i := entries.len;
+    while (i > 0) and (total < r.rows + back) do
+        DEC(i);
+        total := total + rows(i, r.cols);
+    end;
+    first := i;
+    if back > total - r.rows then back := total - r.rows; end;
+    if back < 0 then back := 0; end;
+    screen := s;
+    area := r;
+    top := total - r.rows - back;
+    if top < 0 then top := 0; end;
+    row := 0;
+    for i := first to entries.len - 1 do layout(i, r.cols); end;
+    screen := nil;
+    return back;
+end;
+
+(* The board drawn on a screen of cols by rows, back rows back, as
+   text, matched with want; false, and both said, if they differ. *)
+proc expect(what: []U8; cols, rows, back: INT; want: []U8): BOOL;
+var s: TuiScreen.Screen; b: Buf.Buf; got: INT;
+begin
+    TuiScreen.init(ADR(s), cols, rows);
+    defer TuiScreen.done(ADR(s));
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    got := draw(ADR(s), {row: 0, col: 0, rows: rows, cols: cols}, back);
+    TuiScreen.plain(ADR(s), ADR(b));
+    Fmt.write(ADR(b), "back {}\n", [Fmt.int(got)]);
+    if Buf.bytes(ADR(b)) = want then return true; end;
+    Fmt.print("Aboard: {}: got\n{}want\n{}", [Fmt.str(what), Fmt.str(Buf.bytes(ADR(b))), Fmt.str(want)]);
+    return false;
+end;
+
+proc main*: INT;
+var ok: BOOL;
+begin
+    _ := push(info, "arno");
+    _ := push(user, "hello there");
+    reply("**Hi**, a reply long enough to wrap\n");
+    reply("# Head\n`x := 1`");
+    call("read", `{"path":"a.raz"}`);
+    ok := expect("short, from the top", 24, 16, 0, "  arno\n\n\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"pat  running\u{2026}\n\n\n\n\n\n\n\nback 0\n");
+    result("one\ntwo\nthree\n");
+    ok := expect("the last rows", 24, 4, 0, "\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"path  3 lines\nback 0\n") and ok;
+    ok := expect("scrolled back", 24, 4, 3, "\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\nback 3\n") and ok;
+    ok := expect("scrolled past the top", 24, 4, 50, "  arno\n\n\u{258C} hello there\n\nback 5\n") and ok;
+    toggle;
+    _ := push(error, "it failed");
+    ok := expect("opened", 30, 6, 0, "  \u{25BE} read {\"path\":\"a.r  3 lines\n    \u{2502} {\"path\":\"a.raz\"}\n    \u{2502} one\n    \u{2502} two\n    \u{2502} three\n  it failed\nback 0\n") and ok;
+    if ok then return 0; end;
+    return 1;
+end;
+
+proc init;
+begin
+    Entries.init(ADR(entries), Heap.heap);
+    Buf.init(ADR(text), Heap.heap);
+    Buf.init(ADR(looks), Heap.heap);
+    styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
+        TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),
+        TuiScreen.style(Term.dim, {}), TuiScreen.style(Term.bad, {}), TuiScreen.style(Term.good, {}),
+        TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}), TuiScreen.style(Term.info, {})];
+end;
+
+begin
+    init();
+end Aboard.
