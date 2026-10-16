@@ -9,9 +9,11 @@
    the tools (Agent). The model's text goes to standard output as it
    comes; ^C stops it, keeping what came. Each tool call, and what came
    of it, goes to standard error, a line each, and so does a question
-   for the human, a path outside the project, whose answer is a line of
-   standard input: y, n, or a for always; anything else, or the end of
-   the input, is no. The conversation is saved, the turn in it, so that
+   for the human, a path outside the project or a change to a file,
+   after the change's diff; the answer is a line of standard input: y,
+   n, or a for always; anything else, or the end of the input, is no.
+   After a no to a change, the next line says why, if it isn't empty.
+   The conversation is saved, the turn in it, so that
    --resume goes on from it; what arno says of it, and what goes wrong,
    go to standard error too. The status is 0 for a reply, 1 for a
    request that failed or a conversation not found, 2 for a mistake on
@@ -106,25 +108,41 @@ begin
     say("arno: ", s, "\n");
 end;
 
-(* The human's answer to question, one of keys: the first byte of a
-   line of standard input; 'n' for any other, or for none. *)
-proc asked(question, keys: []U8; _arg: ^U8): U8;
-var c, first: [1]U8; n: INT;
+var answer: Buf.Buf;   (* the last line read from standard input *)
+
+(* A line of standard input, without its line feed, into answer. *)
+proc readLine: []U8;
+var c: [1]U8;
 begin
-    breakLine;
-    say(question, " [y/N] ", "");
-    n := 0;
+    Buf.reset(ADR(answer));
     while Sys.read(Sys.stdin, c) = 1 do
         if c[0] = '\n' then break; end;
-        if n = 0 then first := c; end;
-        INC(n);
+        Buf.add(ADR(answer), c[0]);
     end;
-    if (n > 0) and (Str.find(keys, first) >= 0) then return first[0]; end;
+    return Buf.bytes(ADR(answer));
+end;
+
+(* The human's answer to question, after detail: one of keys, the first
+   byte of a line of standard input; 'n' for any other, or for none. *)
+proc asked(question, detail, keys: []U8; _arg: ^U8): U8;
+var s: []U8;
+begin
+    breakLine;
+    say(detail, question, " [y/N] ");
+    s := readLine();
+    if (LEN(s) > 0) and (Str.find(keys, s[0..1]) >= 0) then return s[0]; end;
     return 'n';
 end;
 
+(* After a no, why: the next line of standard input. *)
+proc why(_arg: ^U8): []U8;
+begin
+    say("why not? (Enter skips) ", "", "");
+    return readLine();
+end;
+
 proc main*: INT;
-var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, why, id: Buf.Buf; m: ^Amsg.Msg;
+var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, failure, id: Buf.Buf; m: ^Amsg.Msg;
     a: Agent.Agent; steps: I64; ok: BOOL; err: ERROR;
 begin
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
@@ -167,17 +185,18 @@ begin
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, Str.trim(Buf.bytes(ADR(prompt))));
 
-    Buf.init(ADR(why), Heap.heap);
+    Buf.init(ADR(failure), Heap.heap);
+    Buf.init(ADR(answer), Heap.heap);
     Agent.init(ADR(a), ADR(conf.prov),
-        {text: show, call: called, result: answered, note: told, ask: asked, stopped: interrupted});
+        {text: show, call: called, result: answered, note: told, ask: asked, why: why, stopped: interrupted});
     steps, ok := Str.toInt(Aconf.get(ADR(conf), "max_steps"));
     if ok and (steps > 0) then a.maxSteps := INT(steps); end;
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    err := Agent.turn(ADR(a), ADR(c), ADR(why));
+    err := Agent.turn(ADR(a), ADR(c), ADR(failure));
     breakLine;
     if Astore.save(ADR(c)) # nil then say("arno: the conversation can't be saved in ", Astore.dir(), "\n"); end;
-    if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(why)), "\n"); end;
+    if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(failure)), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;
     say("arno --resume ", c.id, " PROMPT goes on from here\n");
     if err = Awire.Failed then return 1; end;

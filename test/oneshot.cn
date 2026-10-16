@@ -14,7 +14,8 @@
 //     error, and send their results back: read, grep, def and git;
 //     refuse a call made twice, and hand back after four steps of
 //     failed calls, or at the step cap; ask about a path outside the
-//     project, a line of the standard input the answer.
+//     project, and about a change after its diff, a line of the
+//     standard input the answer, and the next the reason for a no.
 //
 // Run from the top of the tree, by make check; what it makes goes
 // under build/oneshot, its configuration and conversations among it.
@@ -166,5 +167,15 @@ holds('a yes', 'out', 'the tool said:     1	far away')
 answering(['call', 'read', far], '')
 holds('no answer', 'out', 'the tool said: declined by user: ')
 rm -rf $outside
+
+// a change to a file, its diff shown, approved or declined with a reason
+edit := '{"path":"' + dir + '/made","old":"","new":"hello"}'
+answering(['call', 'edit', edit], 'y')
+holds('an edit', 'out', 'the tool said: ok: created ' + dir + '/made')
+holds('an edit', 'err', '+hello')
+holds('an edit', 'err', 'create ' + dir + '/made? [y/N]')
+edit := '{"path":"' + dir + '/made","old":"hello","new":"bye"}'
+answering(['call', 'edit', edit], 'n' + #10 + 'not now')
+holds('a declined edit', 'out', 'the tool said: declined by user: not now. Nothing was changed')
 
 if failures > 0 then halt(1)

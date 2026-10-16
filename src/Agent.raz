@@ -40,6 +40,7 @@ type
         result*: proc(name, res: []U8; arg: ^U8);  (* its result *)
         note*: proc(s: []U8; arg: ^U8);            (* what arno says of the turn, a line *)
         ask*: Atools.Ask;                          (* the human asked; nil if nobody is there *)
+        why*: Atools.Why;                          (* after a no, why; nil not to ask *)
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
         arg*: ^U8;
     end;
@@ -49,6 +50,7 @@ type
         front*: Front;
         maxSteps*: INT;
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
+        human: Atools.Human;  (* the front's ask and why *)
         client: Http.Client;
         mem: Arena.Arena;     (* a call's work *)
         seen: Buf.Buf;        (* the read-only calls of this turn, "\0" then each "name\1args\0" *)
@@ -102,7 +104,7 @@ const
    set from the working directory. *)
 proc init*(a: ^Agent; prov: ^Awire.Prov; front: Front);
 begin
-    a^ := {prov: prov, front: front, maxSteps: MaxSteps};
+    a^ := {prov: prov, front: front, maxSteps: MaxSteps, human: {ask: front.ask, why: front.why, arg: front.arg}};
     Awire.initClient(ADR(a^.client));
     if not Arena.init(ADR(a^.mem), CallMemory) then Rt.stop("arno: out of memory"); end;
     Buf.init(ADR(a^.seen), Heap.heap);
@@ -211,7 +213,7 @@ begin
         elsif again(a, calls[i].name, calls[i].args) then
             Buf.str(ADR(res), Repeated);
         else
-            Atools.call(calls[i].name, calls[i].args, a^.front.ask, a^.front.arg, ADR(a^.mem.base), ADR(res));
+            Atools.call(calls[i].name, calls[i].args, ADR(a^.human), ADR(a^.mem.base), ADR(res));
             Arena.reset(ADR(a^.mem));
         end;
         if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(ADR(res)), a^.front.arg); end;

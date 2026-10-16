@@ -115,9 +115,13 @@ one or more commits that build with `-Werror`.
      raz as Pascal, know `proc`, and pass over lines inside a block
      comment that opens a line, which the Pascal arno took for
      declarations when prose began with "type" or "procedure".
-   - [ ] c. `edit` (approved, with its diff), `move`, `remove`; a
+   - [x] c. `edit` (approved, with its diff), `move`, `remove`; a
      declined change remembered and not asked again; "old text not
-     found" naming the near misses.
+     found" naming the near misses. The front end's `ask` shows a
+     detail, the diff, before its question, and `why` asks the reason
+     for a no. A near miss names the first line whose blanks differ,
+     not the first line alone. git's arguments that are on disk are
+     fenced, as the Pascal arno's Guard fenced them.
    - [ ] d. The system prompt in full: context files, `note` and
      notes.json, memory.json, `ahead` (the map, prefetch, stale
      notes); pruning; `turn_budget`.

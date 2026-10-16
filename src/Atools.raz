@@ -8,6 +8,16 @@
    no) or "not run" (arno wouldn't); that is the only way a tool says
    it failed.
 
+   A change to a file, an edit, a move or a removal, is shown to the
+   human, an edit as its diff, and made only if they approve it. After
+   a no they are asked why, and the model reads the reason with the
+   refusal, and that nothing was changed: told only no, a model guesses
+   what to do instead, and one wrote its next edit as if the declined
+   one had gone in. The same change proposed again, word for word, is
+   not put to the human again in the run: the model is told what they
+   said the first time. Models did that after a no whose reason they
+   misread, one offering the same edit three times.
+
    Models get the arguments wrong in a few ways often enough to take
    them as meant rather than refuse them, since a model that made a
    slip once tends to make it again: the whole object encoded twice, as
@@ -24,16 +34,36 @@
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git),
    Awire (for Tool), rjson's Json. Leaves out the tools of the steps
-   after this one: edit, move, remove, note, search, fetch, delegate,
-   run and shell; and the images read shows as pictures, which come
-   with the screen. *)
+   after this one: note, search, fetch, delegate, run and shell; the
+   images read shows as pictures, which come with the screen; the
+   model's scratch directory, where a change needs no approval, which
+   comes with the stage; and an editor's buffers, which come with the
+   peers. *)
 module Atools;
-import Afence, Afind, Arun, Awire, Json, Buf, Str, Sys, Files, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8);
+import Afence, Afind, Arun, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8),
+    Refusals := Vec(Refusal);
 
 type
-    (* What the human answers to question: one of the bytes of keys,
-       or 0 if there is nobody to ask. *)
-    Ask* = proc(question, keys: []U8; arg: ^U8): U8;
+    (* What the human answers to question, shown detail first (a diff;
+       "" for none): one of the bytes of keys, or 0 if there is nobody
+       to ask. *)
+    Ask* = proc(question, detail, keys: []U8; arg: ^U8): U8;
+    (* After a no, why: a line, "" for none; good until the next call. *)
+    Why* = proc(arg: ^U8): []U8;
+
+    (* How the human is asked; ask nil if nobody is there, why nil if
+       they aren't asked why. *)
+    Human* = record
+        ask*: Ask;
+        why*: Why;
+        arg*: ^U8;
+    end;
+
+    (* A change the human declined: the call, as key gives it, and what
+       its result said. *)
+    Refusal = record
+        key, said: []U8;
+    end;
 
     (* A call's arguments, parsed: v an object of d. *)
     Args* = record
@@ -44,7 +74,8 @@ type
 
 const
     MaxOut* = 32000;   (* bytes of a result, past which it is cut *)
-    MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads *)
+    MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads, and edit changes *)
+    MaxShown = 40;     (* lines of a file to be removed the human is shown *)
 
     (* What a request offers. A tool's rules go in its description,
        not in the system prompt, and the descriptions use placeholders,
@@ -111,7 +142,32 @@ const
          params: `{"type":"object","properties":` +
             `{"args":{"type":"array","items":{"type":"string"},"description":` +
             `"the arguments after git, subcommand first, one per item"}},` +
-            `"required":["args"]}`}];
+            `"required":["args"]}`},
+        {name: "edit",
+         description: "Change a file by replacing exact text, or create a new file. old must be " +
+            "copied verbatim from a read of the same file, whitespace included and without the " +
+            "line-number prefix read adds, and must occur exactly once unless all is true. To " +
+            "create a file, give an empty old and the whole content as new. The human sees each " +
+            "edit as a diff and approves or declines it, so make one focused change per call.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"file path, relative to the working directory"},` +
+            `"old":{"type":"string","description":` +
+            `"exact current text to replace, with enough surrounding lines to be unique; empty to create a file"},` +
+            `"new":{"type":"string","description":"the text to put in its place"},` +
+            `"all":{"type":"boolean","description":"replace every occurrence of old; default false"}},` +
+            `"required":["path","old","new"]}`},
+        {name: "move",
+         description: "Move or rename one file. The human approves each move. The destination " +
+            "must not exist yet; its directory is made if need be. Not for directories.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"the file to move, relative to the working directory"},` +
+            `"to":{"type":"string","description":"its new path, file name included"}},` +
+            `"required":["path","to"]}`},
+        {name: "remove",
+         description: "Delete one file. The human approves each removal. Not for directories.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"the file to delete, relative to the working directory"}},` +
+            `"required":["path"]}`}];
 
     (* What git may run, and what may follow git branch --list. *)
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
@@ -234,7 +290,7 @@ end;
    the directory that holds it: a model that reads one file of a
    library reads its neighbours next. Never / or the home directory,
    though: a yes to ~/.bashrc is not one to all of ~. *)
-proc fence(name, path: []U8; ask: Ask; arg: ^U8; out: ^Buf.Buf): BOOL;
+proc fence(name, path: []U8; h: ^Human; out: ^Buf.Buf): BOOL;
 var p, room, home, q: Buf.Buf; i: Sys.Info; e: INT;
 begin
     if (LEN(path) = 0) or Afence.inside(path) then return true; end;
@@ -266,7 +322,7 @@ begin
     Buf.str(ADR(q), "? (a: always, all of ");
     Buf.str(ADR(q), Buf.bytes(ADR(room)));
     Buf.add(ADR(q), ')');
-    if ask = nil then
+    if h^.ask = nil then
         Buf.str(out, "declined: ");
         Buf.str(out, Buf.bytes(ADR(p)));
         Buf.str(out, " is outside ");
@@ -274,7 +330,7 @@ begin
         Buf.str(out, ", and there is nobody to ask");
         return false;
     end;
-    match ask(Buf.bytes(ADR(q)), "yna", arg) of
+    match h^.ask(Buf.bytes(ADR(q)), "", "yna", h^.arg) of
     | 'y': return true;
     | 'a': Afence.grant(Buf.bytes(ADR(room))); return true;
     | else:
@@ -444,7 +500,395 @@ begin
     end;
 end;
 
+(* Changes *)
+
+(* Whether the human approves question, shown detail first. If not,
+   what is added to out says so: the reason, if they give one, after
+   "declined by user", and that nothing was changed. *)
+proc approve(h: ^Human; question, detail: []U8; out: ^Buf.Buf): BOOL;
+var why: []U8;
+begin
+    if h^.ask = nil then
+        Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
+        return false;
+    end;
+    if h^.ask(question, detail, "yn", h^.arg) = 'y' then return true; end;
+    Buf.str(out, "declined by user");
+    why := "";
+    if h^.why # nil then why := Str.trim(h^.why(h^.arg)); end;
+    if LEN(why) > 0 then
+        Buf.str(out, ": ");
+        Buf.str(out, why);
+    end;
+    Buf.str(out, ". Nothing was changed: the file is as it was before.");
+    return false;
+end;
+
+(* The lines of s, the last counted if it has no line feed. *)
+proc lines(s: []U8): INT;
+var n, i: INT;
+begin
+    n := 0;
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '\n' then INC(n); end;
+    end;
+    if (LEN(s) > 0) and (s[LEN(s) - 1] # '\n') then INC(n); end;
+    return n;
+end;
+
+(* Each line of s, at most max of them, added to b after mark, as a
+   diff marks what goes and what comes. *)
+proc marked(b: ^Buf.Buf; mark: U8; s: []U8; max: INT);
+var line, rest: []U8; n: INT;
+begin
+    rest := s;
+    n := 0;
+    while LEN(rest) > 0 do
+        if n = max then
+            Fmt.write(b, "{}[{} more lines]\n", [Fmt.char(mark), Fmt.int(lines(rest))]);
+            return;
+        end;
+        line, rest, _ := Str.cut(rest, "\n");
+        Buf.add(b, mark);
+        Buf.str(b, line);
+        Buf.add(b, '\n');
+        INC(n);
+    end;
+end;
+
+(* The times sub occurs in s, none overlapping. *)
+proc count(s, sub: []U8): INT;
+var n, i, at: INT;
+begin
+    n := 0;
+    at := 0;
+    i := Str.find(s, sub);
+    while i >= 0 do
+        INC(n);
+        INC(at, i + LEN(sub));
+        i := Str.find(s[at..LEN(s)], sub);
+    end;
+    return n;
+end;
+
+(* The directories path is in made, as mkdir -p makes them: false if
+   one can't be. *)
+proc makeDirs(path: []U8): BOOL;
+var i, e: INT;
+begin
+    for i := 1 to LEN(path) - 1 do
+        if path[i] = '/' then
+            e := Sys.makeDir(path[0..i]);
+            if (e # 0) and (e # -17) then return false; end;   (* -17: there already *)
+        end;
+    end;
+    return true;
+end;
+
+(* s's lines pushed on l, without their line feeds. *)
+proc split(s: []U8; l: ^Strs.Vec);
+var line: []U8;
+begin
+    while LEN(s) > 0 do
+        line, s, _ := Str.cut(s, "\n");
+        Strs.push(l, line);
+    end;
+end;
+
+(* The blanks and tabs a line starts with. *)
+proc blanks(s: []U8): INT;
+var n: INT;
+begin
+    n := 0;
+    while (n < LEN(s)) and ((s[n] = ' ') or (s[n] = '\t')) do INC(n); end;
+    return n;
+end;
+
+(* When old isn't in the file s, at path, but is if the blanks at the
+   start and end of each line are let go, the error says where, how the
+   blanks differ first, and what to do; nothing is added to out otherwise.
+   Lines are compared whole, so old that starts or ends inside a line
+   never matches here. A model told only "not found" tends to send the
+   same edit again. *)
+proc nearMiss(old, path, s: []U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var o, f: Strs.Vec; ol, fl: [][]U8; n, i, k, at, hits, first: INT;
+begin
+    Strs.init(ADR(o), mem);
+    Strs.init(ADR(f), mem);
+    split(old, ADR(o));
+    split(s, ADR(f));
+    ol := Strs.all(ADR(o));
+    fl := Strs.all(ADR(f));
+    n := LEN(ol);
+    first := 0;
+    while (first < n) and (LEN(Str.trim(ol[first])) = 0) do INC(first); end;
+    if first = n then return; end;
+    hits := 0;
+    at := -1;
+    for i := 0 to LEN(fl) - n do
+        k := 0;
+        while (k < n) and (Str.trim(ol[k]) = Str.trim(fl[i + k])) do INC(k); end;
+        if k = n then
+            INC(hits);
+            if at < 0 then at := i; end;
+        end;
+    end;
+    if hits = 0 then return; end;
+    if n = 1 then
+        Fmt.write(out, "error: old text not found in {}, but line {} holds it", [Fmt.str(path), Fmt.int(at + 1)]);
+    else
+        Fmt.write(out, "error: old text not found in {}, but lines {}-{} hold it",
+            [Fmt.str(path), Fmt.int(at + 1), Fmt.int(at + n)]);
+    end;
+    Buf.str(out, " with other blanks at the starts or ends of lines");
+    k := first;
+    while (k < n) and (blanks(fl[at + k]) = blanks(ol[k])) do INC(k); end;
+    if k < n then
+        Fmt.write(out, ": line {} starts with {} blanks, and old's line {} with {}",
+            [Fmt.int(at + k + 1), Fmt.int(blanks(fl[at + k])), Fmt.int(k + 1), Fmt.int(blanks(ol[k]))]);
+    end;
+    Buf.str(out, ". read shows each line after its number and a tab, which are not part of the line: " +
+        "copy old again from those lines");
+    if hits > 1 then
+        Fmt.write(out, " (they occur {} times; give more lines to choose one)", [Fmt.int(hits)]);
+    end;
+end;
+
+(* edit: old replaced by new in the file path, once, or everywhere if
+   all; or, with old empty, the file made, holding new. Written in
+   place, so that the file's mode and its links survive. *)
+proc edit(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var p, old, new, s: []U8; text, diff, q, b: Buf.Buf; i: Sys.Info; e, n, at: INT; all: BOOL;
+begin
+    p := path(a, "path");
+    old := str(a, "old");
+    new := str(a, "new");
+    all := flag(a, "all");
+    Buf.init(ADR(text), mem);
+    Buf.init(ADR(diff), mem);
+    Buf.init(ADR(q), mem);
+    Buf.init(ADR(b), mem);
+    if LEN(p) = 0 then
+        Buf.str(out, "error: give the path of the file");
+        return;
+    end;
+    i, e := Sys.info(p);
+    if LEN(old) = 0 then
+        if e = 0 then
+            Fmt.write(out, "error: {} exists; to change it, read it and give old text to replace", [Fmt.str(p)]);
+            return;
+        end;
+        n := 1;
+        Fmt.write(ADR(q), "create {}?", [Fmt.str(p)]);
+    else
+        if (e = 0) and i.dir then
+            Fmt.write(out, "error: {} is a directory", [Fmt.str(p)]);
+            return;
+        end;
+        if (e # 0) or not i.file or (i.size > MaxFile) or (Files.load(p, ADR(text)) # 0) then
+            Fmt.write(out, "error: cannot read {} (no such file? use find to locate it)", [Fmt.str(p)]);
+            return;
+        end;
+        s := Buf.bytes(ADR(text));
+        n := count(s, old);
+        if n = 0 then
+            nearMiss(old, p, s, mem, out);
+            if out^.len = 0 then
+                Fmt.write(out, "error: old text not found in {}. It must match the file exactly, whitespace " +
+                    "included: read the file again and copy old from it", [Fmt.str(p)]);
+            end;
+            return;
+        end;
+        if (n > 1) and not all then
+            Fmt.write(out, "error: old text occurs {} times in {}; add surrounding lines to old to make it " +
+                "unique, or set all to replace every one", [Fmt.int(n), Fmt.str(p)]);
+            return;
+        end;
+        at := Str.find(s, old);
+        if n = 1 then
+            Fmt.write(ADR(q), "apply edit to {} at line {}?", [Fmt.str(p), Fmt.int(count(s[0..at], "\n") + 1)]);
+        else
+            Fmt.write(ADR(q), "apply edit to {}, in {} places?", [Fmt.str(p), Fmt.int(n)]);
+        end;
+        marked(ADR(diff), '-', old, MaxFile);
+    end;
+    marked(ADR(diff), '+', new, MaxFile);
+    if not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    if LEN(old) = 0 then
+        Buf.str(ADR(b), new);
+        if not makeDirs(p) then
+            Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(p)]);
+            return;
+        end;
+    elsif all then
+        Str.replace(ADR(b), s, old, new);
+    else
+        Buf.str(ADR(b), s[0..at]);
+        Buf.str(ADR(b), new);
+        Buf.str(ADR(b), s[at + LEN(old)..LEN(s)]);
+    end;
+    if not Files.write(p, Buf.bytes(ADR(b))) then
+        Fmt.write(out, "error: cannot write {}", [Fmt.str(p)]);
+    elsif LEN(old) = 0 then
+        Fmt.write(out, "ok: created {}", [Fmt.str(p)]);
+    else
+        Fmt.write(out, "ok: {} replaced", [Fmt.int(n)]);
+    end;
+end;
+
+(* Whether path is a file that move and remove may take; if not, why
+   is added to out. A directory is refused: removing one is the one
+   mistake here that could take a whole tree with it. *)
+proc movable(p: []U8; out: ^Buf.Buf): BOOL;
+var i: Sys.Info; e: INT;
+begin
+    i, e := Sys.info(p);
+    if (e = 0) and i.dir then
+        Fmt.write(out, "error: {} is a directory; only single files can be moved or removed", [Fmt.str(p)]);
+        return false;
+    end;
+    if e # 0 then
+        Fmt.write(out, "error: no file {} (use find to locate it)", [Fmt.str(p)]);
+        return false;
+    end;
+    return true;
+end;
+
+(* move: the file path renamed to dest, the argument to, into a new directory if need be.
+   Never onto a file that is there: an overwrite is a removal the human
+   wasn't shown. A rename, so that a move across file systems fails and
+   says so. *)
+proc move(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var p, dest: []U8; q: Buf.Buf; e: INT;
+begin
+    p := path(a, "path");
+    dest := path(a, "to");
+    if not movable(p, out) then return; end;
+    if LEN(dest) = 0 then
+        Buf.str(out, "error: to, the new path, is required");
+        return;
+    end;
+    _, e := Sys.linkInfo(dest);
+    if e = 0 then
+        Fmt.write(out, "error: {} exists; give a path that does not, the whole path including the name", [Fmt.str(dest)]);
+        return;
+    end;
+    Buf.init(ADR(q), mem);
+    Fmt.write(ADR(q), "move {} to {}?", [Fmt.str(p), Fmt.str(dest)]);
+    if not approve(h, Buf.bytes(ADR(q)), "", out) then return; end;
+    if not makeDirs(dest) then
+        Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(dest)]);
+        return;
+    end;
+    e := Sys.rename(p, dest);
+    if e # 0 then
+        Fmt.write(out, "error: cannot move {} to {} (errno {})", [Fmt.str(p), Fmt.str(dest), Fmt.int(-e)]);
+        return;
+    end;
+    Fmt.write(out, "ok: moved {} to {}", [Fmt.str(p), Fmt.str(dest)]);
+end;
+
+(* remove: the file path deleted, once the human has seen what it
+   holds, as an edit that empties it would show it, so that a slip of
+   the path is seen for what it is. *)
+proc remove(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var p, s: []U8; text, diff, q: Buf.Buf; e: INT;
+begin
+    p := path(a, "path");
+    if not movable(p, out) then return; end;
+    Buf.init(ADR(text), mem);
+    Buf.init(ADR(diff), mem);
+    Buf.init(ADR(q), mem);
+    if Files.load(p, ADR(text)) = 0 then
+        s := Buf.bytes(ADR(text));
+        if LEN(s) > 8192 then s := s[0..8192]; end;
+        if Str.find(s, "\x00") >= 0 then
+            Buf.str(ADR(diff), "(binary)\n");
+        else
+            marked(ADR(diff), '-', Buf.bytes(ADR(text)), MaxShown);
+        end;
+    end;
+    Fmt.write(ADR(q), "remove {}?", [Fmt.str(p)]);
+    if not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    e := Sys.remove(p);
+    if e # 0 then
+        Fmt.write(out, "error: cannot remove {} (errno {})", [Fmt.str(p), Fmt.int(-e)]);
+        return;
+    end;
+    Fmt.write(out, "ok: removed {}", [Fmt.str(p)]);
+end;
+
 (* A call *)
+
+var refused: Refusals.Vec;   (* the changes the human declined this run, from Heap *)
+
+(* The key a change is known by among the refused: the tool's name, and
+   its arguments as rjson writes them again, so that a blank more or
+   less in the model's JSON is still the same change. edit's old must
+   match the file, so a change declined, then made another way, can't
+   come back unchanged unless the file is as it was. *)
+proc key(name: []U8; a: ^Args; b: ^Buf.Buf);
+begin
+    Buf.str(b, name);
+    Buf.add(b, 1);
+    Json.write(a^.d, b, a^.v, {});
+end;
+
+(* What the human said when they declined the change key, "" if they
+   haven't. *)
+proc said(key: []U8): []U8;
+var r: []Refusal; i: INT;
+begin
+    r := Refusals.all(ADR(refused));
+    for i := 0 to LEN(r) - 1 do
+        if r[i].key = key then return r[i].said; end;
+    end;
+    return "";
+end;
+
+(* Every declined change forgotten, so that the human is asked again. *)
+proc forgive*;
+var r: []Refusal; i: INT;
+begin
+    r := Refusals.all(ADR(refused));
+    for i := 0 to LEN(r) - 1 do
+        Str.free(Heap.heap, r[i].key);
+        Str.free(Heap.heap, r[i].said);
+    end;
+    Refusals.reset(ADR(refused));
+end;
+
+proc keep(s: []U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* Whether every path the call of name would reach may be reached, the
+   human asked of those outside the fence; if not, why is added to out.
+   git's are the words of its arguments that are on disk: its
+   subcommands keep it in the repository otherwise. *)
+proc fenced(name: []U8; a: ^Args; h: ^Human; out: ^Buf.Buf): BOOL;
+var args: [][]U8; i: INT;
+begin
+    match name of
+    | "read", "edit", "remove": return fence(name, path(a, "path"), h, out);
+    | "move": return fence(name, path(a, "path"), h, out) and fence(name, path(a, "to"), h, out);
+    | "find", "grep", "def", "outline": return fence(name, dir(a, "path"), h, out);
+    | "git":
+        args := list(a, "args");
+        for i := 1 to LEN(args) - 1 do
+            if not Str.hasPrefix(args[i], "-") and (Sys.access(args[i], {}) = 0) and
+                not fence(name, args[i], h, out) then
+                return false;
+            end;
+        end;
+    | else:
+    end;
+    return true;
+end;
 
 (* s added to b made valid UTF-8, each byte that starts no character
    made U+FFFD. *)
@@ -462,25 +906,41 @@ end;
 
 (* The call of the tool name with the arguments args run, its result
    added to out: what the tool gave, cut at MaxOut and made valid
-   UTF-8. ask is how the human is asked, nil if there is nobody; mem
-   is for the call's own work, which out mustn't point into. *)
-proc call*(name, args: []U8; ask: Ask; arg: ^U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var d: Json.Doc; a: Args; res: Buf.Buf; s: []U8; i, cut: INT;
+   UTF-8. h is how the human is asked; mem is for the call's own work,
+   which out mustn't point into. *)
+proc call*(name, args: []U8; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d: Json.Doc; a: Args; res, k: Buf.Buf; s: []U8; i, cut: INT; change, ok: BOOL;
 begin
     if not Json.init(ADR(d), mem) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
     Buf.init(ADR(res), mem);
-    if not parse(ADR(d), mem, args, ADR(a)) then
+    Buf.init(ADR(k), mem);
+    change := (name = "edit") or (name = "move") or (name = "remove");
+    ok := parse(ADR(d), mem, args, ADR(a));
+    if ok and change then key(name, ADR(a), ADR(k)); end;
+    if not ok then
         Buf.str(ADR(res), "error: the arguments must be one JSON object, as the tool's schema says; got: ");
         cut := LEN(args);
         if cut > 200 then cut := 200; end;
         Buf.str(ADR(res), args[0..cut]);
+    elsif change and (LEN(said(Buf.bytes(ADR(k)))) > 0) then
+        Buf.str(ADR(res), "not run: the human already declined this very change (");
+        Buf.str(ADR(res), said(Buf.bytes(ADR(k))));
+        Buf.str(ADR(res), "). Change it as they said, or ask them.");
+    elsif not fenced(name, ADR(a), h, ADR(res)) then
+        (* res says why *)
     elsif name = "read" then
-        if fence(name, path(ADR(a), "path"), ask, arg, ADR(res)) then read(ADR(a), mem, ADR(res)); end;
+        read(ADR(a), mem, ADR(res));
     elsif (name = "find") or (name = "grep") or (name = "def") or (name = "outline") then
-        if fence(name, dir(ADR(a), "path"), ask, arg, ADR(res)) then look(name, ADR(a), mem, ADR(res)); end;
+        look(name, ADR(a), mem, ADR(res));
     elsif name = "git" then
         git(ADR(a), ADR(res));
+    elsif name = "edit" then
+        edit(ADR(a), h, mem, ADR(res));
+    elsif name = "move" then
+        move(ADR(a), h, mem, ADR(res));
+    elsif name = "remove" then
+        remove(ADR(a), h, mem, ADR(res));
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
         Buf.str(ADR(res), "error: there is no tool named \"");
@@ -492,6 +952,11 @@ begin
         end;
     end;
     s := Buf.bytes(ADR(res));
+    if change and Str.hasPrefix(s, "declined by user") and (LEN(said(Buf.bytes(ADR(k)))) = 0) then
+        i := Str.find(s, ". Nothing was changed");
+        if i < 0 then i := LEN(s); end;
+        Refusals.push(ADR(refused), {key: keep(Buf.bytes(ADR(k))), said: keep(s[0..i])});
+    end;
     if LEN(s) > MaxOut then
         cut := MaxOut;
         while (cut > 0) and (s[cut] & 0C0H = 80H) do DEC(cut); end;   (* where a character starts *)
@@ -504,7 +969,7 @@ end;
 
 (* The module's test, in build/tools, which it makes. *)
 
-var failed: BOOL; answer: U8; asked: INT;
+var failed: BOOL; answer: U8; asked: INT; because, shown: []U8;
 
 proc expect(what, got, want: []U8);
 begin
@@ -519,21 +984,36 @@ begin
     failed := true;
 end;
 
-proc human(_question, _keys: []U8; _arg: ^U8): U8;
+proc human(_question, detail, _keys: []U8; _arg: ^U8): U8;
 begin
     INC(asked);
+    shown := keep(detail);
     return answer;
+end;
+
+proc reason(_arg: ^U8): []U8;
+begin
+    return because;
 end;
 
 var mem: Arena.Arena;
 
 proc run(name, args: []U8; ask: Ask): []U8;
+var b: Buf.Buf; h: Human;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    h := {ask: ask, why: reason};
+    call(name, args, ADR(h), ADR(mem.base), ADR(b));
+    Arena.reset(ADR(mem));
+    return Buf.bytes(ADR(b));
+end;
+
+proc holds(path, want: []U8);
 var b: Buf.Buf;
 begin
     Buf.init(ADR(b), Heap.heap);
-    call(name, args, ask, nil, ADR(mem.base), ADR(b));
-    Arena.reset(ADR(mem));
-    return Buf.bytes(ADR(b));
+    _ := Files.load(path, ADR(b));
+    expect(path, Buf.bytes(ADR(b)), want);
 end;
 
 proc main*: INT;
@@ -569,7 +1049,7 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git");
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");
@@ -583,6 +1063,7 @@ begin
     expect("git, an output", run("git", `{"args":["diff","--output=x"]}`, nil), "error: option not allowed: --output=x");
     expect("git, no args", run("git", `{}`, nil), "error: args must be an array of strings, the subcommand first");
     expect("grep outside, nobody", run("grep", `{"pattern":"far","path":"../out"}`, nil)[0..9], "declined:");
+    expect("git outside, nobody", run("git", `{"args":["log","--","../out/g"]}`, nil)[0..9], "declined:");
     s := run("read", `{"path":"long"}`, nil);
     expect("cut", s[LEN(s) - 49..LEN(s)], "\n[cut before line 1065; read on with offset 1065]");
 
@@ -596,9 +1077,63 @@ begin
     asked := 0;
     expect("granted", run("read", `{"path":"../out/g"}`, human), "    1\tfar\n");
     if asked # 0 then Out.str("Atools: a granted directory asked again\n"); failed := true; end;
+
+    (* changes *)
+    answer := 'y';
+    expect("create", run("edit", `{"path":"sub/dir/e","old":"","new":"a\nb\n"}`, human), "ok: created sub/dir/e");
+    expect("create, shown", shown, "+a\n+b\n");
+    holds("sub/dir/e", "a\nb\n");
+    expect("create over", run("edit", `{"path":"sub/dir/e","old":"","new":"x"}`, human)[0..24],
+        "error: sub/dir/e exists;");
+    expect("edit", run("edit", `{"path":"sub/dir/e","old":"b\n","new":"c\nd\n"}`, human), "ok: 1 replaced");
+    expect("edit, shown", shown, "-b\n+c\n+d\n");
+    holds("sub/dir/e", "a\nc\nd\n");
+    _ := Files.write("twice", "x\n  y\nx\n");
+    expect("twice", run("edit", `{"path":"twice","old":"x","new":"z"}`, human),
+        "error: old text occurs 2 times in twice; add surrounding lines to old to make it unique, or set all to " +
+        "replace every one");
+    expect("all", run("edit", `{"path":"twice","old":"x","new":"z","all":true}`, human), "ok: 2 replaced");
+    holds("twice", "z\n  y\nz\n");
+    expect("a near miss", run("edit", `{"path":"twice","old":"z\ny","new":""}`, human),
+        "error: old text not found in twice, but lines 1-2 hold it with other blanks at the starts or ends of " +
+        "lines: line 2 starts with 2 blanks, and old's line 2 with 0. read shows each line after its number " +
+        "and a tab, which are not part of the line: copy old again from those lines");
+    expect("not found", run("edit", `{"path":"twice","old":"q","new":""}`, human)[0..32],
+        "error: old text not found in twi");
+    asked := 0;
+    answer := 'n';
+    because := "keep it";
+    expect("declined", run("edit", `{"path":"twice","old":"y","new":"w"}`, human),
+        "declined by user: keep it. Nothing was changed: the file is as it was before.");
+    expect("declined again", run("edit", `{ "path":"twice", "old":"y", "new":"w" }`, human),
+        "not run: the human already declined this very change (declined by user: keep it). Change it as they " +
+        "said, or ask them.");
+    if asked # 1 then Out.str("Atools: a declined change asked again\n"); failed := true; end;
+    forgive;
+    because := "";
+    expect("forgiven", run("edit", `{"path":"twice","old":"y","new":"w"}`, human),
+        "declined by user. Nothing was changed: the file is as it was before.");
+    expect("nobody to approve", run("edit", `{"path":"twice","old":"y","new":"v"}`, nil),
+        "declined: there is nobody to approve the change. Nothing was changed.");
+    holds("twice", "z\n  y\nz\n");
+    answer := 'y';
+    expect("move", run("move", `{"path":"twice","to":"sub/new/thrice"}`, human), "ok: moved twice to sub/new/thrice");
+    expect("move onto", run("move", `{"path":"f","to":"sub/new/thrice"}`, human)[0..30],
+        "error: sub/new/thrice exists; ");
+    expect("move a directory", run("move", `{"path":"sub","to":"bus"}`, human)[0..22], "error: sub is a direct");
+    expect("remove", run("remove", `{"path":"sub/new/thrice"}`, human), "ok: removed sub/new/thrice");
+    expect("remove, shown", shown, "-z\n-  y\n-z\n");
+    expect("remove, none", run("remove", `{"path":"sub/new/thrice"}`, human),
+        "error: no file sub/new/thrice (use find to locate it)");
+    _ := Sys.remove("sub/dir/e");
+    _ := Sys.removeDir("sub/dir");
+    _ := Sys.removeDir("sub/new");
+    _ := Sys.removeDir("sub");
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;
 end;
 
+begin
+    Refusals.init(ADR(refused), Heap.heap);
 end Atools.
