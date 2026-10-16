@@ -31,14 +31,13 @@
 
    What is copied goes out by OSC 52, which asks the terminal to set the
    clipboard, with no xclip between, over ssh too; a terminal that
-   doesn't know it ignores it. It is written to /dev/tty: rtui has no
-   way yet to send a program's own sequence (PLAN.md, asked of rtui).
+   doesn't know it ignores it. TuiLoop.send writes it between frames.
 
-   Depends on Aboard, Aattach (base64), rtui's TuiScreen, TuiMap,
-   TuiKeys, TuiLine and TuiWidth, rterm's Term, Buf, Str and Sys. Leaves
+   Depends on Aboard, Aattach (base64), rtui's TuiLoop, TuiScreen,
+   TuiMap, TuiKeys, TuiLine and TuiWidth, rterm's Term, Buf and Str. Leaves
    out the mouse, and vi's counts. *)
 module Acopy;
-import Aboard, Aattach, TuiScreen, TuiMap, TuiKeys, TuiLine, TuiWidth, Term, Buf, Str, Sys, Heap, Fmt, Rt;
+import Aboard, Aattach, TuiLoop, TuiScreen, TuiMap, TuiKeys, TuiLine, TuiWidth, Term, Buf, Str, Heap, Fmt, Rt;
 
 type
     Sel = (none, letters, rows);
@@ -246,17 +245,14 @@ end;
 
 (* s sent to the terminal, for its clipboard, by OSC 52. *)
 proc clip(s: []U8);
-var b: Buf.Buf; fd: INT;
+var b: Buf.Buf;
 begin
     Buf.init(ADR(b), Heap.heap);
     defer Buf.done(ADR(b));
     Buf.str(ADR(b), "\x1b]52;c;");
     Aattach.base64(ADR(b), s);
     Buf.add(ADR(b), 7);
-    fd := Sys.open("/dev/tty", {Sys.Access.writing});
-    if fd < 0 then return; end;
-    _ := Sys.write(fd, Buf.bytes(ADR(b)));
-    Sys.close(fd);
+    TuiLoop.send(Buf.bytes(ADR(b)));
 end;
 
 (* What is selected copied, or the cursor's line, and copy mode left. *)

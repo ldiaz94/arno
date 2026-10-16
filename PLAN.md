@@ -225,9 +225,8 @@ one or more commits that build with `-Werror`.
 - **rtui: the rows an editor's text takes.** The input grows with its
   text: done in rtui `f1f1b73`, `TuiEdit.rows`.
 - **rtui: a program's own sequence to the terminal.** Copy mode sends
-  OSC 52 to set the clipboard; `TuiLoop` writes only the grid, so
-  Acopy opens `/dev/tty` and writes it there, between draws. Asked of
-  rtui: `TuiLoop.send(s)`, written with the next draw.
+  OSC 52 to set the clipboard: done in rtui `b34b06d`,
+  `TuiLoop.send`, written after the next draw.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; nothing else in rtui uses raz's `Thread`, and a
   job's thread wakes the loop as it should (3b).
