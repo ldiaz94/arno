@@ -44,6 +44,10 @@ dead weight (auto mode, brain and worker, plans) stays out.
   is by a directory of sockets and `$ARNO_EDITOR`, not by `te-*.sock`.
   te is one editor that speaks it. The viewer protocol of `--attach`
   gets its own socket, apart from the editor's.
+- **`--serve` keeps its protocol.** arnold (`~/lib/arnold`, arno in a
+  window) drives `arno --serve` through arnoc(3), so `wire.pas`'s
+  messages stay as they are; arnold works against the raz arno
+  unchanged, or changes with it in the same piece of work.
 - **The eval drives the binary.** `eval/stub` (canned replies) and the
   jailed runs grade the raz arno and the Pascal one alike, so a stage
   can be compared with the reference by its transcripts and files.
