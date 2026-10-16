@@ -1,0 +1,419 @@
+(* Amsg: a conversation's messages, as arno keeps them, and their JSON.
+
+   A conversation is a list of messages, each a record: who said it,
+   its text, and what goes with it: the images a user attached, the
+   tool calls an assistant asked for, the call a tool's result answers.
+   Every string of a message is a block of its own from Heap, copied in
+   when the message is made and given back by free, so a message lives
+   as long as the conversation keeps it, whatever it was made from.
+
+   The JSON is OpenAI's chat format, the one the Pascal arno saved its
+   conversations in, and the one the OpenAI-compatible providers take
+   as it is:
+
+       {"role":"user","content":"..."}
+       {"role":"user","content":[{"type":"text","text":"..."},
+           {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]}
+       {"role":"assistant","content":"...","tool_calls":[{"id":"...",
+           "type":"function","function":{"name":"...","arguments":"..."}}]}
+       {"role":"tool","tool_call_id":"...","name":"...","content":"..."}
+
+   write writes a message byte for byte as the Pascal arno did: its keys
+   in that order, and its strings quoted as that arno quoted them, so a
+   conversation either one saved reads back the same in both, and
+   writes back the same.
+
+   Depends on Vec, Str, Buf, Heap and rjson's Json. Leaves out what a
+   message means: turning one into a provider's own format is Awire's,
+   and a conversation's order and turns are the agent's. *)
+module Amsg;
+import Json, Buf, Str, Heap, Rt, Out, Files, Calls := Vec(Call), Strs := Vec([]U8);
+
+type
+    Role* = (user, assistant, tool);
+
+    (* A tool call an assistant asked for. *)
+    Call* = record
+        id*: []U8;
+        name*: []U8;
+        args*: []U8;     (* the arguments, JSON text as the model wrote it *)
+        extra*: []U8;    (* its extra_content, JSON text, or "": Gemini's thought_signature *)
+    end;
+
+    Msg* = record
+        role*: Role;
+        text*: []U8;         (* the content *)
+        images*: Strs.Vec;   (* a user's pictures, each a data: URL *)
+        calls*: Calls.Vec;   (* an assistant's tool calls *)
+        callId*: []U8;       (* a tool's: the id of the call it answers *)
+        tool*: []U8;         (* a tool's: the tool's name, "" in conversations older than it *)
+        think*: []U8;        (* an assistant's thinking, kept for the rest of its turn *)
+        thinkKey*: []U8;     (* the key its server streamed it under: reasoning or reasoning_content *)
+    end;
+
+const
+    BadRole*: ERROR = "a message whose role is none of user, assistant and tool";
+
+    (* the keys OpenAI-compatible servers put a model's thinking under:
+       Ollama's, and Moonshot's, vLLM's and DeepSeek's *)
+    ThinkKeys*: [][]U8 = ["reasoning", "reasoning_content"];
+
+(* s, copied into a block of its own from Heap; "" stays "". *)
+proc keep*(s: []U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* m made an empty message of role. *)
+proc init*(m: ^Msg; role: Role);
+begin
+    m^ := {};
+    m^.role := role;
+    Strs.init(ADR(m^.images), Heap.heap);
+    Calls.init(ADR(m^.calls), Heap.heap);
+end;
+
+(* What m holds given back; m is left an empty user's message, to be
+   made again with init. *)
+proc free*(m: ^Msg);
+var i: INT; images: [][]U8; calls: []Call;
+begin
+    Str.free(Heap.heap, m^.text);
+    images := Strs.all(ADR(m^.images));
+    for i := 0 to LEN(images) - 1 do Str.free(Heap.heap, images[i]); end;
+    Strs.done(ADR(m^.images));
+    calls := Calls.all(ADR(m^.calls));
+    for i := 0 to LEN(calls) - 1 do
+        Str.free(Heap.heap, calls[i].id);
+        Str.free(Heap.heap, calls[i].name);
+        Str.free(Heap.heap, calls[i].args);
+        Str.free(Heap.heap, calls[i].extra);
+    end;
+    Calls.done(ADR(m^.calls));
+    Str.free(Heap.heap, m^.callId);
+    Str.free(Heap.heap, m^.tool);
+    Str.free(Heap.heap, m^.think);
+    Str.free(Heap.heap, m^.thinkKey);
+    m^ := {};
+end;
+
+(* m's text made a copy of text, in place of what it was. *)
+proc setText*(m: ^Msg; text: []U8);
+begin
+    Str.free(Heap.heap, m^.text);
+    m^.text := keep(text);
+end;
+
+(* A tool call, its strings copied, added to m's. *)
+proc addCall*(m: ^Msg; id, name, args, extra: []U8);
+var c: ^Call;
+begin
+    c := Calls.add(ADR(m^.calls));
+    c^.id := keep(id);
+    c^.name := keep(name);
+    c^.args := keep(args);
+    c^.extra := keep(extra);
+end;
+
+(* What m keeps only for the turn it was said in dropped, once the turn
+   is over: the thinking, and each call's extra_content. Within a tool
+   loop a reasoning model needs its thinking back, and Gemini 3 refuses
+   a turn whose calls lack their thought_signature; across turns the
+   models' own templates throw old thinking away, Gemini checks only
+   the current turn's calls, and a stricter server, after the provider
+   changes, may refuse the fields. *)
+proc settle*(m: ^Msg);
+var i: INT; calls: []Call;
+begin
+    Str.free(Heap.heap, m^.think);
+    Str.free(Heap.heap, m^.thinkKey);
+    m^.think := "";
+    m^.thinkKey := "";
+    calls := Calls.all(ADR(m^.calls));
+    for i := 0 to LEN(calls) - 1 do
+        Str.free(Heap.heap, calls[i].extra);
+        calls[i].extra := "";
+    end;
+end;
+
+(* c, a byte quote escapes, added to b as its escape. *)
+proc escape(b: ^Buf.Buf; c: U8);
+const Hex = "0123456789abcdef";
+begin
+    match c of
+    | '"': Buf.str(b, "\\\"");
+    | '\\': Buf.str(b, "\\\\");
+    | '\n': Buf.str(b, "\\n");
+    | '\r': Buf.str(b, "\\r");
+    | '\t': Buf.str(b, "\\t");
+    | else:
+        Buf.str(b, "\\u00");
+        Buf.add(b, Hex[c shr 4]);
+        Buf.add(b, Hex[c & 15]);
+    end;
+end;
+
+(* s added to b as a JSON string, quoted as the Pascal arno quoted it:
+   a double quote, a backslash, a line feed, a carriage return and a
+   tab by their escapes, every other byte below a space as \u00xx, and
+   the rest as it is. *)
+proc quote*(b: ^Buf.Buf; s: []U8);
+var i, from: INT; c: U8;
+begin
+    Buf.add(b, '"');
+    from := 0;
+    for i := 0 to LEN(s) - 1 do
+        c := s[i];
+        if (c < ' ') or (c = '"') or (c = '\\') then
+            Buf.str(b, s[from..i]);
+            from := i + 1;
+            escape(b, c);
+        end;
+    end;
+    Buf.str(b, s[from..LEN(s)]);
+    Buf.add(b, '"');
+end;
+
+(* m added to b as JSON, as the module's comment shows it. *)
+proc write*(m: ^Msg; b: ^Buf.Buf);
+var i: INT; images: [][]U8; calls: []Call;
+begin
+    match m^.role of
+    | user:
+        Buf.str(b, `{"role":"user","content":`);
+        images := Strs.all(ADR(m^.images));
+        if LEN(images) = 0 then
+            quote(b, m^.text);
+        else
+            Buf.str(b, `[{"type":"text","text":`);
+            quote(b, m^.text);
+            Buf.add(b, '}');
+            for i := 0 to LEN(images) - 1 do
+                Buf.str(b, `,{"type":"image_url","image_url":{"url":`);
+                quote(b, images[i]);
+                Buf.str(b, "}}");
+            end;
+            Buf.add(b, ']');
+        end;
+    | assistant:
+        Buf.str(b, `{"role":"assistant","content":`);
+        quote(b, m^.text);
+        if LEN(m^.think) > 0 then
+            Buf.add(b, ',');
+            quote(b, m^.thinkKey);
+            Buf.add(b, ':');
+            quote(b, m^.think);
+        end;
+        calls := Calls.all(ADR(m^.calls));
+        if LEN(calls) > 0 then
+            Buf.str(b, `,"tool_calls":[`);
+            for i := 0 to LEN(calls) - 1 do
+                if i > 0 then Buf.add(b, ','); end;
+                Buf.str(b, `{"id":`);
+                quote(b, calls[i].id);
+                Buf.str(b, `,"type":"function","function":{"name":`);
+                quote(b, calls[i].name);
+                Buf.str(b, `,"arguments":`);
+                quote(b, calls[i].args);
+                Buf.add(b, '}');
+                if LEN(calls[i].extra) > 0 then
+                    Buf.str(b, `,"extra_content":`);
+                    Buf.str(b, calls[i].extra);
+                end;
+                Buf.add(b, '}');
+            end;
+            Buf.add(b, ']');
+        end;
+    | tool:
+        Buf.str(b, `{"role":"tool","tool_call_id":`);
+        quote(b, m^.callId);
+        if LEN(m^.tool) > 0 then
+            Buf.str(b, `,"name":`);
+            quote(b, m^.tool);
+        end;
+        Buf.str(b, `,"content":`);
+        quote(b, m^.text);
+    end;
+    Buf.add(b, '}');
+end;
+
+(* v, a value of d, as compact JSON text, copied for a message to keep:
+   a call's extra_content, or arguments a server sent as an object. *)
+proc keepJson(d: ^Json.Doc; v: Json.Value): []U8;
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Json.write(d, ADR(b), v, {});
+    return keep(Buf.bytes(ADR(b)));   (* made before b is given back *)
+end;
+
+(* m made from v, a message of d in the format write writes. A user's
+   content may be a string or an array of a text block and image
+   blocks; a call's arguments a string, or an object, which some
+   servers send, kept as its text. *)
+proc read*(d: ^Json.Doc; v: Json.Value; m: ^Msg): ERROR;
+var role: Role; i: INT; content, part, calls, call, args, extra: Json.Value; think: []U8; c: ^Call;
+begin
+    match Json.text(d, Json.member(d, v, "role")) of
+    | "user": role := user;
+    | "assistant": role := assistant;
+    | "tool": role := tool;
+    | else: return BadRole;
+    end;
+    init(m, role);
+    content := Json.member(d, v, "content");
+    if Json.kind(d, content) = Json.array then
+        for i := 0 to Json.len(d, content) - 1 do
+            part := Json.item(d, content, i);
+            match Json.text(d, Json.member(d, part, "type")) of
+            | "text": setText(m, Json.text(d, Json.member(d, part, "text")));
+            | "image_url": Strs.push(ADR(m^.images), keep(Json.text(d, Json.get(d, part, "image_url.url"))));
+            | else:
+            end;
+        end;
+    else
+        m^.text := keep(Json.text(d, content));
+    end;
+    for i := 0 to LEN(ThinkKeys) - 1 do
+        think := Json.text(d, Json.member(d, v, ThinkKeys[i]));
+        if LEN(think) > 0 then
+            Str.free(Heap.heap, m^.think);
+            Str.free(Heap.heap, m^.thinkKey);
+            m^.think := keep(think);
+            m^.thinkKey := keep(ThinkKeys[i]);
+        end;
+    end;
+    calls := Json.member(d, v, "tool_calls");
+    for i := 0 to Json.len(d, calls) - 1 do
+        call := Json.item(d, calls, i);
+        c := Calls.add(ADR(m^.calls));
+        c^.id := keep(Json.text(d, Json.member(d, call, "id")));
+        c^.name := keep(Json.text(d, Json.get(d, call, "function.name")));
+        args := Json.get(d, call, "function.arguments");
+        if Json.kind(d, args) = Json.object then
+            c^.args := keepJson(d, args);
+        else
+            c^.args := keep(Json.text(d, args));
+        end;
+        extra := Json.member(d, call, "extra_content");
+        if extra # Json.None then c^.extra := keepJson(d, extra); end;
+    end;
+    m^.callId := keep(Json.text(d, Json.member(d, v, "tool_call_id")));
+    m^.tool := keep(Json.text(d, Json.member(d, v, "name")));
+    return nil;
+end;
+
+(* The test: messages of every shape read and written back, byte for
+   byte; and, given files, each saved conversation's messages, as the
+   Pascal arno wrote them, read and written back the same. *)
+
+var failed: BOOL;
+
+proc fail(what: []U8);
+begin
+    Out.str("Amsg: ");
+    Out.str(what);
+    Out.ln;
+    failed := true;
+end;
+
+(* The messages of text, a JSON array, read and written back as an
+   array; false if they don't read. *)
+proc again(text: []U8; b: ^Buf.Buf): BOOL;
+var d: Json.Doc; v: Json.Value; m: Msg; i: INT; copy: Buf.Buf;
+begin
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(ADR(d));
+    Buf.init(ADR(copy), Heap.heap);   (* parsing rewrites its text *)
+    defer Buf.done(ADR(copy));
+    Buf.str(ADR(copy), text);
+    v := Json.parse(ADR(d), Buf.bytes(ADR(copy)));
+    if v = Json.None then return false; end;
+    Buf.add(b, '[');
+    for i := 0 to Json.len(ADR(d), v) - 1 do
+        if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then return false; end;
+        if i > 0 then Buf.add(b, ','); end;
+        write(ADR(m), b);
+        free(ADR(m));
+    end;
+    Buf.add(b, ']');
+    return true;
+end;
+
+const Shapes = `[{"role":"user","content":"a \"quote\", a back\\slash, é, a tab\t and \u0001\n"},` +
+    `{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"call_1","type":"function",` +
+    `"function":{"name":"git","arguments":"{\"args\":[\"status\"]}"}},{"id":"call_2","type":"function",` +
+    `"function":{"name":"read","arguments":"{}"},"extra_content":{"google":{"thought_signature":"c2ln"}}}]},` +
+    `{"role":"tool","tool_call_id":"call_1","name":"git","content":"(no output)"},` +
+    `{"role":"tool","tool_call_id":"call_2","content":"old, without its name"},` +
+    `{"role":"assistant","content":"","reasoning_content":"first the status"},` +
+    `{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},` +
+    `{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}]`;
+
+(* The messages array of a conversation the Pascal arno saved, written
+   back by write, must stand in the file as it is. *)
+proc conversation(path: []U8);
+var text, b, copy: Buf.Buf; d: Json.Doc; v: Json.Value; m: Msg; i: INT;
+begin
+    Buf.init(ADR(text), Heap.heap);
+    Buf.init(ADR(b), Heap.heap);
+    Buf.init(ADR(copy), Heap.heap);
+    defer Buf.done(ADR(text));
+    defer Buf.done(ADR(b));
+    defer Buf.done(ADR(copy));
+    if not Files.read(path, ADR(text)) then fail(path); return; end;
+    Buf.str(ADR(copy), Buf.bytes(ADR(text)));
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(ADR(d));
+    v := Json.parse(ADR(d), Buf.bytes(ADR(copy)));
+    if v = Json.None then fail(path); return; end;
+    v := Json.member(ADR(d), v, "messages");
+    if v = Json.None then return; end;   (* not a conversation: stage.json, tests.json *)
+    Buf.str(ADR(b), `"messages":[`);
+    for i := 0 to Json.len(ADR(d), v) - 1 do
+        if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then fail(path); return; end;
+        if i > 0 then Buf.add(ADR(b), ','); end;
+        write(ADR(m), ADR(b));
+        free(ADR(m));
+    end;
+    Buf.add(ADR(b), ']');
+    if Str.find(Buf.bytes(ADR(text)), Buf.bytes(ADR(b))) < 0 then fail(path); end;
+end;
+
+proc main*: INT;
+var b: Buf.Buf; m: Msg; i: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    if not again(Shapes, ADR(b)) then fail("the shapes don't read");
+    elsif Buf.bytes(ADR(b)) # Shapes then
+        fail("the shapes, written back, differ:");
+        Out.str(Buf.bytes(ADR(b)));
+        Out.ln;
+    end;
+
+    (* settle drops the thinking and the extra_content, nothing else *)
+    init(ADR(m), assistant);
+    setText(ADR(m), "done");
+    m.think := keep("why");
+    m.thinkKey := keep("reasoning");
+    addCall(ADR(m), "c", "find", `{"glob":"*.raz"}`, `{"x":1}`);
+    settle(ADR(m));
+    Buf.reset(ADR(b));
+    write(ADR(m), ADR(b));
+    free(ADR(m));
+    if Buf.bytes(ADR(b)) # `{"role":"assistant","content":"done","tool_calls":[{"id":"c","type":"function",` +
+            `"function":{"name":"find","arguments":"{\"glob\":\"*.raz\"}"}}]}` then
+        fail("settle");
+    end;
+
+    for i := 1 to ARGC() - 1 do conversation(Files.arg(i)); end;
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Amsg.

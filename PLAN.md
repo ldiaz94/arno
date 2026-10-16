@@ -25,7 +25,10 @@ dead weight (auto mode, brain and worker, plans) stays out.
   line on top. What rtui lacks is asked of rtui, not built here.
 - **One thread per request, and `TuiLoop.wake`.** A request runs on its
   own thread, with blocking reads, and wakes the loop when it has text.
-  Only the loop's thread touches the board and draws.
+  Only the loop's thread touches the board and draws. A stop is
+  `Awire.Request.stopped`, asked after every read; one that must break
+  into a wait signals the request's thread, whose `Sys.handle` makes
+  the wait fail at once, as `^C` does in one-shot mode.
 - **Memory by arena.** A turn's work goes in an arena dropped at the
   turn's end; the conversation, which lives for hours, keeps its own
   storage and is never pointed into from a turn's arena.
@@ -57,11 +60,20 @@ dead weight (auto mode, brain and worker, plans) stays out.
 Each stage stands on its own, is used before the next starts, and is
 one or more commits that build with `-Werror`.
 
-1. **Core, one shot.** `Json` (rjson if it can keep numbers as text,
-   else our own), `Msg` (the records), `Wire` (OpenAI-compatible and
-   Anthropic: requests, SSE, tool calls, usage), `Store` (reads and
-   writes the conversations), config. `arno 'question'` answers,
-   streaming, against every provider, and `^C` keeps the text so far.
+1. **Core, one shot.** `arno 'question'` answers, streaming, against
+   every provider, and `^C` keeps the text so far.
+   - [x] a. `Amsg`, the messages as records and their JSON, read and
+     written back byte for byte (`make compat`: every conversation the
+     Pascal arno saved); `Awire`, both wire formats: the bodies, held
+     byte for byte to the Pascal arno's own (its body functions, copied
+     into a program, wrote the test's), the reply put together from
+     its events, and `chat` over rnet, tried against a server of the
+     test's own. rjson keeps numbers as text, so it serves.
+   - [ ] b. `Astore`: a conversation's file around its messages (title,
+     named, model, system, turns, updated), the list of them, and the
+     lock on arno's shared files.
+   - [ ] c. `Aconf` and `Arno`: the config (providers, params, keys),
+     and the one-shot program.
 2. **The agent.** `Agent` and `Board`: the loop of tool calls, read,
    find, grep, outline, edit (each approved), the fence, notes, memory,
    context files, `ahead`, `delegate` (a plain tool for a leading
@@ -169,6 +181,9 @@ commit in `~/lib/arno` that says more.
 - `@"path with spaces":N-M`; the title is made without attachments.
   5cc4266
 - Context files from every directory between home and here. 394f743
+- What goes into a conversation is valid UTF-8, a tool's output made so
+  before it is kept: rjson reads only UTF-8, and every conversation the
+  Pascal arno saved so far is. (Learned here, not there.)
 - Never open a FIFO to read it; visit regular files only, by `lstat`,
   and don't follow links to directories. ea91c38
 - Pipelines run with `pipefail`. 426582e

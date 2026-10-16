@@ -1,0 +1,1159 @@
+(* Awire: a conversation sent to a model, and its reply read as it
+   streams.
+
+   Two wire formats cover the providers arno knows: OpenAI's chat
+   completions, which ollama, OpenAI, Gemini and most others speak, and
+   Anthropic's messages. A conversation is kept in OpenAI's shape
+   (Amsg), so that format sends it nearly as it is; Anthropic's wants
+   it translated, and translate does it, block by block:
+
+   - a user's text, a tool's result and the user's next text are one
+     user turn of several blocks, since Anthropic has only user and
+     assistant turns;
+   - an assistant's text is a text block if it is more than blanks,
+     each tool call a tool_use block whose input is the arguments
+     parsed, {} if they don't parse to an object, and a turn left with
+     no block gets one of "…", since an empty one is refused;
+   - an image's data: URL is an image block of its own type and data.
+
+   Anthropic caches a prompt only where the request marks it: one mark
+   on the system prompt, which with the tools before it every request
+   shares, and one on the newest block, so that each request reads
+   what the last one wrote and writes one step more.
+
+   Both bodies are byte for byte what the Pascal arno sent (the test
+   holds them to its output), so a provider's prompt cache goes on
+   across the switch from one arno to the other.
+
+   The reply comes as server-sent events, a line "data: {json}" each,
+   OpenAI's ending in "data: [DONE]". Its text goes to the request's
+   emit as it comes; its tool calls come in pieces, each piece naming
+   its call by an index, and are put together here. Some servers send
+   no index: a piece with an id unlike the last call's starts a new
+   one, any other goes on with the last. A reasoning model's thinking
+   is kept under the key its server used, for the rest of the turn
+   (Amsg.settle); so is each call's extra_content, Gemini's
+   thought_signature.
+
+   A request that fails before its reply starts, for want of a
+   connection, is tried again as the provider says, after a wait that
+   doubles each time; one that fails after, or an error the server
+   answered, isn't, so that half a reply is never replayed and a
+   refusal never repeated. A request the program stops, by its stopped
+   procedure, keeps the text that came and drops the calls, which may
+   be half made.
+
+   Depends on Amsg, rjson's Json, rnet's Http, Conn and Tls. Leaves out
+   prices and the provider's configuration, which the program's
+   (Aconf, later) sets in a Prov; and the threads: chat runs on the
+   caller's. *)
+module Awire;
+import Amsg, Json, Http, Tls, Buf, Str, Sys, Heap, Rt, Out, Thread, Slots := Vec(Slot), Msgs := Vec(Amsg.Msg),
+    Calls := Vec(Amsg.Call), Strs := Vec([]U8);
+
+type
+    Dialect* = (openai, anthropic);
+
+    (* A provider: where to send, what model, and how. *)
+    Prov* = record
+        name*: []U8;
+        url*: []U8;          (* the API's base, as https://api.openai.com/v1 *)
+        model*: []U8;
+        keyEnv*: []U8;       (* the environment variable of its key; "" for none *)
+        dialect*: Dialect;
+        params*: [][]U8;     (* config's other keys, each "key=value", given as written *)
+        retries*: INT;       (* times a request whose connection failed is made again *)
+        backoff*: INT;       (* seconds before the first of them, doubled for each next, 30 at most *)
+        timeout*: INT;       (* milliseconds each read of the reply waits for more *)
+    end;
+
+    (* A tool the model may call. *)
+    Tool* = record
+        name*: []U8;
+        description*: []U8;
+        params*: []U8;       (* its arguments' JSON schema, as compact JSON text *)
+    end;
+
+    (* What a request cost in tokens, the same whichever dialect said
+       it: inp is the whole prompt, cached and written the parts of it
+       read from and written to the provider's cache, out the reply,
+       its thinking included. *)
+    Usage* = record inp*, cached*, written*, out*: I64; end;
+
+    Request* = record
+        prov*: ^Prov;
+        client*: ^Http.Client;   (* made by initClient; its connection kept from one request to the next *)
+        system*: []U8;
+        msgs*: []Amsg.Msg;
+        tools*: []Tool;
+        emit*: proc(text: []U8; arg: ^U8);   (* each piece of the reply's text, as it comes; or nil *)
+        arg*: ^U8;
+        stopped*: proc: BOOL;                (* whether to stop the reply now, asked as it comes; or nil *)
+    end;
+
+    (* A tool call coming in pieces. *)
+    Slot = record id, name, args, extra: Buf.Buf; end;
+
+    (* A reply coming in, line by line. *)
+    Acc = record
+        dialect: Dialect;
+        emit: proc(text: []U8; arg: ^U8);
+        arg: ^U8;
+        line: Buf.Buf;       (* the line coming, up to its line feed *)
+        text: Buf.Buf;
+        think: Buf.Buf;
+        thinkKey: []U8;      (* one of Amsg.ThinkKeys *)
+        slots: Slots.Vec;
+        raw: Buf.Buf;        (* the lines that weren't events: a body that is no stream, an error's *)
+        err: Buf.Buf;        (* the message of an error event *)
+        events: BOOL;        (* an event came *)
+        u: Usage;
+        d: Json.Doc;         (* each event, parsed *)
+    end;
+
+const
+    Failed*: ERROR = "the request failed";
+    Stopped*: ERROR = "the reply was stopped";
+
+    (* Anthropic's mark of where its cache may end *)
+    Mark = `"cache_control":{"type":"ephemeral"}`;
+
+    Presets* = "ollama ollama-cloud openai gemini claude";
+
+(* p set up as the provider called name, one of Presets, its params
+   left as they are; false, and p unchanged, for any other name. *)
+proc preset*(name: []U8; p: ^Prov): BOOL;
+begin
+    match name of
+    | "ollama":
+        p^.url := "http://localhost:11434/v1";
+        p^.model := "deepseek-v4.1-flash:cloud";
+        p^.keyEnv := "";
+    | "ollama-cloud":
+        p^.url := "https://ollama.com/v1";
+        p^.model := "deepseek-v4.1-flash";
+        p^.keyEnv := "OLLAMA_API_KEY";
+    | "openai":
+        p^.url := "https://api.openai.com/v1";
+        p^.model := "gpt-5";
+        p^.keyEnv := "OPENAI_API_KEY";
+    | "gemini":
+        p^.url := "https://generativelanguage.googleapis.com/v1beta/openai";
+        p^.model := "gemini-3.8-flash";
+        p^.keyEnv := "GEMINI_API_KEY";
+    | "claude":
+        p^.url := "https://api.anthropic.com/v1";
+        p^.model := "claude-sonnet-5-5";
+        p^.keyEnv := "ANTHROPIC_API_KEY";
+    | else: return false;
+    end;
+    p^.name := name;
+    p^.dialect := openai;
+    if name = "claude" then p^.dialect := anthropic; end;
+    p^.backoff := 2;
+    p^.timeout := 300000;   (* a model may think for minutes before it says a word *)
+    return true;
+end;
+
+(* The value of the param key, or "" if p has none. *)
+proc param*(p: ^Prov; key: []U8): []U8;
+var i: INT; k, v: []U8; ok: BOOL;
+begin
+    for i := 0 to LEN(p^.params) - 1 do
+        k, v, ok := Str.cut(p^.params[i], "=");
+        if ok and (k = key) then return v; end;
+    end;
+    return "";
+end;
+
+(* How hard the model is to think: reasoning_effort@MODEL for p's
+   model, else reasoning_effort, else "". *)
+proc effort(p: ^Prov): []U8;
+var b: Buf.Buf; v: []U8;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.str(ADR(b), "reasoning_effort@");
+    Buf.str(ADR(b), p^.model);
+    v := param(p, Buf.bytes(ADR(b)));
+    if LEN(v) = 0 then v := param(p, "reasoning_effort"); end;
+    return v;   (* a slice of p's params, not of b *)
+end;
+
+(* The params a body carries as numbers, as config wrote them:
+   ,"key":value for each of keys that p has. *)
+proc numbers(p: ^Prov; b: ^Buf.Buf; keys: [][]U8);
+var i: INT; v: []U8;
+begin
+    for i := 0 to LEN(keys) - 1 do
+        v := param(p, keys[i]);
+        if LEN(v) > 0 then
+            Buf.str(b, ",\"");
+            Buf.str(b, keys[i]);
+            Buf.str(b, "\":");
+            Buf.str(b, v);
+        end;
+    end;
+end;
+
+(* request bodies *)
+
+(* r's body for an OpenAI-compatible server, into b. *)
+proc openaiBody(r: ^Request; b: ^Buf.Buf);
+var i: INT; e: []U8;
+begin
+    Buf.str(b, `{"model":`);
+    Amsg.quote(b, r^.prov^.model);
+    (* without stream_options a server streams no usage; with it, the
+       last chunk carries it *)
+    Buf.str(b, `,"stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":`);
+    Amsg.quote(b, r^.system);
+    Buf.add(b, '}');
+    for i := 0 to LEN(r^.msgs) - 1 do
+        Buf.add(b, ',');
+        Amsg.write(ADR(r^.msgs[i]), b);
+    end;
+    Buf.add(b, ']');
+    if LEN(r^.tools) > 0 then
+        Buf.str(b, `,"tools":[`);
+        for i := 0 to LEN(r^.tools) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            Buf.str(b, `{"type":"function","function":{"name":`);
+            Amsg.quote(b, r^.tools[i].name);
+            Buf.str(b, `,"description":`);
+            Amsg.quote(b, r^.tools[i].description);
+            Buf.str(b, `,"parameters":`);
+            Buf.str(b, r^.tools[i].params);
+            Buf.str(b, "}}");
+        end;
+        Buf.add(b, ']');
+    end;
+    numbers(r^.prov, b, ["temperature", "top_p", "max_tokens"]);
+    e := effort(r^.prov);
+    if LEN(e) > 0 then
+        Buf.str(b, `,"reasoning_effort":`);
+        Amsg.quote(b, e);
+    end;
+    Buf.add(b, '}');
+end;
+
+(* v, a value of d, added to b as compact JSON, its strings quoted as
+   Amsg quotes them: a tool call's input, parsed from its arguments,
+   as the Pascal arno wrote it back. *)
+proc compact(d: ^Json.Doc; v: Json.Value; b: ^Buf.Buf);
+var i: INT;
+begin
+    match Json.kind(d, v) of
+    | string: Amsg.quote(b, Json.text(d, v));
+    | number: Buf.str(b, Json.text(d, v));
+    | array:
+        Buf.add(b, '[');
+        for i := 0 to Json.len(d, v) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            compact(d, Json.item(d, v, i), b);
+        end;
+        Buf.add(b, ']');
+    | object:
+        Buf.add(b, '{');
+        for i := 0 to Json.len(d, v) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            Amsg.quote(b, Json.key(d, v, i));
+            Buf.add(b, ':');
+            compact(d, Json.item(d, v, i), b);
+        end;
+        Buf.add(b, '}');
+    | bool: if v = Json.True then Buf.str(b, "true"); else Buf.str(b, "false"); end;
+    | null, none: Buf.str(b, "null");
+    end;
+end;
+
+(* A call's arguments, args, as a tool_use block's input: the object
+   they parse to, or {} if they don't parse to one. *)
+proc input(args: []U8; b: ^Buf.Buf);
+var d: Json.Doc; text: Buf.Buf; v: Json.Value;
+begin
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    Buf.init(ADR(text), Heap.heap);   (* parsing rewrites its text *)
+    defer Buf.done(ADR(text));
+    Buf.str(ADR(text), args);
+    v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
+    if Json.kind(ADR(d), v) = Json.object then compact(ADR(d), v, b); else Buf.str(b, "{}"); end;
+end;
+
+(* An image's data: URL, data:MIME;base64,DATA, as Anthropic's image
+   block. arno sends no image but one it read and encoded itself, so
+   the URL always has that shape. *)
+proc image(url: []U8; b: ^Buf.Buf);
+var at: INT; mime, data: []U8;
+begin
+    mime := "";
+    data := "";
+    at := Str.find(url, ";base64,");
+    if Str.hasPrefix(url, "data:") and (at >= 5) then
+        mime := url[5..at];
+        data := url[at + 8..LEN(url)];
+    end;
+    Buf.str(b, `{"type":"image","source":{"type":"base64","media_type":`);
+    Amsg.quote(b, mime);
+    Buf.str(b, `,"data":`);
+    Amsg.quote(b, data);
+    Buf.str(b, "}}");
+end;
+
+(* A user turn's blocks come together in pend, joined by commas, and
+   go out as one turn when an assistant's comes or the conversation
+   ends. *)
+proc flush(b, pend: ^Buf.Buf; first: ^BOOL);
+begin
+    if pend^.len = 0 then return; end;
+    if not first^ then Buf.add(b, ','); end;
+    Buf.str(b, `{"role":"user","content":[`);
+    Buf.str(b, Buf.bytes(pend));
+    Buf.str(b, "]}");
+    first^ := false;
+    Buf.reset(pend);
+end;
+
+(* One more block of the user turn coming, which add has just begun
+   in pend: the comma before it if it isn't the first. *)
+proc block(pend: ^Buf.Buf);
+begin
+    if pend^.len > 0 then Buf.add(pend, ','); end;
+end;
+
+(* An assistant's message as Anthropic's turn, into b. *)
+proc assistantTurn(m: ^Amsg.Msg; b: ^Buf.Buf);
+var i: INT; calls: []Amsg.Call; any: BOOL;
+begin
+    Buf.str(b, `{"role":"assistant","content":[`);
+    any := false;
+    if LEN(Str.trim(m^.text)) > 0 then
+        Buf.str(b, `{"type":"text","text":`);
+        Amsg.quote(b, m^.text);
+        Buf.add(b, '}');
+        any := true;
+    end;
+    calls := Calls.all(ADR(m^.calls));
+    for i := 0 to LEN(calls) - 1 do
+        if any then Buf.add(b, ','); end;
+        Buf.str(b, `{"type":"tool_use","id":`);
+        Amsg.quote(b, calls[i].id);
+        Buf.str(b, `,"name":`);
+        Amsg.quote(b, calls[i].name);
+        Buf.str(b, `,"input":`);
+        input(calls[i].args, b);
+        Buf.add(b, '}');
+        any := true;
+    end;
+    if not any then Buf.str(b, `{"type":"text","text":"…"}`); end;
+    Buf.str(b, "]}");
+end;
+
+(* r's body for Anthropic, into b: the module's comment says how the
+   conversation is translated. *)
+proc anthropicBody(r: ^Request; b: ^Buf.Buf);
+var i, k: INT; m: ^Amsg.Msg; pend: Buf.Buf; first: BOOL; images: [][]U8; v: []U8;
+begin
+    Buf.init(ADR(pend), Heap.heap);
+    defer Buf.done(ADR(pend));
+    Buf.str(b, `{"model":`);
+    Amsg.quote(b, r^.prov^.model);
+    Buf.str(b, `,"max_tokens":`);
+    v := param(r^.prov, "max_tokens");
+    if LEN(v) = 0 then v := "8192"; end;
+    Buf.str(b, v);
+    Buf.str(b, `,"stream":true,"system":[{"type":"text","text":`);
+    Amsg.quote(b, r^.system);
+    Buf.str(b, "," + Mark + `}],"messages":[`);
+    first := true;
+    for i := 0 to LEN(r^.msgs) - 1 do
+        m := ADR(r^.msgs[i]);
+        match m^.role of
+        | user:
+            block(ADR(pend));
+            Buf.str(ADR(pend), `{"type":"text","text":`);
+            Amsg.quote(ADR(pend), m^.text);
+            Buf.add(ADR(pend), '}');
+            images := Strs.all(ADR(m^.images));
+            for k := 0 to LEN(images) - 1 do
+                block(ADR(pend));
+                image(images[k], ADR(pend));
+            end;
+        | tool:
+            block(ADR(pend));
+            Buf.str(ADR(pend), `{"type":"tool_result","tool_use_id":`);
+            Amsg.quote(ADR(pend), m^.callId);
+            Buf.str(ADR(pend), `,"content":`);
+            Amsg.quote(ADR(pend), m^.text);
+            Buf.add(ADR(pend), '}');
+        | assistant:
+            flush(b, ADR(pend), ADR(first));
+            if not first then Buf.add(b, ','); end;
+            assistantTurn(m, b);
+            first := false;
+        end;
+    end;
+    (* the second mark, on the newest block: every block is an object,
+       so its closing brace is pend's last byte *)
+    if pend.len > 0 then
+        DEC(pend.len);
+        Buf.str(ADR(pend), "," + Mark + "}");
+    end;
+    flush(b, ADR(pend), ADR(first));
+    Buf.add(b, ']');
+    if LEN(r^.tools) > 0 then
+        Buf.str(b, `,"tools":[`);
+        for i := 0 to LEN(r^.tools) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            Buf.str(b, `{"name":`);
+            Amsg.quote(b, r^.tools[i].name);
+            Buf.str(b, `,"description":`);
+            Amsg.quote(b, r^.tools[i].description);
+            Buf.str(b, `,"input_schema":`);
+            Buf.str(b, r^.tools[i].params);
+            Buf.add(b, '}');
+        end;
+        Buf.add(b, ']');
+    end;
+    numbers(r^.prov, b, ["temperature", "top_p"]);
+    (* Claude's current models think on their own and take only how
+       hard, here *)
+    v := effort(r^.prov);
+    if LEN(v) > 0 then
+        Buf.str(b, `,"output_config":{"effort":`);
+        Amsg.quote(b, v);
+        Buf.add(b, '}');
+    end;
+    Buf.add(b, '}');
+end;
+
+(* the reply *)
+
+proc initAcc(a: ^Acc; dialect: Dialect; emit: proc(text: []U8; arg: ^U8); arg: ^U8);
+begin
+    a^ := {dialect: dialect, emit: emit, arg: arg};
+    Buf.init(ADR(a^.line), Heap.heap);
+    Buf.init(ADR(a^.text), Heap.heap);
+    Buf.init(ADR(a^.think), Heap.heap);
+    Buf.init(ADR(a^.raw), Heap.heap);
+    Buf.init(ADR(a^.err), Heap.heap);
+    Slots.init(ADR(a^.slots), Heap.heap);
+    if not Json.init(ADR(a^.d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+end;
+
+proc doneAcc(a: ^Acc);
+var i: INT; s: []Slot;
+begin
+    Buf.done(ADR(a^.line));
+    Buf.done(ADR(a^.text));
+    Buf.done(ADR(a^.think));
+    Buf.done(ADR(a^.raw));
+    Buf.done(ADR(a^.err));
+    s := Slots.all(ADR(a^.slots));
+    for i := 0 to LEN(s) - 1 do
+        Buf.done(ADR(s[i].id));
+        Buf.done(ADR(s[i].name));
+        Buf.done(ADR(s[i].args));
+        Buf.done(ADR(s[i].extra));
+    end;
+    Slots.done(ADR(a^.slots));
+    Json.done(ADR(a^.d));
+end;
+
+(* Call k's slot, made, with every one before it, if it isn't there. *)
+proc slot(a: ^Acc; k: INT): ^Slot;
+var s: ^Slot;
+begin
+    while a^.slots.len <= k do
+        s := Slots.add(ADR(a^.slots));
+        Buf.init(ADR(s^.id), Heap.heap);
+        Buf.init(ADR(s^.name), Heap.heap);
+        Buf.init(ADR(s^.args), Heap.heap);
+        Buf.init(ADR(s^.extra), Heap.heap);
+    end;
+    return ADR(Slots.all(ADR(a^.slots))[k]);
+end;
+
+proc put(b: ^Buf.Buf; s: []U8);
+begin
+    Buf.reset(b);
+    Buf.str(b, s);
+end;
+
+(* A whole number of v, of a's event, or 0. *)
+proc int(a: ^Acc; v: Json.Value): I64;
+var n: I64; ok: BOOL;
+begin
+    n, ok := Json.toInt(ADR(a^.d), v);
+    if not ok then return 0; end;
+    return n;
+end;
+
+(* Reply text that came, kept and shown. *)
+proc said(a: ^Acc; s: []U8);
+begin
+    if LEN(s) = 0 then return; end;
+    Buf.str(ADR(a^.text), s);
+    if a^.emit # nil then a^.emit(s, a^.arg); end;
+end;
+
+(* The id of the last call that has come, or "" if none has. *)
+proc lastId(a: ^Acc): []U8;
+begin
+    if a^.slots.len = 0 then return ""; end;
+    return Buf.bytes(ADR(Slots.all(ADR(a^.slots))[a^.slots.len - 1].id));
+end;
+
+(* An OpenAI-compatible server's chunk: a delta of the text, the
+   thinking or the tool calls; the last, when asked, has the usage. *)
+proc openaiEvent(a: ^Acc; v: Json.Value);
+var d: ^Json.Doc; x, delta, calls, f, args: Json.Value; i, k: INT; s, id: []U8; total: I64; sl: ^Slot;
+begin
+    d := ADR(a^.d);
+    (* prompt_tokens counts the cached ones too. The reply is the total
+       less the prompt where there is a total: Gemini leaves its
+       thinking out of completion_tokens but bills it as output, and
+       counts it in the total; for every other the two agree. *)
+    x := Json.member(d, v, "usage");
+    if Json.kind(d, x) = Json.object then
+        a^.u.inp := int(a, Json.member(d, x, "prompt_tokens"));
+        a^.u.out := int(a, Json.member(d, x, "completion_tokens"));
+        total := int(a, Json.member(d, x, "total_tokens"));
+        if total > a^.u.inp then a^.u.out := total - a^.u.inp; end;
+        x := Json.member(d, x, "prompt_tokens_details");
+        if Json.kind(d, x) = Json.object then a^.u.cached := int(a, Json.member(d, x, "cached_tokens")); end;
+    end;
+    delta := Json.get(d, v, "choices[0].delta");
+    if delta = Json.None then return; end;
+    for i := 0 to LEN(Amsg.ThinkKeys) - 1 do
+        s := Json.text(d, Json.member(d, delta, Amsg.ThinkKeys[i]));
+        if LEN(s) > 0 then
+            Buf.str(ADR(a^.think), s);
+            a^.thinkKey := Amsg.ThinkKeys[i];
+        end;
+    end;
+    said(a, Json.text(d, Json.member(d, delta, "content")));
+    calls := Json.member(d, delta, "tool_calls");
+    for i := 0 to Json.len(d, calls) - 1 do
+        x := Json.item(d, calls, i);
+        id := Json.text(d, Json.member(d, x, "id"));
+        if Json.member(d, x, "index") # Json.None then
+            k := INT(int(a, Json.member(d, x, "index")));
+        elsif (LEN(id) > 0) and (lastId(a) # id) then
+            k := a^.slots.len;
+        else
+            k := a^.slots.len - 1;
+        end;
+        if k < 0 then k := 0; end;
+        sl := slot(a, k);
+        if LEN(id) > 0 then put(ADR(sl^.id), id); end;
+        if Json.member(d, x, "extra_content") # Json.None then
+            Buf.reset(ADR(sl^.extra));
+            compact(d, Json.member(d, x, "extra_content"), ADR(sl^.extra));
+        end;
+        f := Json.member(d, x, "function");
+        if f # Json.None then
+            s := Json.text(d, Json.member(d, f, "name"));
+            if LEN(s) > 0 then put(ADR(sl^.name), s); end;
+            (* arguments come as text in pieces, or from some servers
+               whole, as an object *)
+            args := Json.member(d, f, "arguments");
+            if Json.kind(d, args) = Json.string then
+                Buf.str(ADR(sl^.args), Json.text(d, args));
+            elsif Json.kind(d, args) = Json.object then
+                Buf.reset(ADR(sl^.args));
+                compact(d, args, ADR(sl^.args));
+            end;
+        end;
+    end;
+end;
+
+(* An Anthropic event, each of its own type: the blocks start, their
+   text and the tool calls' input come in deltas, and the usage comes
+   at the start and grows to the end. *)
+proc anthropicEvent(a: ^Acc; v: Json.Value);
+var d: ^Json.Doc; x: Json.Value; k: INT; sl: ^Slot;
+begin
+    d := ADR(a^.d);
+    k := INT(int(a, Json.member(d, v, "index")));
+    if k < 0 then k := 0; end;
+    match Json.text(d, Json.member(d, v, "type")) of
+    | "message_start":
+        (* the prompt in three parts, uncached, read from the cache and
+           written to it; summed, as Usage wants it whole *)
+        x := Json.get(d, v, "message.usage");
+        if Json.kind(d, x) = Json.object then
+            a^.u.cached := int(a, Json.member(d, x, "cache_read_input_tokens"));
+            a^.u.written := int(a, Json.member(d, x, "cache_creation_input_tokens"));
+            a^.u.inp := int(a, Json.member(d, x, "input_tokens")) + a^.u.cached + a^.u.written;
+            a^.u.out := int(a, Json.member(d, x, "output_tokens"));
+        end;
+    | "message_delta":
+        x := Json.get(d, v, "usage.output_tokens");
+        if x # Json.None then a^.u.out := int(a, x); end;
+    | "content_block_start":
+        sl := slot(a, k);
+        x := Json.member(d, v, "content_block");
+        if Json.text(d, Json.member(d, x, "type")) = "tool_use" then
+            put(ADR(sl^.id), Json.text(d, Json.member(d, x, "id")));
+            put(ADR(sl^.name), Json.text(d, Json.member(d, x, "name")));
+        end;
+    | "content_block_delta":
+        sl := slot(a, k);
+        x := Json.member(d, v, "delta");
+        match Json.text(d, Json.member(d, x, "type")) of
+        | "text_delta": said(a, Json.text(d, Json.member(d, x, "text")));
+        | "input_json_delta": Buf.str(ADR(sl^.args), Json.text(d, Json.member(d, x, "partial_json")));
+        | else:
+        end;
+    | else:
+    end;
+end;
+
+(* The message of an error a server answered, e, a value of d, into b:
+   its message if it is an object, itself if it is a string. *)
+proc errorOf(d: ^Json.Doc; e: Json.Value; b: ^Buf.Buf);
+begin
+    if Json.kind(d, e) = Json.object then
+        Buf.str(b, Json.text(d, Json.member(d, e, "message")));
+    else
+        Buf.str(b, Json.text(d, e));
+    end;
+end;
+
+(* One line of the reply. An event is a "data:" line of JSON; OpenAI's
+   last, [DONE], isn't JSON and is passed by. An "event:" line names
+   Anthropic's events, which their JSON names too. Any other line is
+   kept, for a reply that isn't a stream at all, such as an error. *)
+proc feed(a: ^Acc; line: []U8);
+var v, e: Json.Value;
+begin
+    if not Str.hasPrefix(line, "data:") then
+        if not Str.hasPrefix(line, "event:") then
+            Buf.str(ADR(a^.raw), line);
+            Buf.add(ADR(a^.raw), '\n');
+        end;
+        return;
+    end;
+    Json.reset(ADR(a^.d));
+    v := Json.parse(ADR(a^.d), Str.trim(line[5..LEN(line)]));
+    if v = Json.None then return; end;
+    a^.events := true;
+    e := Json.member(ADR(a^.d), v, "error");
+    if (e # Json.None) and (a^.err.len = 0) then errorOf(ADR(a^.d), e, ADR(a^.err)); end;
+    if a^.dialect = openai then openaiEvent(a, v); else anthropicEvent(a, v); end;
+end;
+
+(* What came of the reply, s, cut into lines, each fed as its line feed
+   comes; a line's carriage return is dropped. *)
+proc lines(a: ^Acc; s: []U8);
+var i, from: INT; l: []U8;
+begin
+    from := 0;
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = '\n' then
+            Buf.str(ADR(a^.line), s[from..i]);
+            l := Buf.bytes(ADR(a^.line));
+            if Str.hasSuffix(l, "\r") then l := l[0..LEN(l) - 1]; end;
+            feed(a, l);
+            Buf.reset(ADR(a^.line));
+            from := i + 1;
+        end;
+    end;
+    Buf.str(ADR(a^.line), s[from..LEN(s)]);
+end;
+
+(* The last line, if the reply didn't end it. *)
+proc ended(a: ^Acc);
+begin
+    if a^.line.len > 0 then lines(a, "\n"); end;
+end;
+
+var callSeq: INT;   (* the ids made for calls that came without one *)
+
+(* An id for a call that came without one, as some OpenAI-compatible
+   servers send them: unique while the program runs, and in the shape
+   Kimi K2 was trained on, functions.NAME:N, since an open model sees
+   ids in its own template, and one it knows is one less to confuse
+   it; every other provider takes an id as it is. *)
+proc newId(name: []U8; b: ^Buf.Buf);
+var n: INT; digits: [20]U8;
+begin
+    Buf.str(b, "functions.");
+    Buf.str(b, name);
+    Buf.add(b, ':');
+    digits, n := Str.fromInt(I64(XADD(ADR(callSeq), 1)));
+    Buf.str(b, digits[0..n]);
+end;
+
+
+(* The reply that came, as an assistant's message, into m, made empty:
+   its text and thinking, and its calls unless stopped, since a call
+   half made can't be run. A slot without a name is a text block's,
+   or none. *)
+proc made(a: ^Acc; m: ^Amsg.Msg; stopped: BOOL);
+var i: INT; s: []Slot; id: Buf.Buf; args: []U8;
+begin
+    Amsg.setText(m, Buf.bytes(ADR(a^.text)));
+    if a^.think.len > 0 then
+        m^.think := Amsg.keep(Buf.bytes(ADR(a^.think)));
+        m^.thinkKey := Amsg.keep(a^.thinkKey);
+    end;
+    if stopped then return; end;
+    Buf.init(ADR(id), Heap.heap);
+    defer Buf.done(ADR(id));
+    s := Slots.all(ADR(a^.slots));
+    for i := 0 to LEN(s) - 1 do
+        if s[i].name.len > 0 then
+            Buf.reset(ADR(id));
+            Buf.str(ADR(id), Buf.bytes(ADR(s[i].id)));
+            if id.len = 0 then newId(Buf.bytes(ADR(s[i].name)), ADR(id)); end;
+            args := Buf.bytes(ADR(s[i].args));
+            if LEN(Str.trim(args)) = 0 then args := "{}"; end;
+            Amsg.addCall(m, Buf.bytes(ADR(id)), Buf.bytes(ADR(s[i].name)), args, Buf.bytes(ADR(s[i].extra)));
+        end;
+    end;
+end;
+
+(* the exchange *)
+
+(* cl made a client for chat: https: by Tls, its connection kept from
+   one request to the next. *)
+proc initClient*(cl: ^Http.Client);
+begin
+    Http.initClient(cl);
+    cl^.tls := Tls.dial;
+end;
+
+(* s and t joined, in b. *)
+proc join(b: ^Buf.Buf; s, t: []U8): []U8;
+begin
+    Buf.reset(b);
+    Buf.str(b, s);
+    Buf.str(b, t);
+    return Buf.bytes(b);
+end;
+
+(* One try of the request whose body is body, with key: the reply fed
+   to a; *got set once any of it has come, *stopped if r's stopped
+   said to stop, *status the response's. Its error is a failure to
+   reach the server, or of the connection; an error the server
+   answered is in a, for the caller to find. *)
+proc exchange(r: ^Request; key, body: []U8; a: ^Acc; got, stopped: ^BOOL; status: ^INT): ERROR;
+var req, res: Http.Message; url, auth: Buf.Buf; rd: ^Http.Reader; chunk: [16384]U8; n: INT;
+    err: ERROR; version: []U8;
+begin
+    Http.init(ADR(req), Heap.heap);
+    Http.init(ADR(res), Heap.heap);
+    Buf.init(ADR(url), Heap.heap);
+    Buf.init(ADR(auth), Heap.heap);
+    defer Http.done(ADR(req));
+    defer Http.done(ADR(res));
+    defer Buf.done(ADR(url));
+    defer Buf.done(ADR(auth));
+    req.method := "POST";
+    req.body := body;
+    try Http.add(ADR(req), "Content-Type", "application/json");
+    if r^.prov^.dialect = anthropic then
+        try Http.add(ADR(req), "x-api-key", key);
+        version := param(r^.prov, "anthropic_version");
+        if LEN(version) = 0 then version := "2023-06-01"; end;
+        try Http.add(ADR(req), "anthropic-version", version);
+        _ := join(ADR(url), r^.prov^.url, "/messages");
+    else
+        if LEN(key) > 0 then try Http.add(ADR(req), "Authorization", join(ADR(auth), "Bearer ", key)); end;
+        _ := join(ADR(url), r^.prov^.url, "/chat/completions");
+    end;
+    r^.client^.timeout := r^.prov^.timeout;
+    rd := try Http.open(r^.client, ADR(req), Buf.bytes(ADR(url)), ADR(res));
+    status^ := res.status;
+    repeat
+        n, err := Http.read(rd, chunk);
+        if n > 0 then
+            got^ := true;
+            lines(a, chunk[0..n]);
+        end;
+        (* asked after each read, so that a stop that broke into the
+           wait, as ^C does, is heard at once *)
+        if (r^.stopped # nil) and r^.stopped() then
+            stopped^ := true;
+            return nil;
+        end;
+    until (err # nil) or (n = 0);
+    if err # nil then return err; end;
+    ended(a);
+    return nil;
+end;
+
+(* Why a request failed, into why: the status, if the server answered
+   one of its errors; then the error an event or the body gave, or the
+   body itself, 400 bytes of it at most, or why the connection failed. *)
+proc explain(a: ^Acc; err: ERROR; status: INT; why: ^Buf.Buf);
+var digits: [20]U8; n: INT; raw: Buf.Buf; d: Json.Doc; e: Json.Value; text: []U8;
+begin
+    if status >= 400 then
+        digits, n := Str.fromInt(status);
+        Buf.str(why, "HTTP ");
+        Buf.str(why, digits[0..n]);
+        Buf.str(why, ": ");
+    end;
+    if a^.err.len > 0 then Buf.str(why, Buf.bytes(ADR(a^.err))); return; end;
+    text := Str.trim(Buf.bytes(ADR(a^.raw)));
+    Buf.init(ADR(raw), Heap.heap);   (* parsing rewrites its text *)
+    defer Buf.done(ADR(raw));
+    Buf.str(ADR(raw), text);
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    e := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(ADR(raw))), "error");
+    if e # Json.None then
+        errorOf(ADR(d), e, why);
+    elsif LEN(text) > 400 then
+        Buf.str(why, text[0..400]);
+    elsif LEN(text) > 0 then
+        Buf.str(why, text);
+    elsif err # nil then
+        Buf.str(why, MSG(err));
+    else
+        Buf.str(why, "no response");
+    end;
+end;
+
+(* r sent, and its reply read into m, made an assistant's message
+   whatever comes of it, for the caller to free; and what it cost in
+   u, as far as the server said. Failed, with why in why; Stopped if
+   r's stopped said so, with what came in m. *)
+proc chat*(r: ^Request; m: ^Amsg.Msg; u: ^Usage; why: ^Buf.Buf): ERROR;
+var key: []U8; body: Buf.Buf; a: Acc; tries, status, wait: INT; err: ERROR; got, stopped: BOOL;
+begin
+    Amsg.init(m, Amsg.assistant);
+    u^ := {};
+    key := "";
+    if LEN(r^.prov^.keyEnv) > 0 then
+        key := Sys.env(r^.prov^.keyEnv);
+        if LEN(key) = 0 then
+            Buf.str(why, r^.prov^.keyEnv);
+            Buf.str(why, " is not set");
+            return Failed;
+        end;
+    end;
+    Buf.init(ADR(body), Heap.heap);
+    defer Buf.done(ADR(body));
+    if r^.prov^.dialect = anthropic then anthropicBody(r, ADR(body)); else openaiBody(r, ADR(body)); end;
+    tries := 0;
+    repeat
+        initAcc(ADR(a), r^.prov^.dialect, r^.emit, r^.arg);
+        got := false;
+        stopped := false;
+        status := 0;
+        err := exchange(r, key, Buf.bytes(ADR(body)), ADR(a), ADR(got), ADR(stopped), ADR(status));
+        if (err = nil) or got or stopped or (tries >= r^.prov^.retries) then break; end;
+        doneAcc(ADR(a));
+        wait := r^.prov^.backoff shl tries;
+        if wait > 30 then wait := 30; end;
+        Sys.sleep(1000 * wait);
+        INC(tries);
+    until false;
+    defer doneAcc(ADR(a));
+    u^ := a.u;
+    if stopped then
+        made(ADR(a), m, true);
+        return Stopped;
+    end;
+    if (a.err.len > 0) or (err # nil) or not a.events then
+        explain(ADR(a), err, status, why);
+        return Failed;
+    end;
+    made(ADR(a), m, false);
+    return nil;
+end;
+
+(* The test: the bodies against the Pascal arno's own, for the same
+   conversation (its functions, copied into a program, wrote them);
+   replies of both dialects put together, coming a few bytes at a
+   time; and whole requests, to a server of the test's own, answered,
+   refused, failed and stopped. *)
+
+
+
+var failed: BOOL;
+
+proc fail(what: []U8);
+begin
+    Out.str("Awire: ");
+    Out.str(what);
+    Out.ln;
+    failed := true;
+end;
+
+proc expect(what, got, want: []U8);
+begin
+    if got = want then return; end;
+    fail(what);
+    Out.str("  got:  ");
+    Out.str(got);
+    Out.str("\n  want: ");
+    Out.str(want);
+    Out.ln;
+end;
+
+proc expectInt(what: []U8; got, want: I64);
+begin
+    if got = want then return; end;
+    fail(what);
+    Out.str("  got ");
+    Out.int(got);
+    Out.str(", want ");
+    Out.int(want);
+    Out.ln;
+end;
+
+(* the conversation, the tools and the system prompt the Pascal arno
+   was given, and the bodies it wrote for them, as its test had them *)
+const History = `[{"role":"user","content":"a \"quote\", é, a tab\t and \u0001"},{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"git","arguments":"{\"args\":[\"status\"]}"}},{"id":"call_2","type":"function","function":{"name":"read","arguments":"not json"},"extra_content":{"google":{"thought_signature":"c2ln"}}}]},{"role":"tool","tool_call_id":"call_1","name":"git","content":"(no output)"},{"role":"tool","tool_call_id":"call_2","name":"read","content":"no such file"},{"role":"user","content":"and now?"},{"role":"assistant","content":"  ","reasoning_content":"nothing to say"},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}]`;
+    Tools: []Tool = [{name: "read", description: "Read a file.",
+            params: `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`},
+        {name: "git", description: "Run git, read-only.",
+            params: `{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"}}}}`}];
+    System = "You are arno.\nBe \"brief\".";
+    OpenaiM1 = `{"model":"m1","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"You are arno.\nBe \"brief\"."},{"role":"user","content":"a \"quote\", é, a tab\t and \u0001"},{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"git","arguments":"{\"args\":[\"status\"]}"}},{"id":"call_2","type":"function","function":{"name":"read","arguments":"not json"},"extra_content":{"google":{"thought_signature":"c2ln"}}}]},{"role":"tool","tool_call_id":"call_1","name":"git","content":"(no output)"},{"role":"tool","tool_call_id":"call_2","name":"read","content":"no such file"},{"role":"user","content":"and now?"},{"role":"assistant","content":"  ","reasoning_content":"nothing to say"},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}],"tools":[{"type":"function","function":{"name":"read","description":"Read a file.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}},{"type":"function","function":{"name":"git","description":"Run git, read-only.","parameters":{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"}}}}}}],"temperature":0.2,"max_tokens":1000,"reasoning_effort":"high"}`;
+    AnthropicM1 = `{"model":"m1","max_tokens":1000,"stream":true,"system":[{"type":"text","text":"You are arno.\nBe \"brief\".","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"a \"quote\", é, a tab\t and \u0001"}]},{"role":"assistant","content":[{"type":"text","text":"I'll look."},{"type":"tool_use","id":"call_1","name":"git","input":{"args":["status"]}},{"type":"tool_use","id":"call_2","name":"read","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"(no output)"},{"type":"tool_result","tool_use_id":"call_2","content":"no such file"},{"type":"text","text":"and now?"}]},{"role":"assistant","content":[{"type":"text","text":"…"}]},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"},"cache_control":{"type":"ephemeral"}}]}],"tools":[{"name":"read","description":"Read a file.","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},{"name":"git","description":"Run git, read-only.","input_schema":{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"}}}}}],"temperature":0.2,"output_config":{"effort":"high"}}`;
+    OpenaiM2 = `{"model":"m2","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"You are arno.\nBe \"brief\"."},{"role":"user","content":"a \"quote\", é, a tab\t and \u0001"},{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"git","arguments":"{\"args\":[\"status\"]}"}},{"id":"call_2","type":"function","function":{"name":"read","arguments":"not json"},"extra_content":{"google":{"thought_signature":"c2ln"}}}]},{"role":"tool","tool_call_id":"call_1","name":"git","content":"(no output)"},{"role":"tool","tool_call_id":"call_2","name":"read","content":"no such file"},{"role":"user","content":"and now?"},{"role":"assistant","content":"  ","reasoning_content":"nothing to say"},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}]}`;
+    AnthropicM2 = `{"model":"m2","max_tokens":8192,"stream":true,"system":[{"type":"text","text":"You are arno.\nBe \"brief\".","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"a \"quote\", é, a tab\t and \u0001"}]},{"role":"assistant","content":[{"type":"text","text":"I'll look."},{"type":"tool_use","id":"call_1","name":"git","input":{"args":["status"]}},{"type":"tool_use","id":"call_2","name":"read","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"(no output)"},{"type":"tool_result","tool_use_id":"call_2","content":"no such file"},{"type":"text","text":"and now?"}]},{"role":"assistant","content":[{"type":"text","text":"…"}]},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"},"cache_control":{"type":"ephemeral"}}]}]}`;
+
+    (* replies, of every piece a server sends *)
+    OpenaiStream = `
+        data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"think "}}]}
+        data: {"choices":[{"delta":{"reasoning_content":"hard"}}]}
+
+        data: {"choices":[{"delta":{"content":"Hel"}}]}
+        data: {"choices":[{"delta":{"content":"lo"}}]}
+        data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{\"pa"}}]}}]}
+        data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a\"}"}}]}}]}
+        data: {"choices":[{"delta":{"tool_calls":[{"id":"c2","function":{"name":"git","arguments":{"args":["log"]}},"extra_content":{"google":{"thought_signature":"x"}}}]}}]}
+        data: {"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"name":"find"}}]}}]}
+        data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":80}}}
+        data: [DONE]
+        `;
+    OpenaiReply = `{"role":"assistant","content":"Hello","reasoning_content":"think hard","tool_calls":[` +
+        `{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}},` +
+        `{"id":"c2","type":"function","function":{"name":"git","arguments":"{\"args\":[\"log\"]}"},` +
+        `"extra_content":{"google":{"thought_signature":"x"}}},` +
+        `{"id":"functions.find:0","type":"function","function":{"name":"find","arguments":"{}"}}]}`;
+    AnthropicStream = `
+        event: message_start
+        data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":200,"cache_creation_input_tokens":30,"output_tokens":1}}}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+        data: {"type":"content_block_stop","index":0}
+        data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}
+        data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}
+        data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"b\"}"}}
+        data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":42}}
+        data: {"type":"message_stop"}
+        `;
+    AnthropicReply = `{"role":"assistant","content":"Hi","tool_calls":[` +
+        `{"id":"toolu_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"b\"}"}}]}`;
+    Overloaded = `
+        event: error
+        data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+        `;
+    Denied = `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`;
+
+var history: Msgs.Vec;
+
+(* History, read into history. *)
+proc readHistory;
+var d: Json.Doc; text: Buf.Buf; v: Json.Value; i: INT;
+begin
+    Msgs.init(ADR(history), Heap.heap);
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(ADR(d));
+    Buf.init(ADR(text), Heap.heap);
+    defer Buf.done(ADR(text));
+    Buf.str(ADR(text), History);
+    v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
+    for i := 0 to Json.len(ADR(d), v) - 1 do
+        if Amsg.read(ADR(d), Json.item(ADR(d), v, i), Msgs.add(ADR(history))) # nil then fail("History"); end;
+    end;
+end;
+
+(* r's body in both dialects, against the Pascal arno's. *)
+proc bodies(r: ^Request; openaiWant, anthropicWant: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    openaiBody(r, ADR(b));
+    expect("the OpenAI body", Buf.bytes(ADR(b)), openaiWant);
+    Buf.reset(ADR(b));
+    anthropicBody(r, ADR(b));
+    expect("the Anthropic body", Buf.bytes(ADR(b)), anthropicWant);
+end;
+
+(* stream fed a few bytes at a time, as a server's pieces may cut it
+   anywhere: the message it makes, and its usage. *)
+proc pieces(dialect: Dialect; stream, want: []U8; u: Usage);
+var a: Acc; m: Amsg.Msg; b: Buf.Buf; i, j: INT;
+begin
+    initAcc(ADR(a), dialect, nil, nil);
+    defer doneAcc(ADR(a));
+    i := 0;
+    while i < LEN(stream) do
+        j := i + 7;
+        if j > LEN(stream) then j := LEN(stream); end;
+        lines(ADR(a), stream[i..j]);
+        i := j;
+    end;
+    ended(ADR(a));
+    Amsg.init(ADR(m), Amsg.assistant);
+    made(ADR(a), ADR(m), false);
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Amsg.write(ADR(m), ADR(b));
+    Amsg.free(ADR(m));
+    expect("a reply put together", Buf.bytes(ADR(b)), want);
+    expectInt("its tokens in", a.u.inp, u.inp);
+    expectInt("its tokens cached", a.u.cached, u.cached);
+    expectInt("its tokens written", a.u.written, u.written);
+    expectInt("its tokens out", a.u.out, u.out);
+end;
+
+(* the server: each path an answer *)
+
+var server: Http.Server; listening: INT; asked, apiKey: Buf.Buf; shown: Buf.Buf;
+
+proc answer(req, res: ^Http.Message; _arg: ^U8);
+begin
+    Buf.reset(ADR(asked));
+    Buf.str(ADR(asked), req^.body);
+    Buf.reset(ADR(apiKey));
+    Buf.str(ADR(apiKey), Http.header(req, "x-api-key"));
+    _ := Http.add(res, "Content-Type", "text/event-stream");
+    match req^.target of
+    | "/o/chat/completions": res^.body := OpenaiStream;
+    | "/a/messages": res^.body := AnthropicStream;
+    | "/overloaded/messages": res^.body := Overloaded;
+    | "/denied/messages":
+        res^.status := 401;
+        res^.body := Denied;
+    | else: res^.status := 404;
+    end;
+end;
+
+proc serving(_arg: ^U8);
+begin
+    _ := Http.serve(ADR(server), listening);
+end;
+
+proc show(text: []U8; _arg: ^U8);
+begin
+    Buf.str(ADR(shown), text);
+end;
+
+proc always: BOOL;
+begin
+    return true;
+end;
+
+(* r sent to the test's server at path: chat's error, and why. *)
+proc ask(r: ^Request; prov: ^Prov; url: []U8; m: ^Amsg.Msg; u: ^Usage; why: ^Buf.Buf): ERROR;
+begin
+    prov^.url := url;
+    Buf.reset(why);
+    Buf.reset(ADR(shown));
+    return chat(r, m, u, why);
+end;
+
+proc main*: INT;
+var p: Prov; r: Request; cl: Http.Client; m: Amsg.Msg; u: Usage; why, url: Buf.Buf; err: ERROR;
+    base: [20]U8; n: INT;
+begin
+    readHistory;
+    _ := preset("ollama", ADR(p));
+    p.model := "m1";
+    p.params := ["temperature=0.2", "max_tokens=1000", "reasoning_effort@m1=high", "reasoning_effort=low"];
+    r := {prov: ADR(p), system: System, msgs: Msgs.all(ADR(history)), tools: Tools};
+    bodies(ADR(r), OpenaiM1, AnthropicM1);
+    p.model := "m2";
+    p.params := [];
+    r.tools := [];
+    bodies(ADR(r), OpenaiM2, AnthropicM2);
+
+    pieces(openai, OpenaiStream, OpenaiReply, {inp: 100, cached: 80, out: 20});
+    pieces(anthropic, AnthropicStream, AnthropicReply, {inp: 240, cached: 200, written: 30, out: 42});
+
+    Buf.init(ADR(asked), Heap.heap);
+    Buf.init(ADR(apiKey), Heap.heap);
+    Buf.init(ADR(shown), Heap.heap);
+    Buf.init(ADR(why), Heap.heap);
+    Buf.init(ADR(url), Heap.heap);
+    listening := Sys.listenTcp("127.0.0.1", 0);
+    if listening < 0 then fail("listen"); return 1; end;
+    Http.initServer(ADR(server), answer, nil);
+    server.workers := 4;
+    _, err := Thread.spawn(serving, nil);
+    if err # nil then fail("the server's thread"); return 1; end;
+    base, n := Str.fromInt(Sys.localPort(listening));
+    Buf.str(ADR(url), "http://127.0.0.1:");
+    Buf.str(ADR(url), base[0..n]);
+    initClient(ADR(cl));
+    r.client := ADR(cl);
+    r.emit := show;
+
+    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(ADR(url)), "/o"), ADR(m), ADR(u), ADR(why));
+    if err # nil then fail("an OpenAI request"); Out.str(Buf.bytes(ADR(why))); Out.ln; end;
+    expect("what went to emit", Buf.bytes(ADR(shown)), "Hello");
+    expectInt("the tokens out", u.out, 20);
+    expectInt("the calls", m.calls.len, 3);
+    Amsg.free(ADR(m));
+
+    Buf.reset(ADR(why));
+    p.dialect := anthropic;
+    p.keyEnv := "HOME";   (* a key that is always set *)
+    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(ADR(url)), "/a"), ADR(m), ADR(u), ADR(why));
+    if err # nil then fail("an Anthropic request"); Out.str(Buf.bytes(ADR(why))); Out.ln; end;
+    expect("the text", m.text, "Hi");
+    expect("the key sent", Buf.bytes(ADR(apiKey)), Sys.env("HOME"));
+    Buf.reset(ADR(why));
+    anthropicBody(ADR(r), ADR(why));
+    expect("the body sent", Buf.bytes(ADR(asked)), Buf.bytes(ADR(why)));
+    Amsg.free(ADR(m));
+
+    Buf.reset(ADR(why));
+    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(ADR(url)), "/denied"), ADR(m), ADR(u), ADR(why));
+    if err # Failed then fail("a refusal"); end;
+    expect("a refusal's why", Buf.bytes(ADR(why)), "HTTP 401: invalid x-api-key");
+    Amsg.free(ADR(m));
+
+    Buf.reset(ADR(why));
+    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(ADR(url)), "/overloaded"), ADR(m), ADR(u), ADR(why));
+    if err # Failed then fail("an error event"); end;
+    expect("an error event's why", Buf.bytes(ADR(why)), "Overloaded");
+    Amsg.free(ADR(m));
+
+    Buf.reset(ADR(why));
+    r.stopped := always;
+    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(ADR(url)), "/a"), ADR(m), ADR(u), ADR(why));
+    if err # Stopped then fail("a stop"); end;
+    expect("a stop's text", m.text, "Hi");
+    expectInt("a stop's calls", m.calls.len, 0);
+    Amsg.free(ADR(m));
+    r.stopped := nil;
+
+    err := ask(ADR(r), ADR(p), "http://127.0.0.1:1", ADR(m), ADR(u), ADR(why));
+    if (err # Failed) or (why.len = 0) then fail("a server that isn't there"); end;
+    Amsg.free(ADR(m));
+
+    p.keyEnv := "ARNO_TEST_NO_SUCH_KEY";
+    err := ask(ADR(r), ADR(p), Buf.bytes(ADR(url)), ADR(m), ADR(u), ADR(why));
+    expect("a key not set", Buf.bytes(ADR(why)), "ARNO_TEST_NO_SUCH_KEY is not set");
+    Amsg.free(ADR(m));
+
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Awire.
