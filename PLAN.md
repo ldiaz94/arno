@@ -78,8 +78,15 @@ one or more commits that build with `-Werror`.
      UTF-8; and the list holds only conversations, not `notes.json`,
      `stage.json` and `tests.json`, which the Pascal arno listed
      untitled.
-   - [ ] c. `Aconf` and `Arno`: the config (providers, params, keys),
-     and the one-shot program.
+   - [x] c. `Aconf` and `Arno`: the config (providers, params, keys),
+     the Pascal arno's file and keys, and the one-shot program, `arno
+     PROMPT` and `arno --resume ID PROMPT`, its reply streamed to
+     standard output and what it says to standard error. Without the
+     tools a turn has a short system prompt of its own, until stage 2
+     brings the agent's. `test/oneshot.cn` runs it against a model's
+     server of the test's own (`test/Astub.raz`). The config's
+     `timeout` is the Pascal arno's, seconds for the whole request
+     (curl's `max-time`), now rnet's deadline.
 2. **The agent.** `Agent` and `Board`: the loop of tool calls, read,
    find, grep, outline, edit (each approved), the fence, notes, memory,
    context files, `ahead`, `delegate` (a plain tool for a leading

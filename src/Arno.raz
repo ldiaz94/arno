@@ -1,0 +1,141 @@
+(* Arno: a harness for language models in the terminal. This is the
+   program; for now it asks one question and leaves:
+
+       arno PROMPT ...              a new conversation of one turn
+       arno --resume ID PROMPT ...  one more turn of the saved one, ID
+       arno -h | --help             the usage
+
+   The prompt is the arguments, joined by blanks. The reply goes to
+   standard output as it comes; ^C stops it, keeping what came. The
+   conversation is saved, the turn's prompt and reply in it, so that
+   --resume goes on from it; what arno says of it, and what goes
+   wrong, go to standard error. The status is 0 for a reply, 1 for a
+   request that failed or a conversation not found, 2 for a mistake
+   on the command line, 130 for a reply stopped by ^C.
+
+   Depends on Aconf, Astore, Awire and Amsg. Leaves out, for the
+   stages after this one, what the Pascal arno's one-shot run has
+   besides: the tools, and the system prompt they need; the screen,
+   --serve and --attach. *)
+module Arno;
+import Aconf, Astore, Awire, Amsg, Http, Buf, Str, Sys, Files, Out, Heap, Msgs := Vec(Amsg.Msg);
+
+const Usage = `
+    usage: arno [prompt ...]
+           arno --resume id prompt ...
+           arno -h | --help
+    `;
+
+var stopped: BOOL;
+
+(* ^C, noted by Sys.handle, says to stop the reply; asked by Awire
+   after each read, which ^C also breaks into. *)
+proc interrupted: BOOL;
+begin
+    if Sys.came(Sys.sigInt) then stopped := true; end;
+    return stopped;
+end;
+
+var ended: BOOL;   (* the last piece of the reply ended its line *)
+
+proc show(text: []U8; _arg: ^U8);
+begin
+    Out.str(text);
+    Out.flush;
+    ended := Str.hasSuffix(text, "\n");
+end;
+
+proc say(a, b, c: []U8);
+begin
+    _ := Sys.write(Sys.stderr, a);
+    _ := Sys.write(Sys.stderr, b);
+    _ := Sys.write(Sys.stderr, c);
+end;
+
+(* The system prompt of a turn without tools: what day it is and
+   where, until the agent's own comes. *)
+proc system(b: ^Buf.Buf);
+var dir: []U8; e: INT;
+begin
+    Buf.str(b, "You are arno, a harness for language models in a terminal. Answer briefly and plainly.\n");
+    dir, e := Sys.workDir();
+    if e = 0 then
+        Buf.str(b, "The working directory is ");
+        Buf.str(b, dir);
+        Buf.str(b, ".\n");
+    end;
+end;
+
+proc main*: INT;
+var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, sys, why, id: Buf.Buf; m: ^Amsg.Msg;
+    r: Awire.Request; cl: Http.Client; reply: Amsg.Msg; u: Awire.Usage; err: ERROR;
+begin
+    if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
+        Out.str(Usage);
+        return 0;
+    end;
+    first := 1;
+    if (ARGC() >= 2) and (Files.arg(1) = "--resume") then first := 3; end;
+    if (ARGC() >= 2) and ((Files.arg(1) = "--serve") or (Files.arg(1) = "--attach")) then
+        say("arno: ", Files.arg(1), " is not here yet\n");
+        return 2;
+    end;
+    Buf.init(ADR(prompt), Heap.heap);
+    for i := first to ARGC() - 1 do
+        if i > first then Buf.add(ADR(prompt), ' '); end;
+        Buf.str(ADR(prompt), Files.arg(i));
+    end;
+    (* an empty prompt is a mistake of the script that made it, a
+       prompt file never written, not a question for a model *)
+    if (ARGC() < 2) or (LEN(Str.trim(Buf.bytes(ADR(prompt)))) = 0) then
+        say("arno: no prompt\n", "", "");
+        _ := Sys.write(Sys.stderr, Usage);
+        return 2;
+    end;
+
+    Aconf.load(ADR(conf));
+    if conf.warnings.len > 0 then say(Buf.bytes(ADR(conf.warnings)), "", ""); end;
+    Buf.init(ADR(id), Heap.heap);
+    if first = 3 then
+        if Astore.load(ADR(c), Files.arg(2)) # nil then
+            say("arno: no conversation ", Files.arg(2), "\n");
+            return 1;
+        end;
+    else
+        Astore.newId(ADR(id));
+        Astore.init(ADR(c), Buf.bytes(ADR(id)));
+    end;
+    Astore.setModel(ADR(c), conf.prov.model);
+    m := Msgs.add(ADR(c.msgs));
+    Amsg.init(m, Amsg.Role.user);
+    Amsg.setText(m, Str.trim(Buf.bytes(ADR(prompt))));
+
+    Buf.init(ADR(sys), Heap.heap);
+    Buf.init(ADR(why), Heap.heap);
+    if LEN(c.system) > 0 then Buf.str(ADR(sys), c.system); else system(ADR(sys)); end;
+    Awire.initClient(ADR(cl));
+    r := {prov: ADR(conf.prov), client: ADR(cl), system: Buf.bytes(ADR(sys)), msgs: Msgs.all(ADR(c.msgs)),
+        emit: show, stopped: interrupted};
+    _ := Sys.handle(Sys.sigInt);
+    ended := true;
+    err := Awire.chat(ADR(r), ADR(reply), ADR(u), ADR(why));
+    if not ended then Out.ln; end;
+    Out.flush;
+
+    (* the turn is over: what it kept for itself goes *)
+    Amsg.settle(ADR(reply));
+    if (err = nil) or (LEN(reply.text) > 0) then
+        Msgs.push(ADR(c.msgs), reply);
+    else
+        Amsg.free(ADR(reply));
+    end;
+    if Astore.save(ADR(c)) # nil then say("arno: the conversation can't be saved in ", Astore.dir(), "\n"); end;
+    if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(why)), "\n"); end;
+    if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;
+    say("arno --resume ", c.id, " PROMPT goes on from here\n");
+    if err = Awire.Failed then return 1; end;
+    if err = Awire.Stopped then return 130; end;
+    return 0;
+end;
+
+end Arno.

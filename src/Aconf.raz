@@ -1,0 +1,283 @@
+(* Aconf: arno's configuration, $XDG_CONFIG_HOME/arno/config, or
+   ~/.config/arno/config.
+
+   The file is the Pascal arno's: a setting to a line, key = value,
+   blanks around either taken off; a line that is empty, begins with #
+   or has no = is passed by. A key given twice is the last one's.
+
+   The keys that say which provider and how to ask it are read into a
+   provider, an Awire.Prov:
+
+       provider       one of Awire.Presets, its url, model and key's
+                      variable; the params before it are dropped
+       model, url     the provider's own, in place of the preset's
+       key            the environment variable of its key
+       dialect        anthropic, or else OpenAI's
+       timeout        seconds a request may take in all; 0, none
+       max_retries    times a request whose connection failed is made
+                      again; 0
+       retry_backoff  seconds before the first; 2, doubled each time
+       effort         MODEL:LEVEL ..., the reasoning effort for each
+                      model, as the param reasoning_effort@MODEL
+
+   The keys the rest of arno reads (run, max_steps, mcp and the
+   others, Known below) are kept for it to ask by get. Any other is a
+   param of the provider, key=value, which a request carries if it
+   knows it (temperature, top_p, max_tokens, anthropic_version ...),
+   so that a provider's field needs no new key here.
+
+   What is wrong with the file, an unknown provider or a number that
+   isn't one, is said in warnings, a line each, and the rest is read
+   as if the line weren't there.
+
+   Depends on Awire, for Prov. Leaves out what each key of the rest of
+   arno means. *)
+module Aconf;
+import Awire, Amsg, Buf, Str, Sys, Files, Heap, Out, Strs := Vec([]U8);
+
+type
+    Conf* = record
+        prov*: Awire.Prov;      (* its strings are the file's, or the preset's *)
+        warnings*: Buf.Buf;     (* what is wrong with the file, a line each *)
+        text: Buf.Buf;          (* the file, which the settings are slices of *)
+        keys, values: Strs.Vec; (* every setting, in the file's order *)
+        params: Strs.Vec;       (* the provider's params, each its own block *)
+    end;
+
+const
+    (* the keys the rest of arno reads, which are no provider's param *)
+    Known: [][]U8 = ["worker", "max_steps", "prune", "turn_budget", "mode", "searxng", "test_cmd", "stage",
+        "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
+        "trust", "grant", "context_files", "project_map", "prefetch", "mcp"];
+
+(* c made a configuration of nothing: the ollama preset. *)
+proc init*(c: ^Conf);
+begin
+    c^ := {};
+    Buf.init(ADR(c^.warnings), Heap.heap);
+    Buf.init(ADR(c^.text), Heap.heap);
+    Strs.init(ADR(c^.keys), Heap.heap);
+    Strs.init(ADR(c^.values), Heap.heap);
+    Strs.init(ADR(c^.params), Heap.heap);
+    _ := Awire.preset("ollama", ADR(c^.prov));
+end;
+
+proc dropParams(c: ^Conf);
+var i: INT; p: [][]U8;
+begin
+    p := Strs.all(ADR(c^.params));
+    for i := 0 to LEN(p) - 1 do Str.free(Heap.heap, p[i]); end;
+    Strs.reset(ADR(c^.params));
+end;
+
+proc done*(c: ^Conf);
+begin
+    dropParams(c);
+    Strs.done(ADR(c^.params));
+    Strs.done(ADR(c^.keys));
+    Strs.done(ADR(c^.values));
+    Buf.done(ADR(c^.text));
+    Buf.done(ADR(c^.warnings));
+    c^ := {};
+end;
+
+(* The value of key, as the file last set it; "" if it doesn't. *)
+proc get*(c: ^Conf; key: []U8): []U8;
+var i: INT; keys: [][]U8;
+begin
+    keys := Strs.all(ADR(c^.keys));
+    for i := LEN(keys) - 1 to 0 by -1 do
+        if keys[i] = key then return Strs.all(ADR(c^.values))[i]; end;
+    end;
+    return "";
+end;
+
+proc warn(c: ^Conf; a, b: []U8);
+begin
+    Buf.str(ADR(c^.warnings), "config: ");
+    Buf.str(ADR(c^.warnings), a);
+    Buf.str(ADR(c^.warnings), b);
+    Buf.add(ADR(c^.warnings), '\n');
+end;
+
+(* A param of the provider, its key and value joined by =. *)
+proc param(c: ^Conf; key, value: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.str(ADR(b), key);
+    Buf.add(ADR(b), '=');
+    Buf.str(ADR(b), value);
+    Strs.push(ADR(c^.params), Amsg.keep(Buf.bytes(ADR(b))));
+end;
+
+(* model's effort, as the param reasoning_effort@MODEL=level. *)
+proc effort(c: ^Conf; model, level: []U8);
+var key: Buf.Buf;
+begin
+    Buf.init(ADR(key), Heap.heap);
+    defer Buf.done(ADR(key));
+    Buf.str(ADR(key), "reasoning_effort@");
+    Buf.str(ADR(key), model);
+    param(c, Buf.bytes(ADR(key)), level);
+end;
+
+(* value, a whole number of 0 or more, into n; or a warning, and n as
+   it was. *)
+proc number(c: ^Conf; key, value: []U8; n: ^INT);
+var v: I64; ok: BOOL;
+begin
+    v, ok := Str.toInt(value);
+    if not ok or (v < 0) or (v > 1000000) then
+        warn(c, key, " wants a number");
+        return;
+    end;
+    n^ := INT(v);
+end;
+
+proc known(key: []U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(Known) - 1 do
+        if key = Known[i] then return true; end;
+    end;
+    return false;
+end;
+
+(* One setting, key = value, read into c. *)
+proc setting(c: ^Conf; key, value: []U8);
+var word, rest: []U8; at: INT;
+begin
+    match key of
+    | "provider":
+        if Awire.preset(value, ADR(c^.prov)) then
+            dropParams(c);
+        else
+            warn(c, "unknown provider ", value);
+        end;
+    | "model": c^.prov.model := value;
+    | "url": c^.prov.url := value;
+    | "key": c^.prov.keyEnv := value;
+    | "dialect":
+        c^.prov.dialect := Awire.Dialect.openai;
+        if value = "anthropic" then c^.prov.dialect := Awire.Dialect.anthropic; end;
+    | "timeout": number(c, key, value, ADR(c^.prov.limit));
+    | "max_retries": number(c, key, value, ADR(c^.prov.retries));
+    | "retry_backoff": number(c, key, value, ADR(c^.prov.backoff));
+    | "effort":
+        (* MODEL:LEVEL ..., a model's name having colons of its own,
+           as deepseek-v4.1-flash:cloud *)
+        word, rest := Str.field(value);
+        while LEN(word) > 0 do
+            at := Str.findLast(word, ":");
+            if at > 0 then effort(c, word[0..at], word[at + 1..LEN(word)]); end;
+            word, rest := Str.field(rest);
+        end;
+    | else:
+        if not known(key) then param(c, key, value); end;
+    end;
+end;
+
+(* text, a configuration file, read into c, made with init: c keeps
+   a copy of it, which its settings are slices of. *)
+proc read*(c: ^Conf; text: []U8);
+var line, rest, key, value: []U8; more, eq: BOOL;
+begin
+    Buf.str(ADR(c^.text), text);
+    rest := Buf.bytes(ADR(c^.text));
+    more := LEN(rest) > 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        line := Str.trim(line);
+        if (LEN(line) = 0) or (line[0] = '#') then continue; end;
+        key, value, eq := Str.cut(line, "=");
+        if not eq then continue; end;
+        key := Str.trim(key);
+        value := Str.trim(value);
+        Strs.push(ADR(c^.keys), key);
+        Strs.push(ADR(c^.values), value);
+        setting(c, key, value);
+    end;
+    c^.prov.params := Strs.all(ADR(c^.params));
+end;
+
+(* c made the configuration in arno's file, or the ollama preset if
+   there is none. *)
+proc load*(c: ^Conf);
+var path, text: Buf.Buf; base: []U8;
+begin
+    init(c);
+    Buf.init(ADR(path), Heap.heap);
+    Buf.init(ADR(text), Heap.heap);
+    defer Buf.done(ADR(path));
+    defer Buf.done(ADR(text));
+    base := Sys.env("XDG_CONFIG_HOME");
+    if LEN(base) > 0 then
+        Buf.str(ADR(path), base);
+    else
+        Buf.str(ADR(path), Sys.env("HOME"));
+        Buf.str(ADR(path), "/.config");
+    end;
+    Buf.str(ADR(path), "/arno/config");
+    if Files.load(Buf.bytes(ADR(path)), ADR(text)) = 0 then read(c, Buf.bytes(ADR(text))); end;
+end;
+
+(* The test: a file of every kind of line. *)
+
+var failed: BOOL;
+
+proc expect(what, got, want: []U8);
+begin
+    if got = want then return; end;
+    Out.str("Aconf: ");
+    Out.str(what);
+    Out.str("\n  got:  ");
+    Out.str(got);
+    Out.str("\n  want: ");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+proc main*: INT;
+var c: Conf; b: Buf.Buf;
+begin
+    init(ADR(c));
+    read(ADR(c), `
+        # arno's configuration
+        temperature = 0.9
+        provider = claude
+          model=claude-opus-5-5
+        not a setting
+        max_steps = 60
+        run = tiza man fd
+        effort = kimi-k3:high deepseek-v4.1-flash:cloud:low
+        anthropic_version = 2023-06-01
+        timeout = 600
+        max_retries = many
+        provider = nowhere
+        `);
+    expect("the provider", c.prov.name, "claude");
+    expect("its model", c.prov.model, "claude-opus-5-5");
+    expect("its url", c.prov.url, "https://api.anthropic.com/v1");
+    expect("its key", c.prov.keyEnv, "ANTHROPIC_API_KEY");
+    if c.prov.dialect # Awire.Dialect.anthropic then expect("its dialect", "openai", "anthropic"); end;
+    if c.prov.limit # 600 then expect("its timeout", "not 600", "600"); end;
+    if c.prov.retries # 0 then expect("its retries, never set", "set", "0"); end;
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Str.join(ADR(b), c.prov.params, " ");
+    expect("its params, temperature dropped by the provider after it", Buf.bytes(ADR(b)),
+        "reasoning_effort@kimi-k3=high reasoning_effort@deepseek-v4.1-flash:cloud=low anthropic_version=2023-06-01");
+    expect("a key kept for the rest of arno", get(ADR(c), "run"), "tiza man fd");
+    expect("a key not set", get(ADR(c), "worker"), "");
+    expect("the warnings", Buf.bytes(ADR(c.warnings)),
+        "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
+    expect("the effort for a model", Awire.param(ADR(c.prov), "reasoning_effort@kimi-k3"), "high");
+    done(ADR(c));
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Aconf.

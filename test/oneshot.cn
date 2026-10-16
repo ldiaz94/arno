@@ -1,0 +1,110 @@
+// oneshot.cn stub arno: arno asked one question from the command
+// line, as a script would ask it, of stub, test/Astub.raz
+// (build/stub), the model's server it stands in for. arno must:
+//
+//   - give its usage for -h, and for no prompt, with status 2;
+//   - stream the reply to the standard output, and save the
+//     conversation, saying on the standard error how to go on;
+//   - go on with --resume, the earlier turns sent again;
+//   - say why a request failed, with status 1, keeping the prompt in
+//     the conversation; and so for a key not set, and a conversation
+//     not there;
+//   - say what is wrong with its configuration, and go on.
+//
+// Run from the top of the tree, by make check; what it makes goes
+// under build/oneshot, its configuration and conversations among it.
+
+if length(args) <> 2 then begin
+  echo 'usage: concha test/oneshot.cn stub arno' >&2
+  halt(2)
+end
+stub := args[0]
+arno := args[1]
+
+dir := 'build/oneshot'
+rm -rf $dir
+mkdir -p "$dir/config/arno" "$dir/data"
+export XDG_CONFIG_HOME := "$dir/config"
+export XDG_DATA_HOME := "$dir/data"
+failures := 0
+server := ''
+
+procedure cleanup;
+begin
+  if server <> '' then kill -9 $server 2> /dev/null
+end;
+trap cleanup EXIT
+
+procedure fail(what);
+begin
+  echo "oneshot: $what" >&2
+  inc(failures)
+end;
+
+// arno run with the arguments in the list a: its status, with what it
+// wrote in dir/out and what it said in dir/err
+function run(a);
+begin
+  $arno $a > "$dir/out" 2> "$dir/err"
+  result := status
+end;
+
+// a run of a that must end with status want, having written a line
+// that holds text in the file out, dir/out or dir/err
+procedure expect(a, want, out, text);
+var got;
+begin
+  got := run(a)
+  if got <> want then fail("arno $(join(a)): status $got, not $want: " + `cat "$dir/err"`)
+  grep -qF -- $text "$dir/$out"
+  if status <> 0 then fail("arno $(join(a)): no '$text' in its $out: " + `cat "$dir/$out"`)
+end;
+
+// the configuration: the stub's url, and the lines in the list more
+procedure configure(more);
+var line;
+begin
+  echo "url = http://127.0.0.1:$(port)/v1" > "$dir/config/arno/config"
+  for line in more do echo $line >> "$dir/config/arno/config"
+end;
+
+started := split(`$stub 60`)
+if length(started) <> 2 then begin
+  echo "oneshot: $stub did not start" >&2
+  halt(1)
+end
+port := started[0]
+server := started[1]
+configure([])
+
+expect(['-h'], 0, 'out', 'usage: arno [prompt ...]')
+expect([], 2, 'err', 'arno: no prompt')
+expect(['  '], 2, 'err', 'arno: no prompt')
+
+// a new conversation: the system prompt and the question
+expect(['hello', 'there'], 0, 'out', '2 messages')
+expect(['hello', 'there'], 0, 'err', 'PROMPT goes on from here')
+saved := glob("$dir/data/arno/*.json")
+if length(saved) < 1 then begin
+  fail('no conversation saved')
+  halt(1)
+end
+id := basename(saved[0], '.json')
+grep -qF '"title":"hello there","named":false' $(saved[0])
+if status <> 0 then fail('the conversation is not saved as it was: ' + `cat $(saved[0])`)
+
+// on from it: the system prompt, the turn before and the question
+expect(['--resume', id, 'and', 'more'], 0, 'out', '4 messages')
+expect(['--resume', id, 'fail'], 1, 'err', 'arno: HTTP 500: the stub fails, as asked')
+grep -qF '{"role":"user","content":"fail"}]}' $(saved[0])
+if status <> 0 then fail('the failed prompt is not kept: ' + `cat $(saved[0])`)
+expect(['--resume', 'nosuch', 'x'], 1, 'err', 'arno: no conversation nosuch')
+
+configure(['key = ARNO_TEST_UNSET'])
+expect(['hello'], 1, 'err', 'arno: ARNO_TEST_UNSET is not set')
+
+configure(['provider = nowhere', 'max_retries = many'])
+expect(['hello'], 0, 'err', 'config: unknown provider nowhere')
+expect(['hello'], 0, 'err', 'config: max_retries wants a number')
+
+if failures > 0 then halt(1)

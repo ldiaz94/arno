@@ -65,6 +65,7 @@ type
         retries*: INT;       (* times a request whose connection failed is made again *)
         backoff*: INT;       (* seconds before the first of them, doubled for each next, 30 at most *)
         timeout*: INT;       (* milliseconds each read of the reply waits for more *)
+        limit*: INT;         (* seconds the whole request may take; 0 for no limit *)
     end;
 
     (* A tool the model may call. *)
@@ -736,6 +737,8 @@ begin
         _ := join(ADR(url), r^.prov^.url, "/chat/completions");
     end;
     r^.client^.timeout := r^.prov^.timeout;
+    r^.client^.deadline := 0;
+    if r^.prov^.limit > 0 then r^.client^.deadline := Sys.clock() + I64(r^.prov^.limit) * 1000000000; end;
     rd := try Http.open(r^.client, ADR(req), Buf.bytes(ADR(url)), ADR(res));
     status^ := res.status;
     repeat

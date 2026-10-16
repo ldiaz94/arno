@@ -20,19 +20,31 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Amsg Awire Astore
+MODS = Amsg Awire Astore Aconf
 SRC = $(wildcard src/*.raz)
+# what the program is also built from, so that a change there rebuilds it
+LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz)
+CONCHA = concha
 
-all: check
+all: build/arno
 
 build:
 	mkdir -p build
 
-# each module's main is its test
-check: | build
+# the program
+build/arno: $(SRC) $(LIBS) | build
+	$(RAZ) -Werror $(INC) -o $@ src/Arno.raz
+
+# the model's server the tests ask, with no TLS
+build/stub: test/Astub.raz $(LIBS) | build
+	$(RAZ) -Werror -I $(RJSON)/src -I $(RNET)/src -o $@ test/Astub.raz
+
+# each module's main is its test; then the program's, test/oneshot.cn
+check: build/arno build/stub
 	@for m in $(MODS); do \
 	    $(RAZ) -Werror $(INC) -o build/$$m src/$$m.raz && build/$$m || exit 1; \
 	done
+	@$(CONCHA) test/oneshot.cn build/stub build/arno
 
 # the conversations the Pascal arno saved, each read and written back
 # byte for byte: their messages, then the whole file
@@ -46,7 +58,7 @@ compat: | build
 # the sources are as raz's formatter lays them out
 fmt: | build
 	$(RAZ) -o build/Pretty $(RAZTOOLS)/Pretty.raz
-	@fail=0; for f in $(SRC); do \
+	@fail=0; for f in $(SRC) test/Astub.raz; do \
 	    build/Pretty $$f | cmp -s - $$f || { echo "not formatted: $$f"; fail=1; }; \
 	done; test $$fail = 0
 
