@@ -13,10 +13,12 @@
    were given for the work of the conversation left. /compact keeps
    them, as the work goes on.
 
+   A message goes with what its @paths bring (Aattach).
+
    Depends on Agent, Aprompt (the commands and modes), Amemory, Aahead
-   (the notes), Astore, Aconf, Aprice, Atools and Afence. Leaves out
-   what comes with later stages: /models, with completion; /test and
-   /stage, with the jail and the stage; the @ attachments of a message.
+   (the notes), Aattach, Astore, Aconf, Aprice, Atools and Afence.
+   Leaves out what comes with later stages: /models, with completion;
+   /test and /stage, with the jail and the stage.
 
    status makes the screen's status line; /usage shows its context in
    use too, from the last request, or guessed from the text before
@@ -24,7 +26,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Aprompt, Amemory, Aahead, Astore, Aconf, Awire, Aprice, Atools, Afence, Amsg, Buf, Str, Sys, Files, Fmt,
+import Agent, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Amsg, Buf, Str, Sys, Files, Fmt,
     Heap, Arena, Math, Rt, Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
 
 type
@@ -130,14 +132,15 @@ begin
     changed(s);
 end;
 
-(* A turn of s's conversation, on the human's message text: Agent.turn's
-   error, why saying why it failed. The conversation is saved after. *)
+(* A turn of s's conversation, on the human's message text and what its
+   @paths bring: Agent.turn's error, why saying why it failed. The
+   conversation is saved after. *)
 proc turn*(s: ^Session; text: []U8; why: ^Buf.Buf): ERROR;
 var m: ^Amsg.Msg; err: ERROR;
 begin
     m := Msgs.add(ADR(s^.conv.msgs));
     Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, text);
+    Aattach.expand(m, text);
     err := Agent.turn(ADR(s^.agent), ADR(s^.conv), why);
     save(s);
     return err;

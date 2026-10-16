@@ -32,6 +32,9 @@
    character off, C-g or Esc puts the input back as it was, and any
    other key keeps what was found and does what it does.
 
+   C-v types in an @path to the clipboard's image, saved to a file of
+   its own (Aattach.paste); or says on the rule why there is none.
+
    C-x C-e hands the input to the editor in $VISUAL or $EDITOR, with
    the last exchange under it, below git's scissors line, to read while
    writing; what is above that line comes back. Not during a job, whose
@@ -41,13 +44,13 @@
    can't yet break into a wait for the server, since raz has no way to
    signal one thread (PLAN.md, asked of raz).
 
-   Depends on Asession, Agent, Aboard, Ahistory, Astore, Amsg, Aprompt,
+   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Astore, Amsg, Aprompt,
    rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
    TuiLine, TuiWidth), rterm's Term, Thread and Sys. Leaves out, for
-   the steps after this one: completion, @path attachments, ^V images;
-   copy mode; the mouse; vim's keys. *)
+   the steps after this one: completion; copy mode; the mouse; vim's
+   keys. *)
 module Ascreen;
-import Asession, Agent, Aboard, Ahistory, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+import Asession, Agent, Aboard, Ahistory, Aattach, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
     TuiText, TuiLine, TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 
@@ -223,7 +226,7 @@ begin
     m := Msgs.all(ADR(c^.msgs));
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
-        | user: post(typed, m[i].text, "", "", false);
+        | user: post(typed, Aattach.shown(m[i].text), "", "", false);
         | assistant:
             post(said, m[i].text, "", "", false);
             calls := Calls.all(ADR(m[i].calls));
@@ -542,6 +545,25 @@ begin
     return true;
 end;
 
+(* C-v: an @path to the clipboard's image typed in, blanks around it
+   keeping it a reference of its own; or why there is none, on the
+   rule. *)
+proc pasteImage(_n: INT);
+var path, t: Buf.Buf; s: []U8; p: INT;
+begin
+    Buf.init(ADR(path), Heap.heap);
+    defer Buf.done(ADR(path));
+    if not Aattach.paste(ADR(path), ADR(flash)) then return; end;
+    Buf.init(ADR(t), Heap.heap);
+    defer Buf.done(ADR(t));
+    s := TuiEdit.text(ADR(editor));
+    p := editor.point;
+    if (p > 0) and (s[p - 1] # ' ') and (s[p - 1] # '\n') and (s[p - 1] # '(') then Buf.add(ADR(t), ' '); end;
+    Fmt.write(ADR(t), "@{}", [Fmt.str(Buf.bytes(ADR(path)))]);
+    if (p >= LEN(s)) or (s[p] # ' ') and (s[p] # '\n') then Buf.add(ADR(t), ' '); end;
+    TuiEdit.paste(ADR(editor), Buf.bytes(ADR(t)));
+end;
+
 (* the editor *)
 
 (* The last exchange as text, for the editor to show below the input:
@@ -739,6 +761,7 @@ begin
     TuiMap.define("arno-prefixed-back", "the line sent before that begins as the input does", prefixedBack);
     TuiMap.define("arno-prefixed-onward", "the line sent after that begins as the input does", prefixedOnward);
     TuiMap.define("arno-search-back", "the lines sent searched, newest first", searchBack);
+    TuiMap.define("arno-paste-image", "an @path to the clipboard's image typed in", pasteImage);
     TuiMap.define("arno-external", "the input written in $VISUAL or $EDITOR", external);
     TuiMap.init(ADR(map), "arno", nil);
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "RET", "arno-send");
@@ -761,6 +784,7 @@ begin
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-n", "arno-prefixed-onward");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-r", "arno-search-back");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-x C-e", "arno-external");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-v", "arno-paste-image");
 end;
 
 (* The session s run on the screen until the human ends it: false, at
@@ -794,6 +818,7 @@ begin
         if (question.len > 0) or why.open then reply(no); end;
         Thread.join(thread);
     end;
+    Aattach.drop;
     return ran;
 end;
 

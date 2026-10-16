@@ -1,0 +1,429 @@
+(* Aattach: what an @path in the human's message brings, and images
+   pasted with ^V.
+
+   @path attaches a file, @path:N its line N, @path:N-M lines N to M,
+   and @dir a listing of the directory, one name a line, a directory's
+   with a slash after it. A path with a blank in it is quoted:
+   @"some dir/a file", and :N or :N-M may follow the closing quote. An
+   @ starts a reference only at the start of the text or after a blank
+   or an opening parenthesis, so that an email address is left alone;
+   an unquoted one runs to the next blank, and if it names nothing,
+   the punctuation at its end, which the sentence put there, is taken
+   off and it is tried again. A file mentioned twice is attached once,
+   and a file that can't be read, or holds a NUL, isn't attached.
+
+   What the human typed is what the transcript shows; what is sent is
+   that, and after it each attachment as a block, after a blank line:
+   <file path="..." lines="...">, its text, </file> (Aahead.block),
+   which shown takes off again. An image, a .png, .jpg, .jpeg, .gif or
+   .webp, goes with the message as a picture instead, a data: URL among
+   its images (Amsg).
+
+   ^V saves the clipboard's image, by xclip, to a file of this run's,
+   numbered in the order pasted, for the input to name as an @path: it
+   stays the image that was pasted whatever is copied after, and
+   several can go in one message. The files are removed as arno ends;
+   the conversation has the pictures by then.
+
+   As the Pascal arno's attach.pas, less what te and the shell bring:
+   files open in te, @git and @cmd.
+
+   Depends on Amsg, Aahead (the block), Arun (xclip), Buf, Str, Sys and
+   Files. *)
+module Aattach;
+import Amsg, Aahead, Arun, Buf, Str, Sys, Files, Heap, Fmt, Out, Strs := Vec([]U8), Names := Sort([]U8, before);
+
+const
+    Tag = "\n\n<file path=\"";
+    Base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    Png = "\x89PNG\r\n\x1a\n";
+    MaxImage = 20000000;   (* bytes of the clipboard's image read, at most *)
+
+var
+    pasted: INT;     (* images ^V saved, which names the next *)
+    pastes: Buf.Buf; (* where they are, with a slash after it *)
+
+proc before(a, b: []U8): BOOL;
+begin
+    return Str.cmp(a, b) < 0;
+end;
+
+(* An image's type, by its name's extension, case aside: image/png and
+   the like, or "" if it isn't one arno sends. *)
+proc mime*(path: []U8): []U8;
+var i: INT; ext: []U8;
+begin
+    i := Str.findLast(path, ".");
+    if i < 0 then return ""; end;
+    ext := path[i..LEN(path)];
+    if Str.eqFold(ext, ".png") then return "image/png"; end;
+    if Str.eqFold(ext, ".jpg") or Str.eqFold(ext, ".jpeg") then return "image/jpeg"; end;
+    if Str.eqFold(ext, ".gif") then return "image/gif"; end;
+    if Str.eqFold(ext, ".webp") then return "image/webp"; end;
+    return "";
+end;
+
+(* s in base64, added to b. *)
+proc base64*(b: ^Buf.Buf; s: []U8);
+var i, n: INT; w: U32;
+begin
+    i := 0;
+    while i < LEN(s) do
+        n := LEN(s) - i;
+        if n > 3 then n := 3; end;
+        w := U32(s[i]) shl 16;
+        if n > 1 then w := w | U32(s[i + 1]) shl 8; end;
+        if n > 2 then w := w | U32(s[i + 2]); end;
+        Buf.add(b, Base64[INT(w shr 18) & 63]);
+        Buf.add(b, Base64[INT(w shr 12) & 63]);
+        if n > 1 then Buf.add(b, Base64[INT(w shr 6) & 63]); else Buf.add(b, '='); end;
+        if n > 2 then Buf.add(b, Base64[INT(w) & 63]); else Buf.add(b, '='); end;
+        i := i + 3;
+    end;
+end;
+
+(* The names in the directory dir, sorted, each on a line of its own, a
+   directory's with a slash after it, added to out; false if dir can't
+   be read. *)
+proc listing*(dir: []U8; out: ^Buf.Buf): BOOL;
+var d: Sys.Dir; names: Strs.Vec; all: [][]U8; name: []U8; more: BOOL; i: INT; path: Buf.Buf; info: Sys.Info;
+    err: INT;
+begin
+    if Sys.openDir(ADR(d), dir) < 0 then return false; end;
+    Strs.init(ADR(names), Heap.heap);
+    defer Strs.done(ADR(names));
+    Buf.init(ADR(path), Heap.heap);
+    defer Buf.done(ADR(path));
+    while true do
+        name, more := Sys.nextEntry(ADR(d));
+        if not more then break; end;
+        Buf.reset(ADR(path));
+        Fmt.write(ADR(path), "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
+        info, err := Sys.info(Buf.bytes(ADR(path)));
+        if (err = 0) and info.dir then Buf.add(ADR(path), '/'); end;
+        Strs.push(ADR(names), Amsg.keep(Buf.bytes(ADR(path))[LEN(dir) + 1..path.len]));
+    end;
+    Sys.closeDir(ADR(d));
+    all := Strs.all(ADR(names));
+    Names.sort(all);
+    for i := 0 to LEN(all) - 1 do
+        Buf.str(out, all[i]);
+        Buf.add(out, '\n');
+        Str.free(Heap.heap, all[i]);
+    end;
+    return true;
+end;
+
+(* Lines a to b of s, counted from 1. *)
+proc slice(s: []U8; a, b: INT): []U8;
+var i, n, start: INT;
+begin
+    n := 1;
+    start := 0;
+    for i := 0 to LEN(s) - 1 do
+        if n = a then start := i; break; end;
+        if s[i] = '\n' then INC(n); end;
+        if i = LEN(s) - 1 then return ""; end;
+    end;
+    if n < a then return ""; end;
+    for i := start to LEN(s) - 1 do
+        if s[i] = '\n' then
+            if n = b then return s[start..i + 1]; end;
+            INC(n);
+        end;
+    end;
+    return s[start..LEN(s)];
+end;
+
+(* lines, N or N-M, as the first line and the last. *)
+proc range(lines: []U8): (INT, INT);
+var a, b: []U8; x, y: I64; ok, okA, okB: BOOL;
+begin
+    a, b, ok := Str.cut(lines, "-");
+    x, okA := Str.toInt(a);
+    if not okA then x := 1; end;
+    if not ok then return INT(x), INT(x); end;
+    y, okB := Str.toInt(b);
+    if not okB then y := x; end;
+    return INT(x), INT(y);
+end;
+
+(* What path, its lines lines or all of it, brings, added to out after a
+   blank line as a block: a file's text, or a directory's listing;
+   false, and nothing added, if it brings nothing. *)
+proc bring(path, lines: []U8; out: ^Buf.Buf): BOOL;
+var text: Buf.Buf; info: Sys.Info; err, a, b: INT; s: []U8;
+begin
+    info, err := Sys.info(path);
+    if err # 0 then return false; end;
+    Buf.init(ADR(text), Heap.heap);
+    defer Buf.done(ADR(text));
+    if info.dir then
+        if (LEN(lines) > 0) or not listing(path, ADR(text)) then return false; end;
+        Buf.str(out, "\n\n");
+        Aahead.block(out, path, "", Buf.bytes(ADR(text)));
+        return true;
+    end;
+    if not info.file or (Files.load(path, ADR(text)) # 0) then return false; end;
+    s := Buf.bytes(ADR(text));
+    if LEN(s) > 8192 then s := s[0..8192]; end;
+    if Str.find(s, "\x00") >= 0 then return false; end;
+    s := Buf.bytes(ADR(text));
+    if LEN(lines) > 0 then
+        a, b := range(lines);
+        s := slice(s, a, b);
+    end;
+    Buf.str(out, "\n\n");
+    Aahead.block(out, path, lines, s);
+    return true;
+end;
+
+(* The image file path as a data: URL, added to b; false, and nothing
+   added, if it isn't an image or can't be read. *)
+proc image*(path: []U8; b: ^Buf.Buf): BOOL;
+var raw: Buf.Buf; m: []U8;
+begin
+    m := mime(path);
+    if LEN(m) = 0 then return false; end;
+    Buf.init(ADR(raw), Heap.heap);
+    defer Buf.done(ADR(raw));
+    if (Files.load(path, ADR(raw)) # 0) or (raw.len = 0) then return false; end;
+    Fmt.write(b, "data:{};base64,", [Fmt.str(m)]);
+    base64(b, Buf.bytes(ADR(raw)));
+    return true;
+end;
+
+(* Whether c ends an unquoted reference. *)
+proc blank(c: U8): BOOL;
+begin
+    return (c = ' ') or (c = '\t') or (c = '\n');
+end;
+
+(* Whether text[i] is an @ that starts a reference. *)
+proc starts*(text: []U8; i: INT): BOOL;
+begin
+    return (text[i] = '@') and ((i = 0) or blank(text[i - 1]) or (text[i - 1] = '('));
+end;
+
+(* The quoted reference at text[i], @"path" and maybe :N or :N-M after
+   it: its path and lines, and where it ends; false if the quote isn't
+   closed on its line, or holds nothing. *)
+proc quoted(text: []U8; i: INT): ([]U8, []U8, INT, BOOL);
+var k, j: INT;
+begin
+    k := i + 2;
+    while (k < LEN(text)) and (text[k] # '"') and (text[k] # '\n') do INC(k); end;
+    if (k >= LEN(text)) or (text[k] # '"') or (k = i + 2) then return "", "", i, false; end;
+    j := k + 1;
+    if (j + 1 < LEN(text)) and (text[j] = ':') and Str.isDigit(text[j + 1]) then
+        k := j + 1;
+        while (k < LEN(text)) and Str.isDigit(text[k]) do INC(k); end;
+        if (k + 1 < LEN(text)) and (text[k] = '-') and Str.isDigit(text[k + 1]) then
+            INC(k);
+            while (k < LEN(text)) and Str.isDigit(text[k]) do INC(k); end;
+        end;
+        return text[i + 2..j - 1], text[j + 1..k], k, true;
+    end;
+    return text[i + 2..j - 1], "", j, true;
+end;
+
+(* Whether s is lines: N or N-M. *)
+proc isLines(s: []U8): BOOL;
+var a, b: []U8; ok, okA, okB: BOOL;
+begin
+    a, b, ok := Str.cut(s, "-");
+    _, okA := Str.toInt(a);
+    _, okB := Str.toInt(b);
+    return okA and (not ok or okB);
+end;
+
+(* An unquoted reference's text split into its path and its lines, what
+   follows its last colon if that is N or N-M. *)
+proc split(ref: []U8): ([]U8, []U8);
+var i: INT;
+begin
+    i := Str.findLast(ref, ":");
+    if (i > 0) and isLines(ref[i + 1..LEN(ref)]) then return ref[0..i], ref[i + 1..LEN(ref)]; end;
+    return ref, "";
+end;
+
+(* What one reference brings to m, the text going out and the images to
+   m's: true if it brought something, or was brought already. *)
+proc take(m: ^Amsg.Msg; path, lines: []U8; seen: ^Strs.Vec; out: ^Buf.Buf): BOOL;
+var key, url: Buf.Buf; s: [][]U8; i: INT;
+begin
+    Buf.init(ADR(key), Heap.heap);
+    defer Buf.done(ADR(key));
+    Buf.str(ADR(key), path);
+    if LEN(lines) > 0 then Fmt.write(ADR(key), ":{}", [Fmt.str(lines)]); end;
+    s := Strs.all(seen);
+    for i := 0 to LEN(s) - 1 do
+        if s[i] = Buf.bytes(ADR(key)) then return true; end;
+    end;
+    Buf.init(ADR(url), Heap.heap);
+    defer Buf.done(ADR(url));
+    if (LEN(lines) = 0) and image(path, ADR(url)) then
+        Strs.push(ADR(m^.images), Amsg.keep(Buf.bytes(ADR(url))));
+    elsif not bring(path, lines, out) then
+        return false;
+    end;
+    Strs.push(seen, Amsg.keep(Buf.bytes(ADR(key))));
+    return true;
+end;
+
+(* m's text made text and what its references bring, and its images
+   those they name. *)
+proc expand*(m: ^Amsg.Msg; text: []U8);
+var out: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []U8; ok: BOOL;
+begin
+    Buf.init(ADR(out), Heap.heap);
+    defer Buf.done(ADR(out));
+    Strs.init(ADR(seen), Heap.heap);
+    Buf.str(ADR(out), text);
+    i := 0;
+    while i < LEN(text) do
+        if not starts(text, i) then INC(i); continue; end;
+        if (i + 1 < LEN(text)) and (text[i + 1] = '"') then
+            path, lines, j, ok := quoted(text, i);
+            if ok then
+                _ := take(m, path, lines, ADR(seen), ADR(out));
+                i := j;
+                continue;
+            end;
+        end;
+        j := i + 1;
+        while (j < LEN(text)) and not blank(text[j]) do INC(j); end;
+        ref := text[i + 1..j];
+        while true do
+            path, lines := split(ref);
+            if (LEN(path) = 0) or take(m, path, lines, ADR(seen), ADR(out)) then break; end;
+            (* the punctuation at its end may be the sentence's *)
+            if (LEN(ref) = 0) or (Str.find(",.;:)?!", ref[LEN(ref) - 1..LEN(ref)]) < 0) then break; end;
+            ref := ref[0..LEN(ref) - 1];
+        end;
+        i := j;
+    end;
+    for i := 0 to seen.len - 1 do Str.free(Heap.heap, Strs.all(ADR(seen))[i]); end;
+    Strs.done(ADR(seen));
+    Amsg.setText(m, Buf.bytes(ADR(out)));
+end;
+
+(* A user's message as the human typed it, its attachments taken off. *)
+proc shown*(text: []U8): []U8;
+var i: INT;
+begin
+    i := Str.find(text, Tag);
+    if i < 0 then return text; end;
+    return text[0..i];
+end;
+
+(* the clipboard *)
+
+(* The clipboard's image saved to a file of its own, its path into
+   path; false, with why there is none in a few words into why. *)
+proc paste*(path, why: ^Buf.Buf): BOOL;
+var got: Buf.Buf; st: INT; s, base: []U8; digits: [20]U8; n: INT;
+begin
+    Buf.init(ADR(got), Heap.heap);
+    defer Buf.done(ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, ADR(got));
+    s := Buf.bytes(ADR(got));
+    if (st = 127) or (st < 0) then Buf.str(why, "pasting an image needs xclip"); return false; end;
+    if Str.find(s, "display") >= 0 then Buf.str(why, "no X display to take the clipboard from"); return false; end;
+    if st # 0 then Buf.str(why, "the clipboard is empty"); return false; end;
+    Buf.reset(ADR(got));
+    Fmt.write(ADR(got), "\n{}\n", [Fmt.str(s)]);
+    s := Buf.bytes(ADR(got));
+    if Str.find(s, "\nimage/png\n") < 0 then
+        if Str.find(s, "\nimage/") >= 0 then
+            Buf.str(why, "the clipboard's image isn't a PNG");
+        else
+            Buf.str(why, "the clipboard holds no image");
+        end;
+        return false;
+    end;
+    Buf.reset(ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, ADR(got));
+    if (st # 0) or not Str.hasPrefix(Buf.bytes(ADR(got)), Png) then
+        Buf.str(why, "the clipboard's image couldn't be read");
+        return false;
+    end;
+    if pastes.len = 0 then
+        base := Sys.env("XDG_RUNTIME_DIR");
+        if LEN(base) = 0 then base := "/tmp"; end;
+        digits, n := Str.fromInt(Sys.pid());
+        Fmt.write(ADR(pastes), "{}/arno-{}/", [Fmt.str(base), Fmt.str(digits[0..n])]);
+        _ := Sys.makeDir(Buf.bytes(ADR(pastes)));
+    end;
+    INC(pasted);
+    Fmt.write(path, "{}{}.png", [Fmt.str(Buf.bytes(ADR(pastes))), Fmt.int(pasted)]);
+    if not Files.write(Buf.bytes(path), Buf.bytes(ADR(got))) then
+        Fmt.write(why, "the image couldn't be written to {}", [Fmt.str(Buf.bytes(ADR(pastes)))]);
+        return false;
+    end;
+    return true;
+end;
+
+(* The images ^V saved removed, and their directory. *)
+proc drop*;
+var b: Buf.Buf; i: INT;
+begin
+    if pastes.len = 0 then return; end;
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    for i := 1 to pasted do
+        Buf.reset(ADR(b));
+        Fmt.write(ADR(b), "{}{}.png", [Fmt.str(Buf.bytes(ADR(pastes))), Fmt.int(i)]);
+        _ := Sys.remove(Buf.bytes(ADR(b)));
+    end;
+    _ := Sys.removeDir(Buf.bytes(ADR(pastes)));
+end;
+
+(* The module's test. *)
+
+proc expect(what, got, want: []U8; failed: ^BOOL);
+begin
+    if got = want then return; end;
+    Fmt.print("Aattach: {}: got\n{}\nwant\n{}\n", [Fmt.str(what), Fmt.str(got), Fmt.str(want)]);
+    failed^ := true;
+end;
+
+proc main*: INT;
+var m: Amsg.Msg; b: Buf.Buf; failed: BOOL;
+begin
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/attach");
+    _ := Sys.makeDir("build/attach/a dir");
+    _ := Files.write("build/attach/a.txt", "one\ntwo\nthree\n");
+    _ := Files.write("build/attach/a dir/b.txt", "bee");
+    _ := Files.write("build/attach/bin", "x\x00y");
+    _ := Files.write("build/attach/p.png", "\x89PNG");
+    Buf.init(ADR(b), Heap.heap);
+    base64(ADR(b), "Man");
+    base64(ADR(b), "Ma");
+    base64(ADR(b), "M");
+    expect("base64", Buf.bytes(ADR(b)), "TWFuTWE=TQ==", ADR(failed));
+    Amsg.init(ADR(m), Amsg.Role.user);
+    expand(ADR(m), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again");
+    expect("lines, once", m.text, "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again\n\n" +
+        "<file path=\"build/attach/a.txt\" lines=\"2-3\">\ntwo\nthree\n</file>", ADR(failed));
+    expect("shown", shown(m.text), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again", ADR(failed));
+    expand(ADR(m), "(@\"build/attach/a dir/b.txt\":1) @build/attach/a.txt. me@x.org @build/attach/bin @nothing");
+    expect("quoted, and a sentence's stop", m.text,
+        "(@\"build/attach/a dir/b.txt\":1) @build/attach/a.txt. me@x.org @build/attach/bin @nothing\n\n" +
+        "<file path=\"build/attach/a dir/b.txt\" lines=\"1\">\nbee\n</file>\n\n" +
+        "<file path=\"build/attach/a.txt\">\none\ntwo\nthree\n</file>", ADR(failed));
+    expand(ADR(m), "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png");
+    expect("a listing", m.text, "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png\n\n" +
+        "<file path=\"build/attach/a dir\">\nb.txt\n</file>", ADR(failed));
+    if (m.images.len # 1) or (Strs.all(ADR(m.images))[0] # "data:image/png;base64,iVBORw==") then
+        Out.str("Aattach: an image\n");
+        failed := true;
+    end;
+    if failed then return 1; end;
+    return 0;
+end;
+
+begin
+    Buf.init(ADR(pastes), Heap.heap);
+end Aattach.

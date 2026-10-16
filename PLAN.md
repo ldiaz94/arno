@@ -181,7 +181,12 @@ one or more commits that build with `-Werror`.
      with the arrows on its first and last line, `M-p` and `M-n` by
      what is typed, `C-r` by search. `^X ^E` is rtui's
      `TuiEdit.external`, the last exchange under git's scissors line.
-   - [ ] d. `@path` attachments and `^V` images.
+   - [x] d. `@path` attachments and `^V` images. `Aattach` brings a
+     file, its lines, a directory's listing or an image, as the Pascal
+     arno's attach.pas did, less te's open files, `@git` and `@cmd`; a
+     range must be N or N-M, so `@a.txt:2-3,` loses its comma, where
+     the Pascal arno read 2-3, as 2. `^V` saves the clipboard's PNG by
+     xclip, under `$XDG_RUNTIME_DIR`, removed as arno ends.
    - [ ] e. Completion of `/` and `@`, and `/models`.
    - [ ] f. Copy mode.
 4. **Stage, jail, shell.** The stage worktree; the jail from
