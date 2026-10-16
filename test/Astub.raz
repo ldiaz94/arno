@@ -13,6 +13,10 @@
    To a last message of "system" it answers the request's system
    prompt, for a test of what arno tells the model.
 
+   It also serves fetch and search: /page is a page of HTML, and
+   /search?format=json&q=... what SearXNG answers, a result that is the
+   query.
+
    A test asks for a tool call by the human's last message: to "call
    NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
    answers its result with "the tool said: " and the result; to
@@ -77,6 +81,18 @@ begin
     Buf.reset(ADR(reply));
     if not Json.init(ADR(d), Heap.heap) then res^.status := 500; return; end;
     defer Json.done(ADR(d));
+    if req^.target = "/page" then
+        _ := Http.add(res, "Content-Type", "text/html; charset=utf-8");
+        res^.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
+        return;
+    end;
+    if Str.hasPrefix(req^.target, "/search?format=json&q=") then
+        Buf.str(ADR(reply), `{"results":[{"title":"Found","url":"http://x/","content":"`);
+        Buf.str(ADR(reply), req^.target[22..LEN(req^.target)]);
+        Buf.str(ADR(reply), `"}]}`);
+        res^.body := Buf.bytes(ADR(reply));
+        return;
+    end;
     v := Json.parse(ADR(d), req^.body);
     msgs := Json.member(ADR(d), v, "messages");
     n := Json.len(ADR(d), msgs);

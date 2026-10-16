@@ -25,17 +25,24 @@
    prune (200,000 bytes unless it says), and each time it has grown by
    half again, the long results of old calls are cut (prune).
 
+   With config's worker naming a model, the model may delegate a step
+   to a worker: a turn of the same loop, on the worker's model, over a
+   conversation of its own that holds only the brief, with the tools
+   less delegate. Only the worker's last answer comes back, as the
+   call's result, so that the leading session's history stays as small
+   as the reports. What earlier workers of the turn reported goes with
+   each brief.
+
    Each call's work is done in an arena, reset after the call: its
    result is copied into the conversation, which keeps its own memory
    from Heap.
 
    Depends on Aprompt (the system prompt), Aahead, Aprice, Atools,
-   Afence, Awire, Amsg and Astore. Leaves out delegate, which the next
-   step brings, and forking calls that only read, to run them side by
-   side. *)
+   Afence, Awire, Amsg and Astore. Leaves out forking calls that only
+   read, to run them side by side. *)
 module Agent;
-import Aprompt, Aahead, Aprice, Atools, Afence, Awire, Amsg, Astore, Http, Buf, Str, Heap, Arena, Rt, Fmt, Out,
-    Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
+import Aprompt, Aahead, Aprice, Atools, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Heap, Arena, Rt, Fmt, Out,
+    Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 
 type
     (* What the agent tells its front end, and asks of it. Any
@@ -58,6 +65,9 @@ type
         prune*: INT;          (* bytes of history before old results are cut; 0 never *)
         budget*: F64;         (* dollars a turn may spend, at list price; 0 for no limit *)
         prefetch*: BOOL;      (* definitions attached to the human's message *)
+        worker*: []U8;        (* the model a worker runs on; "" for no workers *)
+        working: BOOL;        (* the turn under way is a worker's *)
+        reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
         prompt: Aprompt.Prompt;
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
         human: Atools.Human;  (* the front's ask and why *)
@@ -87,6 +97,15 @@ const
     (* what a turn over its budget asks for *)
     BudgetAsk = "This turn has spent what the human allows a turn. Do not call any tools. In a few " +
         "lines, say what is done, what is not, and what you would do next.";
+    (* the end of a worker's system prompt *)
+    WorkerText = "# Worker\nYou are a worker: the session that leads gave you one task, the message below, " +
+        "and sees only your final report. Do that task completely: read what you need, make the changes, " +
+        "build, and run check. Earlier workers' reports, when the brief has them, are what is known: use the " +
+        "units and findings they name rather than finding or writing them again. Do not ask questions; if " +
+        "something blocks you, stop and say what. End with a short report: what you did, what you found that " +
+        "the next worker should know, the files you changed, and check's verdict.";
+    MaxReports = 4;     (* earlier reports a brief carries, the newest *)
+    MaxReport = 4000;   (* bytes of each *)
     Repeated = "not run: this exact call was already made in this turn and its result " +
         "is above. Use that result, or try something different.";
     Interrupted = "not run: interrupted by the human";
@@ -97,6 +116,7 @@ proc init*(a: ^Agent; prov: ^Awire.Prov; front: Front);
 begin
     a^ := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true,
         human: {ask: front.ask, why: front.why, arg: front.arg}};
+    Strs.init(ADR(a^.reports), Heap.heap);
     Awire.initClient(ADR(a^.client));
     if not Arena.init(ADR(a^.mem), CallMemory) then Rt.stop("arno: out of memory"); end;
     Buf.init(ADR(a^.seen), Heap.heap);
@@ -126,6 +146,10 @@ proc system(a: ^Agent; c: ^Astore.Conv; sys: ^Buf.Buf);
 begin
     Buf.reset(sys);
     Aprompt.write(ADR(a^.prompt), c, a^.prov, ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
+    if a^.working then
+        Buf.str(sys, "\n\n");
+        Buf.str(sys, WorkerText);
+    end;
     Arena.reset(ADR(a^.mem));
 end;
 
@@ -215,7 +239,7 @@ proc ask(a: ^Agent; c: ^Astore.Conv; sys: []U8; why: ^Buf.Buf): ERROR;
 var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; err: ERROR;
 begin
     r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(ADR(c^.msgs)),
-        tools: Atools.Offered, emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
+        tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0)), emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
     err := Awire.chat(ADR(r), ADR(reply), ADR(u), why);
     INC(a^.used.inp, u.inp);
     INC(a^.used.cached, u.cached);
@@ -265,6 +289,102 @@ begin
     return Str.hasPrefix(res, "error") or Str.hasPrefix(res, "not run");
 end;
 
+proc min(a, b: INT): INT;
+begin
+    if a < b then return a; end;
+    return b;
+end;
+
+proc turn*(a: ^Agent; c: ^Astore.Conv; why: ^Buf.Buf): ERROR; forward;
+
+(* delegate, with the arguments args: the brief made from them, and a
+   worker's turn run on it; its report, or why there is none, added to
+   out. *)
+proc delegate(a: ^Agent; args: []U8; out: ^Buf.Buf);
+var d: Json.Doc; p: Atools.Args; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.Prov; m: ^Amsg.Msg;
+    brief, why: Buf.Buf; files, reports: [][]U8; msgs: []Amsg.Msg; task, report: []U8; i, steps: INT;
+    err: ERROR;
+begin
+    if a^.working then
+        Buf.str(out, "error: a worker cannot delegate");
+        return;
+    end;
+    if LEN(a^.worker) = 0 then
+        Buf.str(out, "error: there is no worker model; the human sets one with worker = MODEL in the config");
+        return;
+    end;
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    Buf.init(ADR(brief), Heap.heap);
+    defer Buf.done(ADR(brief));
+    Buf.init(ADR(why), Heap.heap);
+    defer Buf.done(ADR(why));
+    if not Atools.parse(ADR(d), Heap.heap, args, ADR(p)) then
+        Buf.str(out, "error: the arguments must be one JSON object, as the tool's schema says");
+        return;
+    end;
+    task := Str.trim(Atools.str(ADR(p), "task"));
+    if LEN(task) = 0 then
+        Buf.str(out, "error: task is required: what the worker is to do, in full");
+        return;
+    end;
+    Fmt.write(ADR(brief), "Task: {}", [Fmt.str(task)]);
+    files := Atools.list(ADR(p), "files");
+    if LEN(files) > 0 then Buf.str(ADR(brief), "\n\nFiles:"); end;
+    for i := 0 to LEN(files) - 1 do Fmt.write(ADR(brief), "\n- {}", [Fmt.str(files[i])]); end;
+    if LEN(Str.trim(Atools.str(ADR(p), "done_when"))) > 0 then
+        Fmt.write(ADR(brief), "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(ADR(p), "done_when")))]);
+    end;
+    (* what earlier workers of this turn found goes along, so that the
+       next one needn't find it again: a worker blind to a survey's
+       findings wrote its own rule for what a unit already did *)
+    reports := Strs.all(ADR(a^.reports));
+    if LEN(reports) > 0 then Buf.str(ADR(brief), "\n\nWhat earlier workers on this task reported:"); end;
+    for i := LEN(reports) - MaxReports to LEN(reports) - 1 do
+        if i >= 0 then
+            Buf.str(ADR(brief), "\n\n---\n");
+            Buf.str(ADR(brief), reports[i][0..min(LEN(reports[i]), MaxReport)]);
+        end;
+    end;
+    Buf.reset(ADR(why));
+    Fmt.write(ADR(why), "worker {}: {}", [Fmt.str(a^.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
+    note(a, Buf.bytes(ADR(why)));
+
+    Astore.init(ADR(w), "worker");
+    defer Astore.done(ADR(w));
+    m := Msgs.add(ADR(w.msgs));
+    Amsg.init(m, Amsg.Role.user);
+    Amsg.setText(m, Buf.bytes(ADR(brief)));
+    prov := a^.prov^;
+    prov.model := a^.worker;
+    lead := a^.prov;
+    a^.prov := ADR(prov);
+    a^.working := true;
+    Buf.reset(ADR(why));
+    err := turn(a, ADR(w), ADR(why));
+    a^.working := false;
+    a^.prov := lead;
+    forget(a);   (* what the worker saw is no call of the lead's *)
+
+    msgs := Msgs.all(ADR(w.msgs));
+    steps := 0;
+    for i := 0 to LEN(msgs) - 1 do
+        if msgs[i].role = Amsg.Role.assistant then INC(steps); end;
+    end;
+    report := "";
+    if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
+    if LEN(report) = 0 then
+        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps)]);
+        if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(ADR(why)))]); end;
+        return;
+    end;
+    Buf.reset(ADR(why));
+    Fmt.write(ADR(why), "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
+    Strs.push(ADR(a^.reports), Amsg.keep(Buf.bytes(ADR(why))));
+    Fmt.write(out, "worker report ({} steps):\n{}", [Fmt.int(steps), Fmt.str(report)]);
+end;
+
+
 (* The calls of c's last message run, each result added to c as a
    tool's message: how many of them failed. Once the human says to
    stop, the calls left aren't run, but answered all the same, as a
@@ -285,6 +405,8 @@ begin
             Buf.str(ADR(res), Interrupted);
         elsif again(a, calls[i].name, calls[i].args) then
             Buf.str(ADR(res), Repeated);
+        elsif calls[i].name = "delegate" then
+            delegate(a, calls[i].args, ADR(res));
         else
             Atools.call(calls[i].name, calls[i].args, ADR(a^.human), ADR(a^.mem.base), ADR(res));
             Arena.reset(ADR(a^.mem));
@@ -350,7 +472,11 @@ begin
     defer Buf.done(ADR(sys));
     Buf.init(ADR(b), Heap.heap);
     defer Buf.done(ADR(b));
-    if a^.prefetch then attach(a, c); end;
+    if not a^.working then
+        if a^.prefetch then attach(a, c); end;
+        for i := 0 to a^.reports.len - 1 do Str.free(Heap.heap, Strs.all(ADR(a^.reports))[i]); end;
+        Strs.reset(ADR(a^.reports));
+    end;
     start := a^.used;
     price, priced := Aprice.price(a^.prov);
     failing := 0;

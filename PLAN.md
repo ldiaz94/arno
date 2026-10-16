@@ -132,7 +132,15 @@ one or more commits that build with `-Werror`.
      with the screen. The map counts what rwalk walks, so hidden files
      are left out, where the Pascal arno counted what git tracks; the
      off-peak half price waits for the status line.
-   - [ ] e. `search`, `fetch` and `delegate`.
+   - [x] e. `search`, `fetch` and `delegate`. fetch reads the page
+     with rnet, 30 seconds and a megabyte at most, and `Ahtml` lays an
+     HTML page out as text, as the Pascal arno's html(3) did; it knows
+     Latin-1 and Windows-1252 besides UTF-8, and the commonest named
+     characters. delegate is the agent's: a worker is a turn of the
+     same loop, on config's worker model, over a conversation of its
+     own. The tools that could only fail are not offered: search
+     without searxng, note outside a project, delegate without a
+     worker or to a worker.
    `check` and `run` run commands, and come with the jail, in stage 4.
 3. **The full screen** on rtui: transcript, input, status line, copy
    mode, completion of `/` and `@`, `@path` attachments, `^V` images,

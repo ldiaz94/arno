@@ -23,7 +23,7 @@
    stages after this one, what the Pascal arno's one-shot run has
    besides: the screen, --serve and --attach. *)
 module Arno;
-import Agent, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Math, Msgs := Vec(Amsg.Msg);
+import Agent, Atools, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Math, Msgs := Vec(Amsg.Msg);
 
 const Usage = `
     usage: arno [prompt ...]
@@ -195,6 +195,8 @@ begin
     if ok and (n >= 0) then a.prune := INT(n); end;
     a.budget, _ := Math.toReal(Aconf.get(ADR(conf), "turn_budget"));
     a.prefetch := Aconf.get(ADR(conf), "prefetch") # "no";
+    a.worker := Aconf.get(ADR(conf), "worker");
+    Atools.search(Aconf.get(ADR(conf), "searxng"));
     mode := Aconf.get(ADR(conf), "context_files");
     if LEN(mode) = 0 then mode := "ask"; end;
     Agent.prepare(ADR(a), mode, Aconf.get(ADR(conf), "project_map") # "no");

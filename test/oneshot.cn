@@ -12,6 +12,7 @@
 //   - say what is wrong with its configuration, and go on;
 //   - tell the model the project's map and notes, keep a note, and
 //     attach the definition of a name the prompt mentions;
+//   - fetch a page, search, and delegate a step to a worker;
 //   - run the tools the model calls, saying each on the standard
 //     error, and send their results back: read, grep, def and git;
 //     refuse a call made twice, and hand back after four steps of
@@ -154,6 +155,26 @@ expect(['how', 'does', '`interrupted`', 'work'], 0, 'err', '▸ def {"name":"int
 last := split(`ls -t "$dir/data/arno"`)[0]
 grep -qF '<file path=\"src/Arno.raz\" lines=' "$dir/data/arno/$last"
 if status <> 0 then fail('no definition attached: ' + `cat "$dir/data/arno/$last"`)
+
+// the web: a page fetched, and a search through SearXNG
+page := "http://127.0.0.1:$(port)/page"
+expect(['call', 'fetch', '{"url":"' + page + '"}'], 0, 'out', 'the tool said: A page')
+holds('a page', 'out', 'Its text.')
+expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'there is no tool named "search"')
+configure(["searxng = http://127.0.0.1:$(port)"])
+expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'the tool said: Found')
+holds('a search', 'out', 'a%20b')
+
+// a step delegated to a worker, which reports
+configure([])
+expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
+  'the tool said: error: there is no worker model')
+configure(['worker = small'])
+expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
+  'the tool said: worker report (1 steps):')
+holds('a worker', 'out', '2 messages')
+holds('a worker', 'err', 'arno: worker small: look')
+configure([])
 
 // a call made again refused, and four steps of them a hand-back,
 // whose request the conversation doesn't keep

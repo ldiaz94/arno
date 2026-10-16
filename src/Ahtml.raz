@@ -1,0 +1,369 @@
+(* Ahtml: a web page's text, as a text browser shows it.
+
+   The title first, then the text, with a line break at each element
+   that makes a block, a blank line at each paragraph, heading, list or
+   table, blanks run together, and script, style, noscript and template
+   left out. Inside pre the blanks stay as written: the code of a page
+   of documentation is what a model reads one for most often. No links:
+   a page's text is long already, and the model asks for the next page
+   by the URL search gave it.
+
+   The page is read as tokens, not as a tree: tags, comments and text.
+   The head's text is its title, cut out on its own; once script, style
+   and the void meta and link are passed over, nothing else of the head
+   shows, so it needs no skipping, nor the tree that its implied end
+   would call for.
+
+   A page is UTF-8 unless its Content-Type, or a meta tag near its start,
+   says Latin-1 or Windows-1252, which are made UTF-8; any other charset
+   is left as it is, and Atools.clean makes what isn't UTF-8 U+FFFD.
+
+   Depends on Buf, Str, and Afind for its lists of words. Leaves out the rest of HTML's 2,000 named
+   characters, past the few dozen pages use most: one it doesn't know
+   stays as written. *)
+module Ahtml;
+import Afind, Buf, Str, Heap, Out;
+
+const
+    (* the elements whose text isn't shown *)
+    Hidden = " script style noscript template ";
+    (* the elements read to their end tag as text, not as tags *)
+    Raw = " script style ";
+    (* the elements that start a paragraph, and those that start a line *)
+    Paras = " p h1 h2 h3 h4 h5 h6 pre table ul ol dl blockquote hr section article header footer nav " +
+        "main aside figure details form fieldset title ";
+    Blocks = " div li dt dd tr br caption thead tbody tfoot address center dialog figcaption legend " +
+        "menu option summary textarea hgroup html head body ";
+    Cells = " td th ";
+
+    (* Windows-1252's characters at 80H to 9FH, where Latin-1 has
+       controls; 0 where it has none either. *)
+    Win: [32]I32 = [20ACH, 0, 201AH, 192H, 201EH, 2026H, 2020H, 2021H, 2C6H, 2030H, 160H, 2039H, 152H, 0,
+        17DH, 0, 0, 2018H, 2019H, 201CH, 201DH, 2022H, 2013H, 2014H, 2DCH, 2122H, 161H, 203AH, 153H, 0, 17EH,
+        178H];
+
+type
+    Entity = record
+        name: []U8;
+        c: I32;
+    end;
+
+const
+    Entities: []Entity = [{name: "amp", c: 26H}, {name: "lt", c: 3CH}, {name: "gt", c: 3EH},
+        {name: "quot", c: 22H}, {name: "apos", c: 27H}, {name: "nbsp", c: 0A0H}, {name: "copy", c: 0A9H},
+        {name: "reg", c: 0AEH}, {name: "trade", c: 2122H}, {name: "deg", c: 0B0H}, {name: "plusmn", c: 0B1H},
+        {name: "times", c: 0D7H}, {name: "divide", c: 0F7H}, {name: "middot", c: 0B7H}, {name: "para", c: 0B6H},
+        {name: "sect", c: 0A7H}, {name: "laquo", c: 0ABH}, {name: "raquo", c: 0BBH}, {name: "ndash", c: 2013H},
+        {name: "mdash", c: 2014H}, {name: "lsquo", c: 2018H}, {name: "rsquo", c: 2019H},
+        {name: "ldquo", c: 201CH}, {name: "rdquo", c: 201DH}, {name: "bull", c: 2022H},
+        {name: "hellip", c: 2026H}, {name: "larr", c: 2190H}, {name: "rarr", c: 2192H},
+        {name: "uarr", c: 2191H}, {name: "darr", c: 2193H}, {name: "le", c: 2264H}, {name: "ge", c: 2265H},
+        {name: "ne", c: 2260H}, {name: "euro", c: 20ACH}, {name: "pound", c: 0A3H}, {name: "yen", c: 0A5H},
+        {name: "cent", c: 0A2H}, {name: "shy", c: 0ADH}, {name: "zwj", c: 200DH}, {name: "zwnj", c: 200CH},
+        {name: "ensp", c: 2002H}, {name: "emsp", c: 2003H}, {name: "thinsp", c: 2009H}];
+
+type
+    (* The text being laid out. *)
+    Page = record
+        out: ^Buf.Buf;
+        start: INT;     (* where the page's text starts in out *)
+        gap: INT;       (* what parts the next text from the last: 0 nothing, 1 a blank, 2 a line end, 3 a blank line *)
+        nl: INT;        (* the line ends the text ends with *)
+        pre: INT;       (* pre elements open *)
+        hidden: INT;    (* hidden elements open *)
+        title: INT;     (* where the title's text starts in out, -1 if no title is open *)
+    end;
+
+(* The text next parted from the last by k, unless something wider
+   parts it already. *)
+proc part(p: ^Page; k: INT);
+begin
+    if k > p^.gap then p^.gap := k; end;
+end;
+
+(* c, a byte of the text, added, after what parts it from the text
+   before; nothing parts the text from the page's start. *)
+proc emit(p: ^Page; c: U8);
+begin
+    if p^.out^.len > p^.start then
+        if (p^.gap = 1) and (p^.nl = 0) then Buf.add(p^.out, ' '); end;
+        while p^.nl < p^.gap - 1 do   (* 2: a line end, 3: two *)
+            Buf.add(p^.out, '\n');
+            INC(p^.nl);
+        end;
+    end;
+    p^.gap := 0;
+    Buf.add(p^.out, c);
+    if c = '\n' then INC(p^.nl); else p^.nl := 0; end;
+end;
+
+(* Text, its blanks run together unless in pre. *)
+proc flow(p: ^Page; s: []U8);
+var i: INT;
+begin
+    if p^.hidden > 0 then return; end;
+    for i := 0 to LEN(s) - 1 do
+        if p^.pre > 0 then
+            emit(p, s[i]);
+        else
+            match s[i] of
+            | ' ', '\t', '\n', 0CH, '\r': part(p, 1);
+            | else: emit(p, s[i]);
+            end;
+        end;
+    end;
+end;
+
+(* s with its character references made the characters they stand for,
+   in b. *)
+proc decode(s: []U8; b: ^Buf.Buf): []U8;
+var i, j, k: INT; c: I32; v: U64; d: I64; ok: BOOL; e: [4]U8; n: INT;
+begin
+    Buf.reset(b);
+    i := 0;
+    while i < LEN(s) do
+        if s[i] # '&' then
+            Buf.add(b, s[i]);
+            INC(i);
+            continue;
+        end;
+        j := i + 1;
+        while (j < LEN(s)) and (j - i < 32) and (s[j] # ';') and (s[j] # '&') and (s[j] # ' ') and (s[j] # '<') do
+            INC(j);
+        end;
+        c := -1;
+        if (j < LEN(s)) and (s[j] = ';') and (j > i + 1) then
+            if s[i + 1] = '#' then
+                if (j > i + 2) and ((s[i + 2] = 'x') or (s[i + 2] = 'X')) then
+                    v, ok := Str.toHex(s[i + 3..j]);
+                    ok := ok and (j > i + 3) and (v < 110000H);
+                else
+                    d, ok := Str.toInt(s[i + 2..j]);
+                    ok := ok and (s[i + 2] >= '0') and (s[i + 2] <= '9') and (d < 110000H);
+                    v := U64(d);
+                end;
+                if ok and (v > 0) then c := I32(v); end;
+            else
+                for k := 0 to LEN(Entities) - 1 do
+                    if Entities[k].name = s[i + 1..j] then c := Entities[k].c; end;
+                end;
+            end;
+        end;
+        if c < 0 then
+            Buf.add(b, '&');
+            INC(i);
+        else
+            e, n := Str.encode(c);
+            Buf.str(b, e[0..n]);
+            i := j + 1;
+        end;
+    end;
+    return Buf.bytes(b);
+end;
+
+(* A tag, start or end, called name, small, laid out. *)
+proc tag(p: ^Page; name: []U8; ending: BOOL);
+var t: []U8;
+begin
+    if Afind.listed(name, Hidden) then
+        if not ending then INC(p^.hidden); elsif p^.hidden > 0 then DEC(p^.hidden); end;
+    elsif name = "pre" then
+        if not ending then INC(p^.pre); elsif p^.pre > 0 then DEC(p^.pre); end;
+    elsif name = "title" then
+        if not ending and (p^.title = -1) then
+            p^.title := p^.out^.len;
+        elsif ending and (p^.title >= 0) then
+            (* the title's text taken out, and kept apart at the start *)
+            t := Str.trim(Buf.bytes(p^.out)[p^.title..p^.out^.len]);
+            p^.out^.len := p^.title;
+            p^.title := -2;
+            p^.nl := 0;
+            Buf.str(p^.out, t);
+            p^.gap := 3;
+        end;
+    end;
+    if Afind.listed(name, Paras) then
+        part(p, 3);
+    elsif Afind.listed(name, Blocks) then
+        part(p, 2);
+    elsif Afind.listed(name, Cells) then
+        part(p, 1);
+    end;
+end;
+
+proc nameChar(c: U8): BOOL;
+begin
+    return (c >= 'a') and (c <= 'z') or (c >= 'A') and (c <= 'Z') or (c >= '0') and (c <= '9') or (c = '-');
+end;
+
+(* Where the tag starting at s[i], a <, ends: just after its >, past
+   the quoted values of its attributes, which may hold a >. *)
+proc tagEnd(s: []U8; i: INT): INT;
+var q: U8;
+begin
+    q := 0;
+    while i < LEN(s) do
+        if q # 0 then
+            if s[i] = q then q := 0; end;
+        elsif (s[i] = '"') or (s[i] = '\'') then
+            q := s[i];
+        elsif s[i] = '>' then
+            return i + 1;
+        end;
+        INC(i);
+    end;
+    return LEN(s);
+end;
+
+(* Where, case aside, sub next starts in s at or after i, or LEN(s). *)
+proc findFold(s, sub: []U8; i: INT): INT;
+begin
+    while i + LEN(sub) <= LEN(s) do
+        if Str.eqFold(s[i..i + LEN(sub)], sub) then return i; end;
+        INC(i);
+    end;
+    return LEN(s);
+end;
+
+(* The charset a Content-Type names, or a meta tag near the page's
+   start: its value, without quotes; "" for none. *)
+proc charsetOf(s: []U8): []U8;
+var i, j: INT;
+begin
+    i := findFold(s, "charset=", 0);
+    if i = LEN(s) then return ""; end;
+    INC(i, 8);
+    while (i < LEN(s)) and ((s[i] = '"') or (s[i] = '\'') or (s[i] = ' ')) do INC(i); end;
+    j := i;
+    while (j < LEN(s)) and (nameChar(s[j]) or (s[j] = '_')) do INC(j); end;
+    return s[i..j];
+end;
+
+(* Whether s is a page whose bytes are Latin-1, or Windows-1252, which
+   pages that say Latin-1 nearly always are. *)
+proc latin(charset: []U8): BOOL;
+begin
+    return Str.eqFold(charset, "iso-8859-1") or Str.eqFold(charset, "latin1") or
+        Str.eqFold(charset, "windows-1252") or Str.eqFold(charset, "cp1252") or Str.eqFold(charset, "us-ascii");
+end;
+
+(* s, Windows-1252, made UTF-8 in b. *)
+proc fromLatin(s: []U8; b: ^Buf.Buf): []U8;
+var i, n: INT; c: I32; e: [4]U8;
+begin
+    for i := 0 to LEN(s) - 1 do
+        if s[i] < 80H then
+            Buf.add(b, s[i]);
+        else
+            c := I32(s[i]);
+            if (c >= 80H) and (c < 0A0H) then c := Win[c - 80H]; end;
+            if c = 0 then c := 0FFFDH; end;
+            e, n := Str.encode(c);
+            Buf.str(b, e[0..n]);
+        end;
+    end;
+    return Buf.bytes(b);
+end;
+
+(* The text of body, an HTML page, added to out: its title, a blank
+   line, and the rest; "(no text)" if there is none. ctype is its
+   Content-Type, which may name its charset. *)
+proc text*(body, ctype: []U8; out: ^Buf.Buf);
+var p: Page; ent, bytes: Buf.Buf; s, name, charset: []U8; i, j, k, from: INT; ending: BOOL;
+begin
+    Buf.init(ADR(ent), Heap.heap);
+    defer Buf.done(ADR(ent));
+    Buf.init(ADR(bytes), Heap.heap);
+    defer Buf.done(ADR(bytes));
+    s := body;
+    charset := charsetOf(ctype);
+    if LEN(charset) = 0 then
+        k := LEN(s);
+        if k > 2048 then k := 2048; end;
+        charset := charsetOf(s[0..k]);
+    end;
+    if latin(charset) then s := fromLatin(s, ADR(bytes)); end;
+    from := out^.len;
+    p := {out: out, start: out^.len, title: -1};
+    i := 0;
+    while i < LEN(s) do
+        if s[i] # '<' then
+            j := i;
+            while (j < LEN(s)) and (s[j] # '<') do INC(j); end;
+            flow(ADR(p), decode(s[i..j], ADR(ent)));
+            i := j;
+        elsif Str.hasPrefix(s[i..LEN(s)], "<!--") then
+            j := Str.find(s[i + 4..LEN(s)], "-->");
+            if j < 0 then i := LEN(s); else i := i + 4 + j + 3; end;
+        elsif (i + 1 < LEN(s)) and ((s[i + 1] = '!') or (s[i + 1] = '?')) then
+            i := tagEnd(s, i);
+        else
+            ending := (i + 1 < LEN(s)) and (s[i + 1] = '/');
+            j := i + 1;
+            if ending then INC(j); end;
+            k := j;
+            while (k < LEN(s)) and nameChar(s[k]) do INC(k); end;
+            if k = j then
+                flow(ADR(p), "<");   (* a < that starts no tag is text *)
+                INC(i);
+                continue;
+            end;
+            Buf.reset(ADR(ent));
+            Buf.str(ADR(ent), s[j..k]);
+            name := Buf.bytes(ADR(ent));
+            Str.lower(name);
+            tag(ADR(p), name, ending);
+            i := tagEnd(s, k);
+            if not ending and Afind.listed(name, Raw) then
+                (* script and style hold text, < and all, to their end tag *)
+                Buf.reset(ADR(bytes));
+                Buf.str(ADR(bytes), "</");
+                Buf.str(ADR(bytes), name);
+                j := findFold(s, Buf.bytes(ADR(bytes)), i);
+                tag(ADR(p), name, true);
+                i := tagEnd(s, j);
+            end;
+        end;
+    end;
+    out^.len := from + LEN(Str.trimRight(Buf.bytes(out)[from..out^.len]));
+    if out^.len = from then Buf.str(out, "(no text)"); end;
+end;
+
+(* The module's test. *)
+
+var failed: BOOL;
+
+proc expect(what, html, ctype, want: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    text(html, ctype, ADR(b));
+    if Buf.bytes(ADR(b)) = want then return; end;
+    Out.str("Ahtml: ");
+    Out.str(what);
+    Out.str(":\n");
+    Out.str(Buf.bytes(ADR(b)));
+    Out.str("\nnot\n");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+proc main*: INT;
+begin
+    expect("a page", "<!doctype html><html><head><title> The  Title </title><meta charset=utf-8>" +
+        "<style>p { x: '<b>' }</style><script>if (a<b) x();</script></head><body>" +
+        "<h1>Head</h1><p>One   two\nthree <b>bold</b>.</p><ul><li>a</li><li>b &amp; c &#233; &#x2014; &bogus;</li></ul>" +
+        "<pre>  x = 1\n  y = 2\n</pre><!-- a <p> comment --><table><tr><td>1</td><td>2</td></tr></table>" +
+        "<p a=\"x>y\">done</p></body></html>", "text/html",
+        "The Title\n\nHead\n\nOne two three bold.\n\na\nb & c \u{E9} \u{2014} &bogus;\n\n  x = 1\n  y = 2\n\n1 2\n\ndone");
+    expect("Latin-1", "<p>caf\xE9 \x93q\x94</p>", "text/html; charset=ISO-8859-1", "caf\u{E9} \u{201C}q\u{201D}");
+    expect("a meta charset", "<meta http-equiv=content-type content='text/html; charset=windows-1252'><p>\xE9",
+        "text/html", "\u{E9}");
+    expect("nothing", "<script>x</script>", "text/html", "(no text)");
+    expect("a lone <", "<p>a < b</p>", "text/html", "a < b");
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Ahtml.

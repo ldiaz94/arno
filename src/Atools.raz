@@ -33,15 +33,17 @@
    which rjson reads only as UTF-8.
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git),
-   Aahead (note), Awire (for Tool), rjson's Json. Leaves out the tools
-   of the steps after this one: search, fetch, delegate, run and shell; the
+   Aahead (note), Ahtml (fetch), Awire (for Tool), rnet's Http (search
+   and fetch), rjson's Json. Delegate is the agent's, which runs the
+   worker; it is described here, with the rest. Leaves out run and
+   shell, which come with the jail; the
    images read shows as pictures, which come with the screen; the
    model's scratch directory, where a change needs no approval, which
    comes with the stage; and an editor's buffers, which come with the
    peers. *)
 module Atools;
-import Afence, Afind, Arun, Aahead, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8),
-    Refusals := Vec(Refusal);
+import Afence, Afind, Arun, Aahead, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+    Strs := Vec([]U8), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 
 type
     (* What the human answers to question, shown detail first (a diff;
@@ -73,9 +75,15 @@ type
     end;
 
 const
+    Failed: ERROR = "the server answered with an error";
+
     MaxOut* = 32000;   (* bytes of a result, past which it is cut *)
     MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads, and edit changes *)
     MaxShown = 40;     (* lines of a file to be removed the human is shown *)
+    MaxResults = 8;    (* search's results *)
+    MaxPage = 1 shl 20;   (* bytes of a page fetch reads; it shows far fewer *)
+    WebWait = 30;      (* seconds search and fetch wait for a page *)
+    Hex = "0123456789ABCDEF";
 
     (* What a request offers. A tool's rules go in its description,
        not in the system prompt, and the descriptions use placeholders,
@@ -178,7 +186,37 @@ const
             "later session.",
          params: `{"type":"object","properties":` +
             `{"text":{"type":"string","description":"the note, one line of at most 200 characters"}},` +
-            `"required":["text"]}`}];
+            `"required":["text"]}`},
+        {name: "search",
+         description: "Search the web. Use it for things outside this project: a library's API, an error " +
+            "message, current events. Not for finding code, which find, grep and read do better. Returns " +
+            "titles, urls and snippets only, and a snippet is not evidence: read the pages with fetch before " +
+            "you answer from them.",
+         params: `{"type":"object","properties":` +
+            `{"query":{"type":"string","description":"what to search for, as you would type it into a search engine"}},` +
+            `"required":["query"]}`},
+        {name: "fetch",
+         description: "Read a web page by its URL: its title, then its text as a text browser shows it, " +
+            "without markup, scripts or styles; a plain-text, JSON or Markdown body comes back as it is. Use it " +
+            "after search to read the pages found, not just the first hit: snippets are not evidence. When the " +
+            "answer matters, read two or three sources, and prefer primary ones - official documentation, the " +
+            "project's own repository, a man page - to pages that retell them. Say in your answer which URLs " +
+            "you relied on. http and https only.",
+         params: `{"type":"object","properties":` +
+            `{"url":{"type":"string","description":"the page's URL, http:// or https://, as search gave it"}},` +
+            `"required":["url"]}`},
+        {name: "delegate",
+         description: "Give a self-contained step of a larger job to a worker: a cheaper model with the " +
+            "ordinary tools and nothing but your brief, which does the step and reports what it did, what it " +
+            "found, the files it changed and check's verdict. It pays for a step whose details you will not " +
+            "need again, such as building one piece or surveying an area; it does not for a small task, or for " +
+            "anything you would have to read again yourself. Brief it fully: the goal, the files, the " +
+            "project's rules that matter, what to test. One step at a time; read each report before the next.",
+         params: `{"type":"object","properties":` +
+            `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
+            `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
+            `"done_when":{"type":"string","description":"how the worker knows the step is done"}},` +
+            `"required":["task","done_when"]}`}];
 
     (* What git may run, and what may follow git branch --list. *)
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
@@ -246,7 +284,7 @@ end;
    sends git's list in three shapes: an array; the array's own JSON
    text, as a string, which split at its blanks would make a subcommand
    of '["diff",'; and the words as one string, "diff --stat". *)
-proc list(a: ^Args; key: []U8): [][]U8;
+proc list*(a: ^Args; key: []U8): [][]U8;
 var l: Strs.Vec; v, w: Json.Value; s, word: []U8; i: INT;
 begin
     Strs.init(ADR(l), a^.mem);
@@ -829,6 +867,169 @@ begin
     Fmt.write(out, "ok: removed {}", [Fmt.str(p)]);
 end;
 
+proc keep(s: []U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* The web *)
+
+var
+    searx: []U8;       (* the SearXNG search goes through, as config's searxng says; "" for none *)
+    web: Http.Client;  (* search's and fetch's, made at the first *)
+    webbed: BOOL;      (* web is made *)
+    offer: Tools.Vec;  (* what offered gives *)
+
+(* search through the SearXNG at url, as config's searxng says; "" for
+   none, when search isn't offered. *)
+proc search*(url: []U8);
+begin
+    Str.free(Heap.heap, searx);
+    searx := keep(url);
+    while Str.hasSuffix(searx, "/") do searx := searx[0..LEN(searx) - 1]; end;
+end;
+
+(* s added to b with every byte but a letter, a digit and -._~
+   written %XX, as a URL's query wants it. *)
+proc escape(b: ^Buf.Buf; s: []U8);
+var i: INT;
+begin
+    for i := 0 to LEN(s) - 1 do
+        match s[i] of
+        | 'a' .. 'z', 'A' .. 'Z', '0' .. '9', '-', '.', '_', '~': Buf.add(b, s[i]);
+        | else: Fmt.write(b, "%{}{}", [Fmt.char(Hex[s[i] shr 4]), Fmt.char(Hex[s[i] & 15])]);
+        end;
+    end;
+end;
+
+(* The page at url read, its body into body, at most MaxPage bytes of
+   it: its Content-Type, or why it can't be. A page that never comes
+   mustn't hold the turn: WebWait seconds is all it gets. *)
+proc page(url: []U8; mem: ^Mem.Allocator; body: ^Buf.Buf): ([]U8, ERROR);
+var req, res: Http.Message; r: ^Http.Reader; n: INT; err: ERROR;
+begin
+    if not webbed then
+        Awire.initClient(ADR(web));
+        webbed := true;
+    end;
+    web.deadline := Sys.clock() + I64(WebWait) * 1000000000;
+    Http.init(ADR(res), mem);
+    req := {method: "GET", minor: 1};
+    _ := Http.add(ADR(req), "User-Agent", "arno");
+    _ := Http.add(ADR(req), "Accept", "text/html, text/plain;q=0.9, */*;q=0.8");
+    r := try Http.open(ADR(web), ADR(req), url, ADR(res));
+    while body^.len < MaxPage do
+        n, err := Http.read(r, Buf.spare(body, MaxPage - body^.len));
+        if err # nil then
+            Http.doneClient(ADR(web));
+            return "", err;
+        end;
+        if n = 0 then break; end;
+        INC(body^.len, n);
+    end;
+    if body^.len >= MaxPage then Http.doneClient(ADR(web)); end;   (* the rest isn't read *)
+    if res.status >= 400 then
+        Buf.reset(body);
+        Fmt.write(body, "the server answered {} {}", [Fmt.int(res.status), Fmt.str(res.reason)]);
+        return "", Failed;
+    end;
+    return Http.header(ADR(res), "Content-Type"), nil;
+end;
+
+(* search: the first MaxResults of what SearXNG finds for the query,
+   each its title, its URL and a snippet. *)
+proc searchWeb(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var url, body: Buf.Buf; d: Json.Doc; v, r, x: Json.Value; i: INT; err: ERROR;
+begin
+    Buf.init(ADR(url), mem);
+    Buf.init(ADR(body), mem);
+    Buf.str(ADR(url), searx);
+    Buf.str(ADR(url), "/search?format=json&q=");
+    escape(ADR(url), str(a, "query"));
+    _, err := page(Buf.bytes(ADR(url)), mem, ADR(body));
+    if err = Failed then
+        Fmt.write(out, "error: search failed: {}", [Fmt.str(Buf.bytes(ADR(body)))]);
+        return;
+    elsif err # nil then
+        Fmt.write(out, "error: search failed: {}", [Fmt.str(MSG(err))]);
+        return;
+    end;
+    if not Json.init(ADR(d), mem) then return; end;
+    v := Json.parse(ADR(d), Buf.bytes(ADR(body)));
+    r := Json.member(ADR(d), v, "results");
+    if Json.kind(ADR(d), r) # Json.Kind.array then
+        i := body.len;
+        if i > 200 then i := 200; end;
+        Fmt.write(out, "error: a bad reply from SearXNG: {}", [Fmt.str(Buf.bytes(ADR(body))[0..i])]);
+        return;
+    end;
+    for i := 0 to Json.len(ADR(d), r) - 1 do
+        if i = MaxResults then break; end;
+        x := Json.item(ADR(d), r, i);
+        Fmt.write(out, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "title"))),
+            Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "url"))),
+            Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "content")))]);
+    end;
+    if out^.len = 0 then Buf.str(out, "no results"); end;
+end;
+
+(* fetch: the page at the URL, as text: an HTML page's laid out by
+   Ahtml, any other text's as it is. A body with a NUL in its first 8 KB
+   is refused, as read refuses a binary file: its Content-Type can't be
+   trusted to say so. *)
+proc fetch(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var body: Buf.Buf; url, kind, s: []U8; err: ERROR;
+begin
+    url := str(a, "url");
+    if not Str.hasPrefix(url, "http://") and not Str.hasPrefix(url, "https://") then
+        Buf.str(out, "error: the url must begin with http:// or https://");
+        return;
+    end;
+    Buf.init(ADR(body), mem);
+    kind, err := page(url, mem, ADR(body));
+    if err = Failed then
+        Fmt.write(out, "error: {}", [Fmt.str(Buf.bytes(ADR(body)))]);
+        return;
+    elsif err # nil then
+        Fmt.write(out, "error: {}", [Fmt.str(MSG(err))]);
+        return;
+    end;
+    s := Buf.bytes(ADR(body));
+    if (Str.find(kind, "text/html") >= 0) or (Str.find(kind, "application/xhtml") >= 0) then
+        Ahtml.text(s, kind, out);
+        return;
+    end;
+    if LEN(s) > 8192 then s := s[0..8192]; end;
+    if Str.find(s, "\x00") >= 0 then
+        Fmt.write(out, "error: not text ({})", [Fmt.str(kind)]);
+        return;
+    end;
+    Buf.str(out, Buf.bytes(ADR(body)));
+    if out^.len = 0 then Buf.str(out, "(empty)"); end;
+end;
+
+(* The tools a request offers: Offered, less those that could only
+   fail: search without a SearXNG, note outside a project, delegate
+   unless lead, a session with a worker model, which a worker isn't. *)
+proc offered*(lead: BOOL): []Awire.Tool;
+var i: INT;
+begin
+    Tools.reset(ADR(offer));
+    for i := 0 to LEN(Offered) - 1 do
+        match Offered[i].name of
+        | "search": if LEN(searx) = 0 then continue; end;
+        | "note": if not Afence.rooted then continue; end;
+        | "delegate": if not lead then continue; end;
+        | else:
+        end;
+        Tools.push(ADR(offer), Offered[i]);
+    end;
+    return Tools.all(ADR(offer));
+end;
+
 (* A call *)
 
 var refused: Refusals.Vec;   (* the changes the human declined this run, from Heap *)
@@ -867,14 +1068,6 @@ begin
         Str.free(Heap.heap, r[i].said);
     end;
     Refusals.reset(ADR(refused));
-end;
-
-proc keep(s: []U8): []U8;
-var c: []U8; ok: BOOL;
-begin
-    c, ok := Str.copy(Heap.heap, s);
-    if not ok then Rt.stop("arno: out of memory"); end;
-    return c;
 end;
 
 (* Whether every path the call of name would reach may be reached, the
@@ -954,6 +1147,12 @@ begin
         remove(ADR(a), h, mem, ADR(res));
     elsif name = "note" then
         Aahead.note(str(ADR(a), "text"), mem, ADR(res));
+    elsif (name = "search") and (LEN(searx) > 0) then
+        searchWeb(ADR(a), mem, ADR(res));
+    elsif name = "fetch" then
+        fetch(ADR(a), mem, ADR(res));
+    elsif name = "delegate" then
+        Buf.str(ADR(res), "error: there are no workers here");
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
         Buf.str(ADR(res), "error: there is no tool named \"");
@@ -1062,7 +1261,8 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove note");
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove note " +
+        "search fetch delegate");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");
@@ -1149,4 +1349,5 @@ end;
 
 begin
     Refusals.init(ADR(refused), Heap.heap);
+    Tools.init(ADR(offer), Heap.heap);
 end Atools.

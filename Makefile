@@ -22,7 +22,7 @@ RWALK ?= ../rwalk
 TLS ?= openssl
 INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS) -I $(RWALK)/lib
 # the modules whose main is their test
-MODS = Amsg Awire Astore Aconf Afence Afind Arun Aahead Aprice Aprompt Atools Agent
+MODS = Amsg Awire Astore Aconf Afence Afind Arun Aahead Aprice Aprompt Ahtml Atools Agent
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz $(RWALK)/lib/*.raz)
