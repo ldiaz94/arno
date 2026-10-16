@@ -20,11 +20,16 @@
    and git's result coloured as diffs. The newest call stays open
    while its question is asked.
 
+   flatten lays the whole transcript out as text, for copy mode to move
+   over: each row's text, without its styles or what goes before it,
+   and the column it starts at; and what joins it to the row above
+   when it is copied, so that a paragraph wrapped over several rows is
+   copied as the one line it was.
+
    Depends on rtui's TuiScreen and TuiWidth, rterm's Term, Buf, Str and
-   Heap. Leaves out what copy mode needs, a row's text kept to move
-   over, which comes with copy mode. *)
+   Heap. *)
 module Aboard;
-import TuiScreen, TuiWidth, Term, Buf, Str, Heap, Fmt, Entries := Vec(Entry);
+import TuiScreen, TuiWidth, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row);
 
 type
     Kind* = (user, reply, tool, info, error);
@@ -37,6 +42,14 @@ type
         detail*: Buf.Buf;   (* the diff its question showed *)
         done*: BOOL;        (* its result came *)
         open*: BOOL;        (* shown in full, not as a line *)
+    end;
+
+    (* A row of the transcript as text, as flatten lays it out. *)
+    Row* = record
+        a*, b*: INT;   (* where its text is in flatten's, from a to b *)
+        x*: INT;       (* the column the text starts at *)
+        join*: U8;     (* what joins it to the row above: a line feed where the text had one, a
+                          blank where the row broke at one, 0 where it broke inside a word *)
     end;
 
     (* How a piece of text looks: an index into Styles. *)
@@ -58,6 +71,12 @@ var
     screen: ^TuiScreen.Screen;
     area: TuiScreen.Rect;
     top, row: INT;
+    (* what flatten keeps: the rows, their text, and the join of the
+       next row laid out *)
+    keeping: BOOL;
+    flatRows: Rows.Vec;
+    flatText: Buf.Buf;
+    joinNext: U8;
 
 (* The entries, oldest first, until one is added. *)
 proc all*: []Entry;
@@ -184,6 +203,11 @@ end;
 proc emit(pre: []U8; bar: Look; a, b: INT);
 var r, col, limit, x: INT; s, l: []U8;
 begin
+    if keeping then
+        Rows.push(ADR(flatRows), {a: flatText.len, b: flatText.len + b - a, x: TuiWidth.text(pre), join: joinNext});
+        Buf.str(ADR(flatText), Buf.bytes(ADR(text))[a..b]);
+    end;
+    joinNext := '\n';
     r := row - top;
     INC(row);
     if (screen = nil) or (r < 0) or (r >= area.rows) then return; end;
@@ -227,6 +251,8 @@ begin
         end;
         emit(pre, bar, a, i);
         a := i;
+        joinNext := 0;
+        if s[a] = ' ' then joinNext := ' '; end;
         while (a < LEN(s)) and (s[a] = ' ') do INC(a); end;
     end;
 end;
@@ -490,6 +516,35 @@ begin
     return back;
 end;
 
+(* The whole transcript laid out at w columns, as rows of text: how
+   many there are. Each row is kept until the next flatten. *)
+proc flatten*(w: INT): INT;
+var i: INT;
+begin
+    Rows.reset(ADR(flatRows));
+    Buf.reset(ADR(flatText));
+    keeping := true;
+    screen := nil;
+    row := 0;
+    for i := 0 to entries.len - 1 do layout(i, w); end;
+    keeping := false;
+    return flatRows.len;
+end;
+
+(* Row i of the last flatten. *)
+proc rowAt*(i: INT): Row;
+begin
+    return Rows.all(ADR(flatRows))[i];
+end;
+
+(* Row i's text. *)
+proc rowText*(i: INT): []U8;
+var r: Row;
+begin
+    r := Rows.all(ADR(flatRows))[i];
+    return Buf.bytes(ADR(flatText))[r.a..r.b];
+end;
+
 (* The board drawn on a screen of cols by rows, back rows back, as
    text, matched with want; false, and both said, if they differ. *)
 proc expect(what: []U8; cols, rows, back: INT; want: []U8): BOOL;
@@ -516,6 +571,11 @@ begin
     reply("# Head\n`x := 1`");
     call("read", `{"path":"a.raz"}`);
     ok := expect("short, from the top", 24, 16, 0, "  arno\n\n\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"pat  running\u{2026}\n\n\n\n\n\n\n\nback 0\n");
+    if (flatten(24) # 9) or (rowText(5) # "enough to wrap") or (rowAt(5).join # ' ') or (rowAt(5).x # 2)
+        or (rowText(4) # "Hi, a reply long") or (rowAt(4).join # '\n') then
+        Out.str("Aboard: flatten\n");
+        ok := false;
+    end;
     result("one\ntwo\nthree\n");
     ok := expect("the last rows", 24, 4, 0, "\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"path  3 lines\nback 0\n") and ok;
     ok := expect("scrolled back", 24, 4, 3, "\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\nback 3\n") and ok;
@@ -532,6 +592,9 @@ begin
     Entries.init(ADR(entries), Heap.heap);
     Buf.init(ADR(text), Heap.heap);
     Buf.init(ADR(looks), Heap.heap);
+    Rows.init(ADR(flatRows), Heap.heap);
+    Buf.init(ADR(flatText), Heap.heap);
+    joinNext := '\n';
     styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.dim, {}), TuiScreen.style(Term.bad, {}), TuiScreen.style(Term.good, {}),

@@ -39,6 +39,9 @@
    until the input changes. A command isn't completed during a job,
    which has the session.
 
+   M-v starts copy mode (Acopy): a cursor on the transcript, to move
+   over it, select and copy, until it copies or is left.
+
    C-v types in an @path to the clipboard's image, saved to a file of
    its own (Aattach.paste); or says on the rule why there is none.
 
@@ -51,13 +54,12 @@
    can't yet break into a wait for the server, since raz has no way to
    signal one thread (PLAN.md, asked of raz).
 
-   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Astore, Amsg, Aprompt,
+   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt,
    rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
    TuiLine, TuiWidth), rterm's Term, Thread and Sys. Leaves out, for
-   the step after this one: copy mode; and the mouse and vim's keys.
-   *)
+   the mouse, and vim's keys. *)
 module Ascreen;
-import Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+import Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
     TuiText, TuiLine, TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 
@@ -74,7 +76,7 @@ type
 const
     MaxInput = 8;   (* rows the input grows to *)
     MaxMenu = 8;    (* rows of completions shown *)
-    Hints = "^O tools \u{B7} S-Tab mode \u{B7} /help";
+    Hints = "^O tools \u{B7} M-v copy \u{B7} S-Tab mode \u{B7} /help";
     Prompt = "\u{203A} ";
     (* git commit -v's line, byte for byte, which an editor may know *)
     Scissors = "# ------------------------ >8 ------------------------";
@@ -101,6 +103,7 @@ var
     map: TuiMap.Map;
     reader: TuiMap.Reader;
     back: INT;          (* rows the transcript is scrolled back *)
+    view: INT;          (* rows of it the last draw showed *)
     status: Buf.Buf;    (* the status line *)
     flash: Buf.Buf;     (* said on the rule until the next key *)
     question: Buf.Buf;  (* the question being asked, "" for none *)
@@ -444,6 +447,11 @@ begin
     scroll(-n);
 end;
 
+proc copyMode(_n: INT);
+begin
+    Acopy.start(TuiLoop.theScreen()^.cols, view, back);
+end;
+
 proc redraw(_n: INT);
 begin
     TuiScreen.redraw(TuiLoop.theScreen());
@@ -775,6 +783,13 @@ begin
         return;
     end;
     if question.len > 0 then answering(ev); return; end;
+    if Acopy.active() then
+        if not Acopy.key(ev) then
+            Buf.str(ADR(flash), Acopy.saying());
+            TuiEdit.focus(ADR(editor));
+        end;
+        return;
+    end;
     if searching and searchKey(ev) then return; end;
     if offered() and not TuiMap.busy(ADR(reader)) and menuKey(ev) then refresh(); return; end;
     if ev.key = TuiKeys.Paste then
@@ -794,6 +809,7 @@ proc rule(s: ^TuiScreen.Screen; r: INT);
 var col, right: INT; d: Buf.Buf;
 begin
     if why.open then TuiLine.draw(ADR(why), s, r, 0); return; end;
+    if Acopy.active() and Acopy.rule(s, r) then return; end;
     Buf.init(ADR(d), Heap.heap);
     defer Buf.done(ADR(d));
     if back > 0 then Fmt.write(ADR(d), " \u{2191}{} ", [Fmt.int(back)]); end;
@@ -803,6 +819,12 @@ begin
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
         col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(question)), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+    elsif Acopy.active() then
+        col := TuiScreen.putTo(s, r, 0, right, " COPY ", TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
+        if LEN(Acopy.saying()) > 0 then
+            col := TuiScreen.putTo(s, r, col, right, Acopy.saying(), TuiScreen.style(Term.bad, {}));
+            col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+        end;
     elsif searching then
         col := TuiScreen.putTo(s, r, 0, right, " history", TuiScreen.style(Term.info, {}));
         if failing then col := TuiScreen.putTo(s, r, col, right, ", failing", TuiScreen.style(Term.bad, {})); end;
@@ -840,12 +862,17 @@ begin
     if n > MaxInput then n := MaxInput; end;
     v := s^.rows - n - 2;
     if v < 1 then v := 1; end;
-    back := Aboard.draw(s, {row: 0, col: 0, rows: v, cols: s^.cols}, back);
+    view := v;
+    if Acopy.active() then
+        back := Acopy.draw(s, {row: 0, col: 0, rows: v, cols: s^.cols});
+    else
+        back := Aboard.draw(s, {row: 0, col: 0, rows: v, cols: s^.cols}, back);
+    end;
     if offered() then drawMenu(s, v); end;
     rule(s, v);
     _ := TuiScreen.put(s, v + 1, 0, Prompt, TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}));
     TuiEdit.draw(ADR(editor), s, {row: v + 1, col: 2, rows: n, cols: s^.cols - 2},
-        (question.len = 0) and not why.open);
+        (question.len = 0) and not why.open and not Acopy.active());
     bottom(s);
 end;
 
@@ -869,6 +896,7 @@ begin
     TuiMap.define("arno-prefixed-back", "the line sent before that begins as the input does", prefixedBack);
     TuiMap.define("arno-prefixed-onward", "the line sent after that begins as the input does", prefixedOnward);
     TuiMap.define("arno-search-back", "the lines sent searched, newest first", searchBack);
+    TuiMap.define("arno-copy", "copy mode, a cursor on the transcript", copyMode);
     TuiMap.define("arno-paste-image", "an @path to the clipboard's image typed in", pasteImage);
     TuiMap.define("arno-external", "the input written in $VISUAL or $EDITOR", external);
     TuiMap.init(ADR(map), "arno", nil);
@@ -893,6 +921,7 @@ begin
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-r", "arno-search-back");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-x C-e", "arno-external");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-v", "arno-paste-image");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-v", "arno-copy");
 end;
 
 (* The session s run on the screen until the human ends it: false, at

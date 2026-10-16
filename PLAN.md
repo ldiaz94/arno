@@ -195,7 +195,12 @@ one or more commits that build with `-Werror`.
      says arno's own list (`Awire.known`); what the server said
      completes /model. A command isn't completed during a job, which
      has the session.
-   - [ ] f. Copy mode.
+   - [x] f. Copy mode. `Acopy`, on `M-v`: a cursor on the transcript
+     as `Aboard.flatten` lays it out, emacs's keys and vi's letters
+     (the Pascal arno took one or the other, as config's `keys` said),
+     selecting characters or rows, searching, and copying by OSC 52;
+     a line wrapped over rows is copied as the one line it was. The
+     mouse is left out, as it is from the rest of the screen.
 4. **Stage, jail, shell.** The stage worktree; the jail from
    unprivileged namespaces, with `eval/jailtest`'s 25 escapes kept and
    cases that must fail added; `run` and `shell`.
@@ -219,6 +224,10 @@ one or more commits that build with `-Werror`.
   then a stop waits for the next read.
 - **rtui: the rows an editor's text takes.** The input grows with its
   text: done in rtui `f1f1b73`, `TuiEdit.rows`.
+- **rtui: a program's own sequence to the terminal.** Copy mode sends
+  OSC 52 to set the clipboard; `TuiLoop` writes only the grid, so
+  Acopy opens `/dev/tty` and writes it there, between draws. Asked of
+  rtui: `TuiLoop.send(s)`, written with the next draw.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; nothing else in rtui uses raz's `Thread`, and a
   job's thread wakes the loop as it should (3b).

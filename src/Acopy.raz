@@ -1,0 +1,651 @@
+(* Acopy: copy mode, a cursor on the transcript, to move over it, select
+   and copy, as tmux's copy mode does over a pane.
+
+   It works on the transcript as Aboard.flatten lays it out, again at
+   each draw, so that what a job adds meanwhile comes in below; the
+   cursor and the rows shown are counted from the top, and stay where
+   they are. The keys are emacs's, and vi's letters where emacs has
+   none for a motion:
+
+       C-b C-f C-p C-n, h l k j, the arrows    a character, a row
+       M-b M-f, b w e                          a word back, on, to its end
+       C-a 0 <home>, C-e $ <end>, M-m ^        the row's start, end, first non-blank
+       M-< g, M-> G                            the first row, the last
+       M-v <prior>, C-v <next>                 a page back, on
+       C-u, C-d                                half a page back, on
+       M-{ {, M-} }                            the paragraph before, after
+       C-SPC v, V                              select characters, rows
+       C-x C-x, o                              the cursor to the selection's other end
+       RET M-w C-w y                           copy, and leave
+       C-s /, C-r ?, n N                       search on, back, again, again the other way
+       C-g Esc                                 the selection dropped; with none, leave
+       q C-c                                   leave
+
+   A word is a run of letters, digits and _ (any byte past ASCII a
+   letter), or of other marks, as vi's are; the end of a row is a blank,
+   and an empty row a stop of its own, so the paragraph motions go from
+   message to message. Copying with nothing selected copies the line
+   the cursor is on, the rows a long line was wrapped into joined
+   again. A search is for a text, case aside, within a row, and goes
+   round the transcript's ends.
+
+   What is copied goes out by OSC 52, which asks the terminal to set the
+   clipboard, with no xclip between, over ssh too; a terminal that
+   doesn't know it ignores it. It is written to /dev/tty: rtui has no
+   way yet to send a program's own sequence (PLAN.md, asked of rtui).
+
+   Depends on Aboard, Aattach (base64), rtui's TuiScreen, TuiMap,
+   TuiKeys, TuiLine and TuiWidth, rterm's Term, Buf, Str and Sys. Leaves
+   out the mouse, and vi's counts. *)
+module Acopy;
+import Aboard, Aattach, TuiScreen, TuiMap, TuiKeys, TuiLine, TuiWidth, Term, Buf, Str, Sys, Heap, Fmt, Rt;
+
+type
+    Sel = (none, letters, rows);
+
+var
+    on: BOOL;
+    total: INT;         (* rows of the transcript *)
+    height: INT;        (* rows of it shown *)
+    l, c: INT;          (* the cursor: its row, and its character in the row *)
+    top: INT;           (* the first row shown *)
+    sel: Sel;
+    al, ac: INT;        (* the selection's other end *)
+    pattern: Buf.Buf;   (* the text searched for last *)
+    ahead: BOOL;        (* it was searched for onward *)
+    finding: TuiLine.Line;   (* the search being typed, while open *)
+    said: Buf.Buf;      (* what copy mode has to say, for the rule *)
+    map: TuiMap.Map;
+    reader: TuiMap.Reader;
+
+(* the rows *)
+
+(* How many characters row i has. *)
+proc chars(i: INT): INT;
+begin
+    return Str.chars(Aboard.rowText(i));
+end;
+
+(* Where the k-th character of t starts, or its end if there are fewer. *)
+proc byteAt(t: []U8; k: INT): INT;
+var i: INT;
+begin
+    i := 0;
+    while (k > 0) and (i < LEN(t)) do
+        _, i := Str.next(t, i);
+        if i < 0 then return LEN(t); end;
+        DEC(k);
+    end;
+    return i;
+end;
+
+(* The column of row i's k-th character. *)
+proc column(i, k: INT): INT;
+var t: []U8;
+begin
+    t := Aboard.rowText(i);
+    return Aboard.rowAt(i).x + TuiWidth.text(t[0..byteAt(t, k)]);
+end;
+
+(* The cursor kept on a character: a row there is, and a character of
+   it, 0 on an empty one; the rows shown kept round it. *)
+proc clamp;
+var n: INT;
+begin
+    if l >= total then l := total - 1; end;
+    if l < 0 then l := 0; end;
+    n := 0;
+    if total > 0 then n := chars(l); end;
+    if c >= n then c := n - 1; end;
+    if c < 0 then c := 0; end;
+    if l < top then top := l; end;
+    if l >= top + height then top := l - height + 1; end;
+    if top > total - height then top := total - height; end;
+    if top < 0 then top := 0; end;
+end;
+
+(* What kind of character the cursor's at (k) is: 0 a blank or the end of
+   the row, 1 a word's, 2 another mark. *)
+proc kind(i, k: INT): INT;
+var t: []U8; b: U8;
+begin
+    t := Aboard.rowText(i);
+    k := byteAt(t, k);
+    if k >= LEN(t) then return 0; end;
+    b := t[k];
+    if (b = ' ') or (b = '\t') then return 0; end;
+    if Str.isLetter(b) or Str.isDigit(b) or (b = '_') or (b >= 80H) then return 1; end;
+    return 2;
+end;
+
+(* The cursor a character on, to the next row's first at the end of
+   one; false at the end of the transcript. *)
+proc next: BOOL;
+begin
+    if c + 1 < chars(l) then INC(c); return true; end;
+    if l + 1 >= total then return false; end;
+    INC(l);
+    c := 0;
+    return true;
+end;
+
+(* The cursor a character back, to the row above's last at the start of
+   one; false at the start of the transcript. *)
+proc prev: BOOL;
+begin
+    if c > 0 then DEC(c); return true; end;
+    if l = 0 then return false; end;
+    DEC(l);
+    c := chars(l) - 1;
+    if c < 0 then c := 0; end;
+    return true;
+end;
+
+(* the motions *)
+
+proc wordOn;
+var k, from: INT;
+begin
+    k := kind(l, c);
+    from := l;
+    if k # 0 then
+        while next() and (l = from) and (kind(l, c) = k) do end;
+    end;
+    while (kind(l, c) = 0) and (chars(l) > 0) and next() do end;
+end;
+
+proc wordBack;
+var k: INT;
+begin
+    if not prev() then return; end;
+    while (kind(l, c) = 0) and (chars(l) > 0) and prev() do end;
+    k := kind(l, c);
+    if k = 0 then return; end;
+    while (c > 0) and (kind(l, c - 1) = k) do DEC(c); end;
+end;
+
+proc wordEnd;
+var k: INT;
+begin
+    if not next() then return; end;
+    while (kind(l, c) = 0) and next() do end;
+    k := kind(l, c);
+    while (c + 1 < chars(l)) and (kind(l, c + 1) = k) do INC(c); end;
+end;
+
+(* The next empty row after the cursor's (d 1) or before it (d -1), or
+   the transcript's end. *)
+proc paragraph(d: INT);
+begin
+    l := l + d;
+    while (l > 0) and (l < total - 1) and (chars(l) > 0) do l := l + d; end;
+    c := 0;
+end;
+
+proc firstMark;
+begin
+    c := 0;
+    while (c + 1 < chars(l)) and (kind(l, c) = 0) do INC(c); end;
+end;
+
+(* the search *)
+
+(* Whether row i holds the pattern from its byte from on: where, or -1. *)
+proc findIn(i, from: INT): INT;
+var t, q: []U8; k: INT;
+begin
+    t := Aboard.rowText(i);
+    q := Buf.bytes(ADR(pattern));
+    for k := from to LEN(t) - LEN(q) do
+        if Str.eqFold(t[k..k + LEN(q)], q) then return k; end;
+    end;
+    return -1;
+end;
+
+(* The cursor on the pattern's next place onward (on) or back, round the
+   ends; said if there is none. *)
+proc find(on: BOOL);
+var i, n, k, limit, at: INT; t: []U8;
+begin
+    if (pattern.len = 0) or (total = 0) then return; end;
+    for n := 0 to total do
+        if on then i := (l + n) mod total; else i := (l - n + total) mod total; end;
+        t := Aboard.rowText(i);
+        if on then
+            k := 0;
+            if n = 0 then k := byteAt(t, c + 1); end;
+            k := findIn(i, k);
+        else
+            (* the last place before the cursor, in its row *)
+            limit := LEN(t) + 1;
+            if n = 0 then limit := byteAt(t, c); end;
+            k := -1;
+            at := findIn(i, 0);
+            while (at >= 0) and (at < limit) do
+                k := at;
+                at := findIn(i, at + 1);
+            end;
+        end;
+        if k >= 0 then
+            l := i;
+            c := Str.chars(t[0..k]);
+            return;
+        end;
+    end;
+    Fmt.write(ADR(said), "{} isn't there", [Fmt.str(Buf.bytes(ADR(pattern)))]);
+end;
+
+(* copying *)
+
+(* The selection's ends, the first before the last. *)
+proc bounds: (INT, INT, INT, INT);
+begin
+    if (al < l) or (al = l) and (ac <= c) then return al, ac, l, c; end;
+    return l, c, al, ac;
+end;
+
+(* s sent to the terminal, for its clipboard, by OSC 52. *)
+proc clip(s: []U8);
+var b: Buf.Buf; fd: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.str(ADR(b), "\x1b]52;c;");
+    Aattach.base64(ADR(b), s);
+    Buf.add(ADR(b), 7);
+    fd := Sys.open("/dev/tty", {Sys.Access.writing});
+    if fd < 0 then return; end;
+    _ := Sys.write(fd, Buf.bytes(ADR(b)));
+    Sys.close(fd);
+end;
+
+(* What is selected copied, or the cursor's line, and copy mode left. *)
+proc copy(_n: INT);
+var b: Buf.Buf; l1, c1, l2, c2, i, lo, hi: INT; t: []U8; r: Aboard.Row;
+begin
+    if total = 0 then on := false; return; end;
+    if sel = none then
+        (* the line the cursor is on, all the rows it was wrapped into *)
+        al := l;
+        while (al > 0) and (Aboard.rowAt(al).join # '\n') do DEC(al); end;
+        while (l + 1 < total) and (Aboard.rowAt(l + 1).join # '\n') do INC(l); end;
+        sel := rows;
+    end;
+    l1, c1, l2, c2 := bounds();
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    for i := l1 to l2 do
+        r := Aboard.rowAt(i);
+        if (i > l1) and (r.join # 0) then Buf.add(ADR(b), r.join); end;
+        t := Aboard.rowText(i);
+        lo := 0;
+        hi := LEN(t);
+        if sel = letters then
+            if i = l1 then lo := byteAt(t, c1); end;
+            if i = l2 then hi := byteAt(t, c2 + 1); end;
+        end;
+        Buf.str(ADR(b), t[lo..hi]);
+    end;
+    clip(Buf.bytes(ADR(b)));
+    Buf.reset(ADR(said));
+    Fmt.write(ADR(said), "copied {} characters", [Fmt.int(Str.chars(Buf.bytes(ADR(b))))]);
+    on := false;
+end;
+
+(* the commands, each repeated n times where it is a motion *)
+
+proc left(n: INT);
+begin
+    c := c - n;
+end;
+
+proc right(n: INT);
+begin
+    c := c + n;
+    if c >= chars(l) then c := chars(l) - 1; end;
+end;
+
+proc up(n: INT);
+begin
+    l := l - n;
+end;
+
+proc down(n: INT);
+begin
+    l := l + n;
+end;
+
+proc wordsOn(n: INT);
+var i: INT;
+begin
+    for i := 1 to n do wordOn(); end;
+end;
+
+proc wordsBack(n: INT);
+var i: INT;
+begin
+    for i := 1 to n do wordBack(); end;
+end;
+
+proc wordsEnd(n: INT);
+var i: INT;
+begin
+    for i := 1 to n do wordEnd(); end;
+end;
+
+proc rowStart(_n: INT);
+begin
+    c := 0;
+end;
+
+proc rowEnd(_n: INT);
+begin
+    c := chars(l) - 1;
+end;
+
+proc rowFirst(_n: INT);
+begin
+    firstMark();
+end;
+
+proc first(_n: INT);
+begin
+    l := 0;
+    c := 0;
+end;
+
+proc last(_n: INT);
+begin
+    l := total - 1;
+    c := 0;
+end;
+
+proc pageBack(n: INT);
+begin
+    l := l - n * height;
+    top := top - n * height;
+end;
+
+proc pageOn(n: INT);
+begin
+    l := l + n * height;
+    top := top + n * height;
+end;
+
+proc halfBack(n: INT);
+begin
+    l := l - n * (height div 2);
+    top := top - n * (height div 2);
+end;
+
+proc halfOn(n: INT);
+begin
+    l := l + n * (height div 2);
+    top := top + n * (height div 2);
+end;
+
+proc paraBack(n: INT);
+var i: INT;
+begin
+    for i := 1 to n do paragraph(-1); end;
+end;
+
+proc paraOn(n: INT);
+var i: INT;
+begin
+    for i := 1 to n do paragraph(1); end;
+end;
+
+(* A selection begun at the cursor of kind k; the same kind again ends
+   it, another changes its kind. *)
+proc select(k: Sel);
+begin
+    if sel = k then sel := none; return; end;
+    if sel = none then
+        al := l;
+        ac := c;
+    end;
+    sel := k;
+end;
+
+proc selectChars(_n: INT);
+begin
+    select(letters);
+end;
+
+proc selectRows(_n: INT);
+begin
+    select(rows);
+end;
+
+proc swap(_n: INT);
+var x: INT;
+begin
+    if sel = none then return; end;
+    x := al;
+    al := l;
+    l := x;
+    x := ac;
+    ac := c;
+    c := x;
+end;
+
+proc searchOn(_n: INT);
+begin
+    ahead := true;
+    TuiLine.start(ADR(finding), " search: ", "", nil);
+end;
+
+proc searchBack(_n: INT);
+begin
+    ahead := false;
+    TuiLine.start(ADR(finding), " search back: ", "", nil);
+end;
+
+proc again(_n: INT);
+begin
+    find(ahead);
+end;
+
+proc againBack(_n: INT);
+begin
+    find(not ahead);
+end;
+
+proc drop(_n: INT);
+begin
+    if sel = none then on := false; return; end;
+    sel := none;
+end;
+
+proc leave(_n: INT);
+begin
+    on := false;
+end;
+
+(* the screen's side *)
+
+(* Copy mode begun on the transcript laid out at cols columns, rows of
+   it shown, back rows back from its end, the cursor on the last row
+   shown; not on an empty one. *)
+proc start*(cols, shown, back: INT);
+begin
+    on := LEN(Aboard.all()) > 0;
+    sel := none;
+    Buf.reset(ADR(said));
+    height := shown;
+    total := Aboard.flatten(cols);
+    top := total - height - back;
+    if top < 0 then top := 0; end;
+    l := top + height - 1;
+    c := 0;
+    TuiMap.reset(ADR(reader));
+    clamp();
+end;
+
+(* Whether copy mode is on. *)
+proc active*: BOOL;
+begin
+    return on;
+end;
+
+(* What copy mode said last: why a search failed, or how much it copied. *)
+proc saying*: []U8;
+begin
+    return Buf.bytes(ADR(said));
+end;
+
+(* A key: false once copy mode has ended. *)
+proc key*(ev: TuiKeys.Event): BOOL;
+var out: TuiLine.Outcome;
+begin
+    Buf.reset(ADR(said));
+    if finding.open then
+        out := TuiLine.givenUp;
+        if ev.key # TuiKeys.Esc then out := TuiLine.key(ADR(finding), ev); end;
+        if out # TuiLine.going then finding.open := false; end;
+        if out = TuiLine.taken then
+            if LEN(TuiLine.value(ADR(finding))) > 0 then
+                Buf.reset(ADR(pattern));
+                Buf.str(ADR(pattern), TuiLine.value(ADR(finding)));
+            end;
+            find(ahead);
+        end;
+    else
+        _ := TuiMap.feed(ADR(reader), ADR(map), ev.key);
+    end;
+    if on then clamp(); end;
+    return on;
+end;
+
+(* The transcript drawn into r of s, from the row shown at the top, the
+   selection reversed and the cursor on its character; the rows back it
+   was drawn at, for the screen to keep. *)
+proc draw*(s: ^TuiScreen.Screen; r: TuiScreen.Rect): INT;
+var back, i, l1, c1, l2, c2, a, b: INT; st: TuiScreen.Style;
+begin
+    height := r.rows;
+    total := Aboard.flatten(r.cols);
+    if total = 0 then
+        (* a job cleared the transcript *)
+        on := false;
+        return Aboard.draw(s, r, 0);
+    end;
+    clamp();
+    back := total - height - top;
+    if back < 0 then back := 0; end;
+    back := Aboard.draw(s, r, back);
+    st := TuiScreen.style(Term.select, {});
+    if sel # none then
+        l1, c1, l2, c2 := bounds();
+        for i := l1 to l2 do
+            if (i < top) or (i >= top + height) then continue; end;
+            a := Aboard.rowAt(i).x;
+            b := column(i, chars(i));
+            if sel = letters then
+                if i = l1 then a := column(i, c1); end;
+                if i = l2 then b := column(i, c2 + 1); end;
+            end;
+            if b <= a then b := a + 1; end;
+            TuiScreen.paint(s, r.row + i - top, r.col + a, b - a, st);
+        end;
+    end;
+    if total > 0 then
+        a := column(l, c);
+        TuiScreen.paint(s, r.row + l - top, r.col + a, 1, st);
+        TuiScreen.cursor(s, r.row + l - top, r.col + a);
+    end;
+    return back;
+end;
+
+(* The rule on row r, if copy mode has it: the search being typed.
+   False if it hasn't, and the screen's rule says copy mode is on. *)
+proc rule*(s: ^TuiScreen.Screen; r: INT): BOOL;
+begin
+    if not finding.open then return false; end;
+    TuiLine.draw(ADR(finding), s, r, 0);
+    return true;
+end;
+
+(* Each of k bound to command, in emacs's way of writing keys, in which
+   copy mode's are written, vi's letters among them. *)
+proc keys(command: []U8; k: [][]U8);
+var i: INT;
+begin
+    for i := 0 to LEN(k) - 1 do
+        if TuiMap.bind(ADR(map), TuiKeys.emacs, k[i], command) # nil then Rt.stop(command); end;
+    end;
+end;
+
+proc define;
+begin
+    TuiMap.define("copy-left", "a character back", left);
+    TuiMap.define("copy-right", "a character on", right);
+    TuiMap.define("copy-up", "a row up", up);
+    TuiMap.define("copy-down", "a row down", down);
+    TuiMap.define("copy-word-on", "the next word's start", wordsOn);
+    TuiMap.define("copy-word-back", "the word's start, or the one before's", wordsBack);
+    TuiMap.define("copy-word-end", "the word's end, or the next one's", wordsEnd);
+    TuiMap.define("copy-row-start", "the row's start", rowStart);
+    TuiMap.define("copy-row-end", "the row's end", rowEnd);
+    TuiMap.define("copy-row-first", "the row's first character that isn't blank", rowFirst);
+    TuiMap.define("copy-first", "the transcript's first row", first);
+    TuiMap.define("copy-last", "the transcript's last row", last);
+    TuiMap.define("copy-page-back", "a page back", pageBack);
+    TuiMap.define("copy-page-on", "a page on", pageOn);
+    TuiMap.define("copy-half-back", "half a page back", halfBack);
+    TuiMap.define("copy-half-on", "half a page on", halfOn);
+    TuiMap.define("copy-para-back", "the empty row before", paraBack);
+    TuiMap.define("copy-para-on", "the empty row after", paraOn);
+    TuiMap.define("copy-select", "characters selected from here", selectChars);
+    TuiMap.define("copy-select-rows", "rows selected from here", selectRows);
+    TuiMap.define("copy-swap", "the cursor to the selection's other end", swap);
+    TuiMap.define("copy-copy", "what is selected, or the line, copied", copy);
+    TuiMap.define("copy-search", "a text searched for, onward", searchOn);
+    TuiMap.define("copy-search-back", "a text searched for, back", searchBack);
+    TuiMap.define("copy-again", "the search again", again);
+    TuiMap.define("copy-again-back", "the search again, the other way", againBack);
+    TuiMap.define("copy-drop", "the selection dropped; with none, copy mode left", drop);
+    TuiMap.define("copy-leave", "copy mode left", leave);
+    TuiMap.init(ADR(map), "copy", nil);
+    keys("copy-left", ["C-b", "h", "<left>"]);
+    keys("copy-right", ["C-f", "l", "<right>"]);
+    keys("copy-up", ["C-p", "k", "<up>"]);
+    keys("copy-down", ["C-n", "j", "<down>"]);
+    keys("copy-word-on", ["M-f", "w"]);
+    keys("copy-word-back", ["M-b", "b"]);
+    keys("copy-word-end", ["e"]);
+    keys("copy-row-start", ["C-a", "0", "<home>"]);
+    keys("copy-row-end", ["C-e", "$", "<end>"]);
+    keys("copy-row-first", ["M-m", "^"]);
+    keys("copy-first", ["M-<", "g"]);
+    keys("copy-last", ["M->", "G"]);
+    keys("copy-page-back", ["M-v", "<prior>"]);
+    keys("copy-page-on", ["C-v", "<next>"]);
+    keys("copy-half-back", ["C-u"]);
+    keys("copy-half-on", ["C-d"]);
+    keys("copy-para-back", ["M-{", "{"]);
+    keys("copy-para-on", ["M-}", "}"]);
+    keys("copy-select", ["C-SPC", "v"]);
+    keys("copy-select-rows", ["V"]);
+    keys("copy-swap", ["C-x C-x", "o"]);
+    keys("copy-copy", ["RET", "y", "M-w", "C-w"]);
+    keys("copy-search", ["C-s", "/"]);
+    keys("copy-search-back", ["C-r", "?"]);
+    keys("copy-again", ["n"]);
+    keys("copy-again-back", ["N"]);
+    keys("copy-drop", ["C-g", "ESC"]);
+    keys("copy-leave", ["q", "C-c"]);
+end;
+
+proc init;
+begin
+    Buf.init(ADR(pattern), Heap.heap);
+    Buf.init(ADR(said), Heap.heap);
+    TuiLine.init(ADR(finding));
+    define();
+end;
+
+begin
+    init();
+end Acopy.
