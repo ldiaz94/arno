@@ -237,36 +237,6 @@ begin
     Buf.add(b, '}');
 end;
 
-(* v, a value of d, added to b as compact JSON, its strings quoted as
-   Amsg quotes them: a tool call's input, parsed from its arguments,
-   as the Pascal arno wrote it back. *)
-proc compact(d: ^Json.Doc; v: Json.Value; b: ^Buf.Buf);
-var i: INT;
-begin
-    match Json.kind(d, v) of
-    | string: Amsg.quote(b, Json.text(d, v));
-    | number: Buf.str(b, Json.text(d, v));
-    | array:
-        Buf.add(b, '[');
-        for i := 0 to Json.len(d, v) - 1 do
-            if i > 0 then Buf.add(b, ','); end;
-            compact(d, Json.item(d, v, i), b);
-        end;
-        Buf.add(b, ']');
-    | object:
-        Buf.add(b, '{');
-        for i := 0 to Json.len(d, v) - 1 do
-            if i > 0 then Buf.add(b, ','); end;
-            Amsg.quote(b, Json.key(d, v, i));
-            Buf.add(b, ':');
-            compact(d, Json.item(d, v, i), b);
-        end;
-        Buf.add(b, '}');
-    | bool: if v = Json.True then Buf.str(b, "true"); else Buf.str(b, "false"); end;
-    | null, none: Buf.str(b, "null");
-    end;
-end;
-
 (* A call's arguments, args, as a tool_use block's input: the object
    they parse to, or {} if they don't parse to one. *)
 proc input(args: []U8; b: ^Buf.Buf);
@@ -278,7 +248,7 @@ begin
     defer Buf.done(ADR(text));
     Buf.str(ADR(text), args);
     v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
-    if Json.kind(ADR(d), v) = Json.object then compact(ADR(d), v, b); else Buf.str(b, "{}"); end;
+    if Json.kind(ADR(d), v) = Json.object then Amsg.compact(ADR(d), v, b); else Buf.str(b, "{}"); end;
 end;
 
 (* An image's data: URL, data:MIME;base64,DATA, as Anthropic's image
@@ -550,7 +520,7 @@ begin
         if LEN(id) > 0 then put(ADR(sl^.id), id); end;
         if Json.member(d, x, "extra_content") # Json.None then
             Buf.reset(ADR(sl^.extra));
-            compact(d, Json.member(d, x, "extra_content"), ADR(sl^.extra));
+            Amsg.compact(d, Json.member(d, x, "extra_content"), ADR(sl^.extra));
         end;
         f := Json.member(d, x, "function");
         if f # Json.None then
@@ -563,7 +533,7 @@ begin
                 Buf.str(ADR(sl^.args), Json.text(d, args));
             elsif Json.kind(d, args) = Json.object then
                 Buf.reset(ADR(sl^.args));
-                compact(d, args, ADR(sl^.args));
+                Amsg.compact(d, args, ADR(sl^.args));
             end;
         end;
     end;

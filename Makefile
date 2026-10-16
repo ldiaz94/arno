@@ -20,7 +20,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Amsg Awire
+MODS = Amsg Awire Astore
 SRC = $(wildcard src/*.raz)
 
 all: check
@@ -35,11 +35,13 @@ check: | build
 	done
 
 # the conversations the Pascal arno saved, each read and written back
-# byte for byte
+# byte for byte: their messages, then the whole file
 SAVED ?= $(HOME)/.local/share/arno
 compat: | build
 	$(RAZ) -Werror $(INC) -o build/Amsg src/Amsg.raz
-	@build/Amsg $(wildcard $(SAVED)/*.json) && echo "compat: $(words $(wildcard $(SAVED)/*.json)) files read and written back"
+	$(RAZ) -Werror $(INC) -o build/Astore src/Astore.raz
+	@build/Amsg $(wildcard $(SAVED)/*.json) && build/Astore $(wildcard $(SAVED)/*.json) && \
+	    echo "compat: $(words $(wildcard $(SAVED)/*.json)) files read and written back"
 
 # the sources are as raz's formatter lays them out
 fmt: | build

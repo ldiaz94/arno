@@ -69,9 +69,15 @@ one or more commits that build with `-Werror`.
      into a program, wrote the test's), the reply put together from
      its events, and `chat` over rnet, tried against a server of the
      test's own. rjson keeps numbers as text, so it serves.
-   - [ ] b. `Astore`: a conversation's file around its messages (title,
-     named, model, system, turns, updated), the list of them, and the
-     lock on arno's shared files.
+   - [x] b. `Astore`: a conversation's file around its messages (title,
+     named, model, system, turns), the list of them, last changed
+     first, and the lock on arno's shared files. `make compat` saves
+     every conversation the Pascal arno saved again, byte for byte.
+     Two things differ, on purpose: an untitled conversation's title,
+     cut at 60 bytes, is cut where a character starts, so that it is
+     UTF-8; and the list holds only conversations, not `notes.json`,
+     `stage.json` and `tests.json`, which the Pascal arno listed
+     untitled.
    - [ ] c. `Aconf` and `Arno`: the config (providers, params, keys),
      and the one-shot program.
 2. **The agent.** `Agent` and `Board`: the loop of tool calls, read,
