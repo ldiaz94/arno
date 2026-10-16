@@ -187,6 +187,20 @@ begin
     two(b, tm.sec);
 end;
 
+(* Today's date, in local time, as yyyy-mm-dd, added to b. *)
+proc date*(b: ^Buf.Buf);
+var secs: I64; tm: Tm;
+begin
+    secs := Sys.now() div 1000000000;
+    _ := localtime_r(ADR(secs), ADR(tm));
+    two(b, tm.year div 100 + 19);
+    two(b, tm.year mod 100);
+    Buf.add(b, '-');
+    two(b, tm.mon + 1);
+    Buf.add(b, '-');
+    two(b, tm.mday);
+end;
+
 (* Whether id may name a conversation: an id comes from outside too, a
    host's, so one that would reach out of arno's directory, by a slash
    or a leading dot, names none. *)

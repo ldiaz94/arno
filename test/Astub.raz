@@ -10,14 +10,66 @@
    last message of "fail" it answers a 500 with an error, as a
    provider does.
 
+   A test asks for a tool call by the human's last message: to "call
+   NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
+   answers its result with "the tool said: " and the result; to
+   "always NAME ARGS" it makes the same call again after each result,
+   for a test of a turn that doesn't end by itself.
+
    Depends on rnet's Http and Conn and rjson's Json, with no TLS. *)
 module Astub;
 import Http, Conn, Json, Buf, Str, Sys, Files, Fmt, Out, Heap;
 
-var reply: Buf.Buf;
+var reply, text: Buf.Buf;
+
+(* data: lines of a reply, as OpenAI streams them *)
+proc event(json: []U8);
+begin
+    Buf.str(ADR(reply), "data: ");
+    Buf.str(ADR(reply), json);
+    Buf.add(ADR(reply), '\n');
+end;
+
+proc said(text: []U8);
+begin
+    Buf.str(ADR(reply), `data: {"choices":[{"delta":{"content":`);
+    Json.quote(ADR(reply), text);
+    Buf.str(ADR(reply), "}}]}\n");
+end;
+
+(* A call of the tool name with args, args JSON text. *)
+proc call(name, args: []U8);
+begin
+    Buf.str(ADR(reply), `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function",`);
+    Buf.str(ADR(reply), `"function":{"name":`);
+    Json.quote(ADR(reply), name);
+    Buf.str(ADR(reply), `,"arguments":`);
+    Json.quote(ADR(reply), args);
+    Buf.str(ADR(reply), "}}]}}]}\n");
+end;
+
+(* The reply to a request whose human's last message was asked, with
+   the last message last of the role role, as the module's comment
+   says; false if asked asks for no call. *)
+proc tool(asked, role, last: []U8): BOOL;
+var verb, rest, name, args: []U8; ok: BOOL;
+begin
+    verb, rest, ok := Str.cut(asked, " ");
+    if not ok or (verb # "call") and (verb # "always") then return false; end;
+    name, args, _ := Str.cut(rest, " ");
+    if (role = "tool") and (verb = "call") then
+        Buf.reset(ADR(text));
+        Buf.str(ADR(text), "the tool said: ");
+        Buf.str(ADR(text), last);
+        said(Buf.bytes(ADR(text)));
+    else
+        call(name, args);
+    end;
+    return true;
+end;
 
 proc answer(req, res: ^Http.Message; _arg: ^U8);
-var d: Json.Doc; v, msgs: Json.Value; n, k: INT; last: []U8; digits: [20]U8;
+var d: Json.Doc; v, msgs, m: Json.Value; n, k, i: INT; last, role, asked: []U8; digits: [20]U8;
 begin
     Buf.reset(ADR(reply));
     if not Json.init(ADR(d), Heap.heap) then res^.status := 500; return; end;
@@ -25,23 +77,35 @@ begin
     v := Json.parse(ADR(d), req^.body);
     msgs := Json.member(ADR(d), v, "messages");
     n := Json.len(ADR(d), msgs);
-    last := Json.text(ADR(d), Json.member(ADR(d), Json.item(ADR(d), msgs, n - 1), "content"));
     if (req^.target # "/v1/chat/completions") or (Json.kind(ADR(d), msgs) # Json.Kind.array) then
         res^.status := 404;
-    elsif last = "fail" then
+        return;
+    end;
+    m := Json.item(ADR(d), msgs, n - 1);
+    last := Json.text(ADR(d), Json.member(ADR(d), m, "content"));
+    role := Json.text(ADR(d), Json.member(ADR(d), m, "role"));
+    if last = "fail" then
         res^.status := 500;
         res^.body := `{"error":{"message":"the stub fails, as asked"}}`;
-    else
-        digits, k := Str.fromInt(n);
-        Buf.str(ADR(reply), `data: {"choices":[{"delta":{"content":"`);
-        Buf.str(ADR(reply), digits[0..k]);
-        Buf.str(ADR(reply), ` "}}]}` + "\n");
-        Buf.str(ADR(reply), `data: {"choices":[{"delta":{"content":"messages"}}]}` + "\n");
-        Buf.str(ADR(reply), `data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}` + "\n");
-        Buf.str(ADR(reply), "data: [DONE]\n");
-        _ := Http.add(res, "Content-Type", "text/event-stream");
-        res^.body := Buf.bytes(ADR(reply));
+        return;
     end;
+    asked := "";
+    for i := n - 1 to 0 by -1 do
+        m := Json.item(ADR(d), msgs, i);
+        if Json.text(ADR(d), Json.member(ADR(d), m, "role")) = "user" then
+            asked := Json.text(ADR(d), Json.member(ADR(d), m, "content"));
+            break;
+        end;
+    end;
+    if not tool(asked, role, last) then
+        digits, k := Str.fromInt(n);
+        said(digits[0..k]);
+        said(" messages");
+    end;
+    event(`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}`);
+    Buf.str(ADR(reply), "data: [DONE]\n");
+    _ := Http.add(res, "Content-Type", "text/event-stream");
+    res^.body := Buf.bytes(ADR(reply));
 end;
 
 proc main*: INT;
@@ -72,6 +136,7 @@ begin
     Sys.close(1);
     Sys.close(2);
     Buf.init(ADR(reply), Heap.heap);
+    Buf.init(ADR(text), Heap.heap);
     Http.initServer(ADR(s), answer, nil);
     while Sys.ready(l, INT(idle) * 1000) do
         fd := Sys.accept(l);

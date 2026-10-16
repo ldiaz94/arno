@@ -9,7 +9,12 @@
 //   - say why a request failed, with status 1, keeping the prompt in
 //     the conversation; and so for a key not set, and a conversation
 //     not there;
-//   - say what is wrong with its configuration, and go on.
+//   - say what is wrong with its configuration, and go on;
+//   - run the tools the model calls, saying each on the standard
+//     error, and send their results back; refuse a call made twice,
+//     and hand back after four steps of failed calls, or at the step
+//     cap; ask about a path outside the project, a line of the
+//     standard input the answer.
 //
 // Run from the top of the tree, by make check; what it makes goes
 // under build/oneshot, its configuration and conversations among it.
@@ -47,6 +52,21 @@ function run(a);
 begin
   $arno $a > "$dir/out" 2> "$dir/err"
   result := status
+end;
+
+// arno run with the arguments in the list a and the text input on
+// its standard input: its status, as run's
+function answering(a, input);
+begin
+  echo $input | $arno $a > "$dir/out" 2> "$dir/err"
+  result := status
+end;
+
+// the file out, dir/out or dir/err, must hold a line with text
+procedure holds(what, out, text);
+begin
+  grep -qF -- $text "$dir/$out"
+  if status <> 0 then fail("$what: no '$text' in its $out: " + `cat "$dir/$out"`)
 end;
 
 // a run of a that must end with status want, having written a line
@@ -106,5 +126,40 @@ expect(['hello'], 1, 'err', 'arno: ARNO_TEST_UNSET is not set')
 configure(['provider = nowhere', 'max_retries = many'])
 expect(['hello'], 0, 'err', 'config: unknown provider nowhere')
 expect(['hello'], 0, 'err', 'config: max_retries wants a number')
+
+// the tools: a call, its result sent back
+configure([])
+expect(['call', 'read', '{"path":"Makefile","limit":1}'], 0, 'out', 'the tool said:     1	# arno is a harness')
+holds('a call', 'err', '▸ read {"path":"Makefile","limit":1}')
+holds('a call', 'err', '  1 line')
+expect(['call', 'write', '{}'], 0, 'out', 'the tool said: error: there is no tool named "write"')
+
+// a call made again refused, and four steps of them a hand-back,
+// whose request the conversation doesn't keep
+expect(['always', 'read', '{"path":"LICENSE","limit":1}'], 0, 'err', 'not run: this exact call was already made')
+holds('a repeated call', 'err', '4 steps of failed calls in a row; asking the model to hand back')
+holds('a repeated call', 'out', '13 messages')
+saved := `ls -t "$dir/data/arno"`
+id := basename(split(saved)[0], '.json')
+grep -qF 'Your last calls' "$dir/data/arno/$id.json"
+if status = 0 then fail('the hand-back request is kept in the conversation')
+expect(['--resume', id, 'and', 'more'], 0, 'out', '14 messages')
+
+configure(['max_steps = 2'])
+expect(['always', 'read', '{"path":"LICENSE","limit":1}'], 0, 'err', '2 steps used; asking the model to hand back')
+
+// outside the project, the human asked
+configure([])
+outside := `mktemp -d`
+echo 'far away' > "$outside/f"
+far := '{"path":"' + outside + '/f"}'
+answering(['call', 'read', far], 'n')
+holds('a no', 'out', 'the tool said: declined by user: ')
+holds('a no', 'err', 'outside ' + `pwd -P` + '? (a: always, all of ')
+answering(['call', 'read', far], 'y')
+holds('a yes', 'out', 'the tool said:     1	far away')
+answering(['call', 'read', far], '')
+holds('no answer', 'out', 'the tool said: declined by user: ')
+rm -rf $outside
 
 if failures > 0 then halt(1)

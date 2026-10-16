@@ -87,10 +87,36 @@ one or more commits that build with `-Werror`.
      server of the test's own (`test/Astub.raz`). The config's
      `timeout` is the Pascal arno's, seconds for the whole request
      (curl's `max-time`), now rnet's deadline.
-2. **The agent.** `Agent` and `Board`: the loop of tool calls, read,
-   find, grep, outline, edit (each approved), the fence, notes, memory,
-   context files, `ahead`, `delegate` (a plain tool for a leading
-   session, as in `4f21519`). Plain mode, a line at a time.
+2. **The agent.** `Agent`: the loop of tool calls, read, find, grep,
+   outline, edit (each approved), the fence, notes, memory, context
+   files, `ahead`, `delegate` (a plain tool for a leading session, as
+   in `4f21519`). Plain mode, a line at a time. The agent tells its
+   front end what happens, and asks it what the human says, through a
+   record of procedures; plain mode is one such front end, and the
+   screen of stage 3 another, which runs a turn on its own thread and
+   hands what it is told to the loop's. So the Board, the transcript a
+   screen keeps, is stage 3's.
+   - [x] a. `Afence`, `Atools` and `Agent`: the fence (the zone, paths
+     resolved, grants asked a line at a time), the tolerant parser of
+     a call's arguments, `read`, and the loop: the step cap, four
+     failed steps in a row, a repeated read-only call refused, each
+     ending in a hand-back. `arno PROMPT` runs a turn with the tools;
+     the stub answers with calls a test asks for. Calls run one after
+     another, each in an arena reset after it; forking those that
+     only read waits until it is wanted. `read` stops before its
+     note of where it cut, so the cap of every result can't cut the
+     note off, as it did in the Pascal arno.
+   - [ ] b. `find`, `grep`, `outline`, `def`, `git`: the walk, globs
+     and ignore files are rwalk's; grep's matcher is rrem's once rrem
+     matches (it parses only, so far).
+   - [ ] c. `edit` (approved, with its diff), `move`, `remove`; a
+     declined change remembered and not asked again; "old text not
+     found" naming the near misses.
+   - [ ] d. The system prompt in full: context files, `note` and
+     notes.json, memory.json, `ahead` (the map, prefetch, stale
+     notes); pruning; `turn_budget`.
+   - [ ] e. `search`, `fetch` and `delegate`.
+   `check` and `run` run commands, and come with the jail, in stage 4.
 3. **The full screen** on rtui: transcript, input, status line, copy
    mode, completion of `/` and `@`, `@path` attachments, `^V` images,
    `^X ^E`.

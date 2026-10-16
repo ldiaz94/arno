@@ -1,0 +1,392 @@
+(* Atools: the tools a model may call, and a call run.
+
+   A call comes as the tool's name and its arguments, JSON text as the
+   model wrote it. call parses them, asks the human about a path
+   outside the fence, runs the tool and gives back its result, text for
+   the model. A result that is no answer starts with a word the agent
+   counts: "error" (the call went wrong), "declined" (the human said
+   no) or "not run" (arno wouldn't); that is the only way a tool says
+   it failed.
+
+   Models get the arguments wrong in a few ways often enough to take
+   them as meant rather than refuse them, since a model that made a
+   slip once tends to make it again: the whole object encoded twice, as
+   a JSON string whose text is the object; an empty text for no
+   arguments; and a path written ~/x, meant as the home directory's,
+   which taken as a name under the working directory finds nothing and
+   says so as if the file weren't there. The fence and the tool read
+   the arguments through the same Args, so the fence judges the path
+   the tool will open.
+
+   A result is cut at MaxOut bytes, and made valid UTF-8, each byte
+   that starts no character made U+FFFD: it goes into the conversation,
+   which rjson reads only as UTF-8.
+
+   Depends on Afence, Awire (for Tool), rjson's Json. Leaves out the
+   tools of the steps after this one: find, grep, outline, def, git,
+   edit, move, remove, note, search, fetch, delegate, run and shell;
+   and the images read shows as pictures, which come with the
+   screen. *)
+module Atools;
+import Afence, Awire, Json, Buf, Str, Sys, Files, Heap, Mem, Arena, Rt, Out;
+
+type
+    (* What the human answers to question: one of the bytes of keys,
+       or 0 if there is nobody to ask. *)
+    Ask* = proc(question, keys: []U8; arg: ^U8): U8;
+
+    (* A call's arguments, parsed: v an object of d. *)
+    Args* = record
+        d*: ^Json.Doc;
+        v*: Json.Value;
+        home: Buf.Buf;   (* a path with ~ made $HOME's, as path gives it *)
+    end;
+
+const
+    MaxOut* = 32000;   (* bytes of a result, past which it is cut *)
+    MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads *)
+
+    (* What a request offers. A tool's rules go in its description,
+       not in the system prompt, and the descriptions use placeholders,
+       not examples a model copies. *)
+    Offered*: []Awire.Tool = [
+        {name: "read",
+         description: "Read a text file. Returns each line prefixed by its number and a tab " +
+            "(e.g. \"   12<tab>begin\"); the prefix is not part of the file. Read a file before " +
+            "editing it, so the old text given to edit matches exactly. Read a file of up to " +
+            "about 400 lines whole, in one call. For a longer one, use offset and limit to take " +
+            "a whole function or section at a time - a grep with context usually tells you " +
+            "where - never a few dozen lines at a time.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"file path, relative to the working directory"},` +
+            `"offset":{"type":"integer","description":"first line to read, from 1; default 1"},` +
+            `"limit":{"type":"integer","description":"most lines to return; default 2000"}},` +
+            `"required":["path"]}`}];
+
+(* Whether the tool called name only reads: a call to one made twice
+   in a turn is refused the second time, as nothing it saw has
+   changed. *)
+proc readOnly*(name: []U8): BOOL;
+begin
+    return name = "read";
+end;
+
+(* Arguments *)
+
+(* The argument key as a string; "" if it isn't one. *)
+proc str*(a: ^Args; key: []U8): []U8;
+begin
+    return Json.text(a^.d, Json.member(a^.d, a^.v, key));
+end;
+
+(* The argument key as a path: a string, with a leading ~, alone or
+   before a '/', made $HOME. Never ~user. *)
+proc path*(a: ^Args; key: []U8): []U8;
+var s: []U8;
+begin
+    s := str(a, key);
+    if (s # "~") and not Str.hasPrefix(s, "~/") then return s; end;
+    Buf.reset(ADR(a^.home));
+    Buf.str(ADR(a^.home), Sys.env("HOME"));
+    Buf.str(ADR(a^.home), s[1..LEN(s)]);
+    return Buf.bytes(ADR(a^.home));
+end;
+
+(* The argument key as a number, from a number or a string that holds
+   one, as models send both; def if it is neither. *)
+proc int*(a: ^Args; key: []U8; def: INT): INT;
+var n: I64; ok: BOOL;
+begin
+    n, ok := Str.toInt(str(a, key));
+    if not ok then return def; end;
+    return INT(n);
+end;
+
+(* text parsed into a, in d, with what a keeps from mem: false if it is no object, nor a string
+   whose text is one. *)
+proc parse*(d: ^Json.Doc; mem: ^Mem.Allocator; text: []U8; a: ^Args): BOOL;
+var v: Json.Value;
+begin
+    a^.d := d;
+    Buf.init(ADR(a^.home), mem);
+    if LEN(Str.trim(text)) = 0 then text := "{}"; end;
+    v := Json.parse(d, Json.copy(d, text));   (* parsing rewrites its text *)
+    if Json.kind(d, v) = Json.Kind.string then v := Json.parse(d, Json.text(d, v)); end;
+    a^.v := v;
+    return Json.kind(d, v) = Json.Kind.object;
+end;
+
+(* The fence *)
+
+(* "" if path may be reached, the human asked if it is outside the
+   fence; else why not, the call's result. "Always", for a file, grants
+   the directory that holds it: a model that reads one file of a
+   library reads its neighbours next. Never / or the home directory,
+   though: a yes to ~/.bashrc is not one to all of ~. *)
+proc fence(name, path: []U8; ask: Ask; arg: ^U8; out: ^Buf.Buf): BOOL;
+var p, room, home, q: Buf.Buf; i: Sys.Info; e: INT;
+begin
+    if (LEN(path) = 0) or Afence.inside(path) then return true; end;
+    Buf.init(ADR(p), Heap.heap);
+    defer Buf.done(ADR(p));
+    Buf.init(ADR(room), Heap.heap);
+    defer Buf.done(ADR(room));
+    Buf.init(ADR(home), Heap.heap);
+    defer Buf.done(ADR(home));
+    Buf.init(ADR(q), Heap.heap);
+    defer Buf.done(ADR(q));
+    Afence.resolve(path, ADR(p));
+    Afence.resolve(Sys.env("HOME"), ADR(home));
+    Buf.str(ADR(room), Buf.bytes(ADR(p)));
+    i, e := Sys.info(Buf.bytes(ADR(p)));
+    if (e # 0) or not i.dir then
+        room.len := Str.findLast(Buf.bytes(ADR(room)), "/");
+        if room.len = 0 then Buf.add(ADR(room), '/'); end;
+    end;
+    if (Buf.bytes(ADR(room)) = "/") or (Buf.bytes(ADR(room)) = Buf.bytes(ADR(home))) then
+        Buf.reset(ADR(room));
+        Buf.str(ADR(room), Buf.bytes(ADR(p)));
+    end;
+    Buf.str(ADR(q), name);
+    Buf.add(ADR(q), ' ');
+    Buf.str(ADR(q), Buf.bytes(ADR(p)));
+    Buf.str(ADR(q), ", outside ");
+    Buf.str(ADR(q), Afence.zone);
+    Buf.str(ADR(q), "? (a: always, all of ");
+    Buf.str(ADR(q), Buf.bytes(ADR(room)));
+    Buf.add(ADR(q), ')');
+    if ask = nil then
+        Buf.str(out, "declined: ");
+        Buf.str(out, Buf.bytes(ADR(p)));
+        Buf.str(out, " is outside ");
+        Buf.str(out, Afence.zone);
+        Buf.str(out, ", and there is nobody to ask");
+        return false;
+    end;
+    match ask(Buf.bytes(ADR(q)), "yna", arg) of
+    | 'y': return true;
+    | 'a': Afence.grant(Buf.bytes(ADR(room))); return true;
+    | else:
+    end;
+    Buf.str(out, "declined by user: ");
+    Buf.str(out, Buf.bytes(ADR(p)));
+    Buf.str(out, " is outside the project");
+    return false;
+end;
+
+(* The tools *)
+
+(* The file's lines, numbered: the number right-aligned in five
+   columns, then a tab, as cat -n has them. With two blanks there,
+   models took them for indentation and put them in an edit's old text;
+   a tab can't be taken for the file's own blanks once the number is
+   dropped. *)
+proc read(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var text: Buf.Buf; s, p: []U8; i: Sys.Info; e, at, j, k, n, first, count: INT; digits: [20]U8;
+begin
+    p := path(a, "path");
+    i, e := Sys.info(p);
+    if (e = 0) and i.dir then
+        Buf.str(out, "error: ");
+        Buf.str(out, p);
+        Buf.str(out, " is a directory; outline it, or find the files in it");
+        return;
+    end;
+    (* never open a pipe: the read would wait for whoever writes it *)
+    if (e # 0) or not i.file then
+        Buf.str(out, "error: cannot read ");
+        Buf.str(out, p);
+        Buf.str(out, " (no such file? use find to locate it)");
+        return;
+    end;
+    if i.size > MaxFile then
+        Buf.str(out, "error: ");
+        Buf.str(out, p);
+        Buf.str(out, " is too big to read");
+        return;
+    end;
+    Buf.init(ADR(text), mem);
+    if Files.load(p, ADR(text)) # 0 then
+        Buf.str(out, "error: cannot read ");
+        Buf.str(out, p);
+        return;
+    end;
+    s := Buf.bytes(ADR(text));
+    j := LEN(s);
+    if j > 8192 then j := 8192; end;
+    if Str.find(s[0..j], "\x00") >= 0 then
+        Buf.str(out, "error: ");
+        Buf.str(out, p);
+        Buf.str(out, " is binary, not text");
+        return;
+    end;
+    first := int(a, "offset", 1);
+    count := int(a, "limit", 2000);
+    n := 1;
+    at := 0;
+    while (at < LEN(s)) and (n < first + count) do
+        j := at;
+        while (j < LEN(s)) and (s[j] # '\n') do INC(j); end;
+        if n >= first then
+            digits, k := Str.fromInt(n);
+            (* the note fits, so call's own cut doesn't take it off *)
+            if out^.len + 7 + j - at > MaxOut - 64 then
+                Buf.str(out, "[cut before line ");
+                Buf.str(out, digits[0..k]);
+                Buf.str(out, "; read on with offset ");
+                Buf.str(out, digits[0..k]);
+                Buf.add(out, ']');
+                return;
+            end;
+            for e := k to 4 do Buf.add(out, ' '); end;
+            Buf.str(out, digits[0..k]);
+            Buf.add(out, '\t');
+            Buf.str(out, s[at..j]);
+            Buf.add(out, '\n');
+        end;
+        INC(n);
+        at := j + 1;
+    end;
+    if out^.len = 0 then Buf.str(out, "(empty)"); end;
+end;
+
+(* A call *)
+
+(* s added to b made valid UTF-8, each byte that starts no character
+   made U+FFFD. *)
+proc clean*(b: ^Buf.Buf; s: []U8);
+var i, n: INT; c: I32;
+begin
+    if Str.valid(s) then Buf.str(b, s); return; end;
+    i := 0;
+    while i < LEN(s) do
+        c, n := Str.decode(s[i..LEN(s)]);
+        if (c = 0FFFDH) and (n = 1) then Buf.str(b, "\xEF\xBF\xBD"); else Buf.str(b, s[i..i + n]); end;
+        INC(i, n);
+    end;
+end;
+
+(* The call of the tool name with the arguments args run, its result
+   added to out: what the tool gave, cut at MaxOut and made valid
+   UTF-8. ask is how the human is asked, nil if there is nobody; mem
+   is for the call's own work, which out mustn't point into. *)
+proc call*(name, args: []U8; ask: Ask; arg: ^U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d: Json.Doc; a: Args; res: Buf.Buf; s: []U8; i, cut: INT;
+begin
+    if not Json.init(ADR(d), mem) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    Buf.init(ADR(res), mem);
+    if not parse(ADR(d), mem, args, ADR(a)) then
+        Buf.str(ADR(res), "error: the arguments must be one JSON object, as the tool's schema says; got: ");
+        cut := LEN(args);
+        if cut > 200 then cut := 200; end;
+        Buf.str(ADR(res), args[0..cut]);
+    elsif name = "read" then
+        if fence(name, path(ADR(a), "path"), ask, arg, ADR(res)) then read(ADR(a), mem, ADR(res)); end;
+    else
+        (* an invented name gets the real ones back, the one thing it lacked *)
+        Buf.str(ADR(res), "error: there is no tool named \"");
+        Buf.str(ADR(res), name);
+        Buf.str(ADR(res), "\". The tools are:");
+        for i := 0 to LEN(Offered) - 1 do
+            Buf.add(ADR(res), ' ');
+            Buf.str(ADR(res), Offered[i].name);
+        end;
+    end;
+    s := Buf.bytes(ADR(res));
+    if LEN(s) > MaxOut then
+        cut := MaxOut;
+        while (cut > 0) and (s[cut] & 0C0H = 80H) do DEC(cut); end;   (* where a character starts *)
+        clean(out, s[0..cut]);
+        Buf.str(out, "\n[truncated]");
+    else
+        clean(out, s);
+    end;
+end;
+
+(* The module's test, in build/tools, which it makes. *)
+
+var failed: BOOL; answer: U8; asked: INT;
+
+proc expect(what, got, want: []U8);
+begin
+    if got = want then return; end;
+    Out.str("Atools: ");
+    Out.str(what);
+    Out.str(":\n");
+    Out.str(got);
+    Out.str("\nnot\n");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+proc human(_question, _keys: []U8; _arg: ^U8): U8;
+begin
+    INC(asked);
+    return answer;
+end;
+
+var mem: Arena.Arena;
+
+proc run(name, args: []U8; ask: Ask): []U8;
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    call(name, args, ask, nil, ADR(mem.base), ADR(b));
+    Arena.reset(ADR(mem));
+    return Buf.bytes(ADR(b));
+end;
+
+proc main*: INT;
+var dir, s: []U8; long: Buf.Buf; i: INT;
+begin
+    if not Arena.init(ADR(mem), 1 shl 26) then return 1; end;
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/tools");
+    _ := Sys.makeDir("build/tools/proj");
+    _ := Sys.makeDir("build/tools/proj/.git");
+    _ := Sys.makeDir("build/tools/out");
+    _ := Files.write("build/tools/proj/f", "one\ntwo\nthree\n");
+    _ := Files.write("build/tools/proj/bin", "a\x00b");
+    _ := Files.write("build/tools/proj/bad", "caf\xE9\n");
+    _ := Files.write("build/tools/out/g", "far\n");
+    Buf.init(ADR(long), Heap.heap);
+    for i := 1 to 5000 do Buf.str(ADR(long), "a line of the long file\n"); end;
+    _ := Files.write("build/tools/proj/long", Buf.bytes(ADR(long)));
+    dir, _ := Sys.workDir();
+    dir, _ := Str.copy(Heap.heap, dir);
+    if Sys.setWorkDir("build/tools/proj") # 0 then Out.str("Atools: no build/tools\n"); return 1; end;
+    Afence.init;
+
+    expect("read", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
+    expect("offset and limit", run("read", `{"path":"f","offset":"2","limit":1}`, nil), "    2\ttwo\n");
+    expect("encoded twice", run("read", `"{\"path\":\"f\",\"offset\":3}"`, nil), "    3\tthree\n");
+    expect("a directory", run("read", `{"path":"."}`, nil),
+        "error: . is a directory; outline it, or find the files in it");
+    expect("missing", run("read", `{"path":"nope"}`, nil),
+        "error: cannot read nope (no such file? use find to locate it)");
+    expect("binary", run("read", `{"path":"bin"}`, nil), "error: bin is binary, not text");
+    expect("not UTF-8", run("read", `{"path":"bad"}`, nil), "    1\tcaf\xEF\xBF\xBD\n");
+    expect("no object", run("read", `[1]`, nil),
+        "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
+    expect("no such tool", run("write", "", nil), "error: there is no tool named \"write\". The tools are: read");
+    s := run("read", `{"path":"long"}`, nil);
+    expect("cut", s[LEN(s) - 49..LEN(s)], "\n[cut before line 1065; read on with offset 1065]");
+
+    expect("outside, nobody", run("read", `{"path":"../out/g"}`, nil)[0..9], "declined:");
+    answer := 'n';
+    expect("outside, no", run("read", `{"path":"../out/g"}`, human)[0..16], "declined by user");
+    answer := 'y';
+    expect("outside, yes", run("read", `{"path":"../out/g"}`, human), "    1\tfar\n");
+    answer := 'a';
+    expect("outside, always", run("read", `{"path":"../out/g"}`, human), "    1\tfar\n");
+    asked := 0;
+    expect("granted", run("read", `{"path":"../out/g"}`, human), "    1\tfar\n");
+    if asked # 0 then Out.str("Atools: a granted directory asked again\n"); failed := true; end;
+    _ := Sys.setWorkDir(dir);
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Atools.

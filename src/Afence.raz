@@ -1,0 +1,264 @@
+(* Afence: where the model's tools may reach without asking.
+
+   The zone is the project the human works in: the nearest directory,
+   at most two levels above the working directory, that holds a mark
+   of version control (.git, .sauce, .hg, .jj or .svn), or else the
+   working directory itself. Two levels, so that a stray .git far up,
+   in the home directory say, doesn't make all of it the project.
+   Anything under the zone the tools may read; anything else the human
+   is asked for, once or for the rest of the run (grant).
+
+   Every path is judged resolved: absolute, with every symbolic link
+   followed, so that neither "../../etc" nor a link in the project that
+   points out of it passes a test of its prefix. Unlike realpath(3),
+   resolve takes a path whose end doesn't exist yet, a file a tool is
+   about to make, resolving what exists and taking the rest as it is
+   written.
+
+   The module only decides; asking is the caller's, Atools'.
+
+   Depends on Sys, Buf and Str. Leaves out the conversation's scratch
+   directory and the stage, which are the model's own and come with
+   the stage, and config's grant. *)
+module Afence;
+import Buf, Str, Sys, Heap, Rt, Out, Strs := Vec([]U8);
+
+const
+    Marks: [][]U8 = [".git", ".sauce", ".hg", ".jj", ".svn"];
+    MaxHops = 40;   (* links followed in a path, as the kernel's own ELOOP limit *)
+
+var
+    zone*: []U8;           (* resolved; set by init *)
+    rooted*: BOOL;         (* zone holds a mark, rather than being the bare working directory *)
+    grants: Strs.Vec;      (* the directories granted, resolved, each from Heap *)
+    ready: BOOL;           (* grants made *)
+
+(* b cut to its last '/': "/a/b" to "/a", and "/a" to "". *)
+proc up(b: ^Buf.Buf);
+var s: []U8;
+begin
+    s := Buf.bytes(b);
+    b^.len := Str.findLast(s, "/");
+    if b^.len < 0 then b^.len := 0; end;
+end;
+
+(* path, absolute and with every link followed, made what b holds.
+   It goes a part at a time, b the resolved part so far and rest what
+   is still to do. ".." goes up from the resolved part, so a/link/..
+   is the parent of where link points, as the kernel has it. A part
+   that is a link is put back as its target, in front of rest; an
+   absolute target starts again from "/". *)
+proc resolve*(path: []U8; b: ^Buf.Buf);
+var rest, next: Buf.Buf; s, c, t, dir: []U8; at, i, hops, keep, e: INT;
+begin
+    Buf.init(ADR(rest), Heap.heap);
+    defer Buf.done(ADR(rest));
+    Buf.init(ADR(next), Heap.heap);
+    defer Buf.done(ADR(next));
+    if not Str.hasPrefix(path, "/") then
+        dir, e := Sys.workDir();
+        if e = 0 then Buf.str(ADR(rest), dir); end;
+        Buf.add(ADR(rest), '/');
+    end;
+    Buf.str(ADR(rest), path);
+    Buf.reset(b);
+    at := 0;
+    hops := 0;
+    while at < rest.len do
+        s := Buf.bytes(ADR(rest));
+        i := at;
+        while (i < LEN(s)) and (s[i] # '/') do INC(i); end;
+        c := s[at..i];
+        at := i + 1;
+        if (LEN(c) = 0) or (c = ".") then continue; end;
+        if c = ".." then up(b); continue; end;
+        keep := b^.len;
+        Buf.add(b, '/');
+        Buf.str(b, c);
+        t, e := Sys.readLink(Buf.bytes(b));
+        if (e = 0) and (hops < MaxHops) then
+            INC(hops);
+            Buf.reset(ADR(next));
+            Buf.str(ADR(next), t);
+            Buf.add(ADR(next), '/');
+            if at < LEN(s) then Buf.str(ADR(next), s[at..LEN(s)]); end;
+            Buf.reset(ADR(rest));
+            Buf.str(ADR(rest), Buf.bytes(ADR(next)));
+            at := 0;
+            b^.len := keep;
+            if Str.hasPrefix(t, "/") then b^.len := 0; end;
+        end;
+    end;
+    if b^.len = 0 then Buf.add(b, '/'); end;
+end;
+
+(* Whether p is base or below it, both resolved: the '/' after the
+   prefix keeps /r/arno2 out of /r/arno. *)
+proc within*(p, base: []U8): BOOL;
+begin
+    return (base = "/") or (p = base) or Str.hasPrefix(p, base) and (p[LEN(base)] = '/');
+end;
+
+proc keep(s: []U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* Every grant dropped. *)
+proc forget*;
+var g: [][]U8; i: INT;
+begin
+    g := Strs.all(ADR(grants));
+    for i := 0 to LEN(g) - 1 do Str.free(Heap.heap, g[i]); end;
+    Strs.reset(ADR(grants));
+end;
+
+(* The zone found from the working directory, and the grants dropped. *)
+proc init*;
+var b, mark: Buf.Buf; levels, m: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.init(ADR(mark), Heap.heap);
+    defer Buf.done(ADR(mark));
+    if not ready then Strs.init(ADR(grants), Heap.heap); ready := true; end;
+    forget;
+    resolve(".", ADR(b));
+    zone := keep(Buf.bytes(ADR(b)));
+    rooted := false;
+    for levels := 0 to 2 do
+        for m := 0 to LEN(Marks) - 1 do
+            Buf.reset(ADR(mark));
+            Buf.str(ADR(mark), Buf.bytes(ADR(b)));
+            if b.len > 1 then Buf.add(ADR(mark), '/'); end;
+            Buf.str(ADR(mark), Marks[m]);
+            if Sys.access(Buf.bytes(ADR(mark)), {}) = 0 then
+                zone := keep(Buf.bytes(ADR(b)));
+                rooted := true;
+                return;
+            end;
+        end;
+        if b.len = 1 then return; end;
+        up(ADR(b));
+        if b.len = 0 then Buf.add(ADR(b), '/'); end;
+    end;
+end;
+
+(* Whether path is in the zone, or under a grant. *)
+proc inside*(path: []U8): BOOL;
+var b: Buf.Buf; p: []U8; g: [][]U8; i: INT;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    resolve(path, ADR(b));
+    p := Buf.bytes(ADR(b));
+    if within(p, zone) then return true; end;
+    g := Strs.all(ADR(grants));
+    for i := 0 to LEN(g) - 1 do
+        if within(p, g[i]) then return true; end;
+    end;
+    return false;
+end;
+
+(* path, and everything below it, inside for the rest of the run;
+   after init. *)
+proc grant*(path: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    resolve(path, ADR(b));
+    Strs.push(ADR(grants), keep(Buf.bytes(ADR(b))));
+end;
+
+(* The module's test, in build/fence, which it makes. *)
+
+var failed: BOOL;
+
+proc expect(what, got, want: []U8);
+begin
+    if got = want then return; end;
+    Out.str("Afence: ");
+    Out.str(what);
+    Out.str(": ");
+    Out.str(got);
+    Out.str(", not ");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+proc resolved(path: []U8): []U8;
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    resolve(path, ADR(b));
+    return Buf.bytes(ADR(b));
+end;
+
+(* s and t, joined *)
+proc cat(s, t: []U8): []U8;
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    Buf.str(ADR(b), s);
+    Buf.str(ADR(b), t);
+    return Buf.bytes(ADR(b));
+end;
+
+proc yes(b: BOOL): []U8;
+begin
+    if b then return "yes"; end;
+    return "no";
+end;
+
+proc main*: INT;
+var top, dir: []U8;
+begin
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/fence");
+    _ := Sys.makeDir("build/fence/proj");
+    _ := Sys.makeDir("build/fence/proj/.git");
+    _ := Sys.makeDir("build/fence/proj/src");
+    _ := Sys.makeDir("build/fence/proj2");
+    _ := Sys.makeDir("build/fence/out");
+    _ := Sys.remove("build/fence/proj/src/out");
+    _ := Sys.remove("build/fence/proj/src/up");
+    _ := Sys.symlink("../../out", "build/fence/proj/src/out");
+    _ := Sys.symlink("/", "build/fence/proj/src/up");
+    top := keep(resolved("build/fence"));
+
+    expect("dots", resolved("/a/./b//../c/"), "/a/c");
+    expect("above /", resolved("/../.."), "/");
+    expect("a link", resolved("build/fence/proj/src/out/x"), cat(top, "/out/x"));
+    expect("a link and ..", resolved("build/fence/proj/src/out/.."), top);
+    expect("an absolute link", resolved("build/fence/proj/src/up/etc"), "/etc");
+    expect("a prefix", yes(within("/r/arno2", "/r/arno")), "no");
+    expect("the base", yes(within("/r/arno", "/r/arno")), "yes");
+
+    dir, _ := Sys.workDir();
+    dir := keep(dir);
+    if Sys.setWorkDir("build/fence/proj/src") # 0 then Out.str("Afence: no build/fence\n"); return 1; end;
+    init;
+    expect("the zone", zone, cat(top, "/proj"));
+    expect("rooted", yes(rooted), "yes");
+    expect("inside", yes(inside("../x/y")), "yes");
+    expect("out by a link", yes(inside("out/z")), "no");
+    expect("a neighbour", yes(inside("../../proj2")), "no");
+    grant("../../out");
+    expect("granted", yes(inside("out/z")), "yes");
+    forget;
+    expect("forgotten", yes(inside("out/z")), "no");
+    _ := Sys.setWorkDir(cat(top, "/out"));
+    init;
+    expect("unrooted", yes(rooted), "no");
+    expect("the bare zone", zone, cat(top, "/out"));
+    _ := Sys.setWorkDir(dir);
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Afence.

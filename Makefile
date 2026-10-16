@@ -20,7 +20,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Amsg Awire Astore Aconf
+MODS = Amsg Awire Astore Aconf Afence Atools
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz)

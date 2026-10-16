@@ -5,20 +5,23 @@
        arno --resume ID PROMPT ...  one more turn of the saved one, ID
        arno -h | --help             the usage
 
-   The prompt is the arguments, joined by blanks. The reply goes to
-   standard output as it comes; ^C stops it, keeping what came. The
-   conversation is saved, the turn's prompt and reply in it, so that
-   --resume goes on from it; what arno says of it, and what goes
-   wrong, go to standard error. The status is 0 for a reply, 1 for a
-   request that failed or a conversation not found, 2 for a mistake
-   on the command line, 130 for a reply stopped by ^C.
+   The prompt is the arguments, joined by blanks. The turn runs with
+   the tools (Agent). The model's text goes to standard output as it
+   comes; ^C stops it, keeping what came. Each tool call, and what came
+   of it, goes to standard error, a line each, and so does a question
+   for the human, a path outside the project, whose answer is a line of
+   standard input: y, n, or a for always; anything else, or the end of
+   the input, is no. The conversation is saved, the turn in it, so that
+   --resume goes on from it; what arno says of it, and what goes wrong,
+   go to standard error too. The status is 0 for a reply, 1 for a
+   request that failed or a conversation not found, 2 for a mistake on
+   the command line, 130 for a turn stopped by ^C.
 
-   Depends on Aconf, Astore, Awire and Amsg. Leaves out, for the
+   Depends on Agent, Aconf, Astore, Awire and Amsg. Leaves out, for the
    stages after this one, what the Pascal arno's one-shot run has
-   besides: the tools, and the system prompt they need; the screen,
-   --serve and --attach. *)
+   besides: the screen, --serve and --attach. *)
 module Arno;
-import Aconf, Astore, Awire, Amsg, Http, Buf, Str, Sys, Files, Out, Heap, Msgs := Vec(Amsg.Msg);
+import Agent, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Msgs := Vec(Amsg.Msg);
 
 const Usage = `
     usage: arno [prompt ...]
@@ -36,7 +39,7 @@ begin
     return stopped;
 end;
 
-var ended: BOOL;   (* the last piece of the reply ended its line *)
+var ended: BOOL;   (* the last piece of the model's text ended its line *)
 
 proc show(text: []U8; _arg: ^U8);
 begin
@@ -52,23 +55,77 @@ begin
     _ := Sys.write(Sys.stderr, c);
 end;
 
-(* The system prompt of a turn without tools: what day it is and
-   where, until the agent's own comes. *)
-proc system(b: ^Buf.Buf);
-var dir: []U8; e: INT;
+(* The model's text so far ended with a line feed, so that a line on
+   standard error doesn't run on from it on a terminal. *)
+proc breakLine;
 begin
-    Buf.str(b, "You are arno, a harness for language models in a terminal. Answer briefly and plainly.\n");
-    dir, e := Sys.workDir();
-    if e = 0 then
-        Buf.str(b, "The working directory is ");
-        Buf.str(b, dir);
-        Buf.str(b, ".\n");
+    if not ended then Out.ln; ended := true; end;
+    Out.flush;
+end;
+
+(* s's first line, cut to at most max bytes where a character starts. *)
+proc line(s: []U8; max: INT): []U8;
+var n: INT;
+begin
+    n := Str.find(s, "\n");
+    if n >= 0 then s := s[0..n]; end;
+    if LEN(s) <= max then return s; end;
+    n := max;
+    while (n > 0) and (s[n] & 0C0H = 80H) do DEC(n); end;
+    return s[0..n];
+end;
+
+proc called(name, args: []U8; _arg: ^U8);
+begin
+    breakLine;
+    say("\u{25B8} ", name, " ");
+    say(line(args, 100), "\n", "");
+end;
+
+(* A result in a line: a failure's first line, which says why, or how
+   many lines came. *)
+proc answered(_name, res: []U8; _arg: ^U8);
+var n, i: INT; digits: [20]U8;
+begin
+    if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then
+        say("  ", line(res, 100), "\n");
+        return;
     end;
+    n := 0;
+    for i := 0 to LEN(res) - 1 do
+        if res[i] = '\n' then INC(n); end;
+    end;
+    if (LEN(res) > 0) and (res[LEN(res) - 1] # '\n') then INC(n); end;
+    digits, i := Str.fromInt(n);
+    if n = 1 then say("  ", digits[0..i], " line\n"); else say("  ", digits[0..i], " lines\n"); end;
+end;
+
+proc told(s: []U8; _arg: ^U8);
+begin
+    breakLine;
+    say("arno: ", s, "\n");
+end;
+
+(* The human's answer to question, one of keys: the first byte of a
+   line of standard input; 'n' for any other, or for none. *)
+proc asked(question, keys: []U8; _arg: ^U8): U8;
+var c, first: [1]U8; n: INT;
+begin
+    breakLine;
+    say(question, " [y/N] ", "");
+    n := 0;
+    while Sys.read(Sys.stdin, c) = 1 do
+        if c[0] = '\n' then break; end;
+        if n = 0 then first := c; end;
+        INC(n);
+    end;
+    if (n > 0) and (Str.find(keys, first) >= 0) then return first[0]; end;
+    return 'n';
 end;
 
 proc main*: INT;
-var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, sys, why, id: Buf.Buf; m: ^Amsg.Msg;
-    r: Awire.Request; cl: Http.Client; reply: Amsg.Msg; u: Awire.Usage; err: ERROR;
+var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, why, id: Buf.Buf; m: ^Amsg.Msg;
+    a: Agent.Agent; steps: I64; ok: BOOL; err: ERROR;
 begin
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
         Out.str(Usage);
@@ -110,25 +167,15 @@ begin
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, Str.trim(Buf.bytes(ADR(prompt))));
 
-    Buf.init(ADR(sys), Heap.heap);
     Buf.init(ADR(why), Heap.heap);
-    if LEN(c.system) > 0 then Buf.str(ADR(sys), c.system); else system(ADR(sys)); end;
-    Awire.initClient(ADR(cl));
-    r := {prov: ADR(conf.prov), client: ADR(cl), system: Buf.bytes(ADR(sys)), msgs: Msgs.all(ADR(c.msgs)),
-        emit: show, stopped: interrupted};
+    Agent.init(ADR(a), ADR(conf.prov),
+        {text: show, call: called, result: answered, note: told, ask: asked, stopped: interrupted});
+    steps, ok := Str.toInt(Aconf.get(ADR(conf), "max_steps"));
+    if ok and (steps > 0) then a.maxSteps := INT(steps); end;
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    err := Awire.chat(ADR(r), ADR(reply), ADR(u), ADR(why));
-    if not ended then Out.ln; end;
-    Out.flush;
-
-    (* the turn is over: what it kept for itself goes *)
-    Amsg.settle(ADR(reply));
-    if (err = nil) or (LEN(reply.text) > 0) then
-        Msgs.push(ADR(c.msgs), reply);
-    else
-        Amsg.free(ADR(reply));
-    end;
+    err := Agent.turn(ADR(a), ADR(c), ADR(why));
+    breakLine;
     if Astore.save(ADR(c)) # nil then say("arno: the conversation can't be saved in ", Astore.dir(), "\n"); end;
     if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(why)), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;

@@ -1,0 +1,301 @@
+(* Agent: a turn of a conversation: the model asked, the tools it
+   calls run, and the model asked again with their results, until it
+   answers with no call.
+
+   The agent knows nothing of how a turn is shown. It tells its front
+   end what happens, the model's text as it comes, each call and its
+   result, and asks it what the human says, through a Front: plain mode
+   is one, a line at a time; the screen is another, which runs a turn on
+   a thread of its own and passes on what it is told to the loop that
+   draws.
+
+   A turn ends early, the model asked to say where it got to without
+   calling more tools, when it has used its steps (maxSteps, config's
+   max_steps), or when four steps in a row had every call fail: a model
+   that keeps failing does better saying what it was trying, and being
+   told what to do, than trying again. A read-only call made a second
+   time in a turn, with the same arguments, is refused: its result is
+   above, and nothing has changed it; any other call might have, and
+   clears what was seen.
+
+   Each call's work is done in an arena, reset after the call: its
+   result is copied into the conversation, which keeps its own memory
+   from Heap.
+
+   Depends on Atools, Afence, Awire, Amsg and Astore. Leaves out what
+   the steps after this one bring: context files, notes, memory and
+   the project's map in the system prompt; pruning old results; the
+   turn's budget; delegate; and forking calls that only read, to run
+   them side by side. *)
+module Agent;
+import Atools, Afence, Awire, Amsg, Astore, Http, Buf, Str, Sys, Heap, Arena, Rt, Fmt, Msgs := Vec(Amsg.Msg),
+    Calls := Vec(Amsg.Call);
+
+type
+    (* What the agent tells its front end, and asks of it. Any
+       procedure may be nil, and each gets arg. *)
+    Front* = record
+        text*: proc(s: []U8; arg: ^U8);            (* a piece of the model's text, as it comes *)
+        call*: proc(name, args: []U8; arg: ^U8);   (* a tool call, about to run *)
+        result*: proc(name, res: []U8; arg: ^U8);  (* its result *)
+        note*: proc(s: []U8; arg: ^U8);            (* what arno says of the turn, a line *)
+        ask*: Atools.Ask;                          (* the human asked; nil if nobody is there *)
+        stopped*: proc: BOOL;                      (* whether the human said to stop *)
+        arg*: ^U8;
+    end;
+
+    Agent* = record
+        prov*: ^Awire.Prov;
+        front*: Front;
+        maxSteps*: INT;
+        used*: Awire.Usage;   (* what the requests so far cost, summed *)
+        client: Http.Client;
+        mem: Arena.Arena;     (* a call's work *)
+        seen: Buf.Buf;        (* the read-only calls of this turn, "\0" then each "name\1args\0" *)
+    end;
+
+const
+    MaxSteps* = 30;     (* a turn's steps, unless config's max_steps says *)
+    FailSteps = 4;      (* steps in a row whose every call failed, before a turn hands back *)
+    CallMemory = 256 * 1024 * 1024;   (* the arena's size: pages are only taken as used *)
+
+    (* what a turn that ran out of steps asks for *)
+    StepsAsk = "You have used every tool step this turn allows. Do not call any tools. In a few " +
+        "lines, say what is done, what you found, and what you will do next. Ask me a " +
+        "question only if you cannot go on without the answer; never ask leave to continue.";
+    (* what a turn whose last steps all failed asks for *)
+    StuckAsk = "Your last calls have all failed. Do not call any tools. In a few lines, say what you " +
+        "were trying, what the errors say, and what you will do differently. Ask me a " +
+        "question only if you cannot go on without the answer.";
+    Repeated = "not run: this exact call was already made in this turn and its result " +
+        "is above. Use that result, or try something different.";
+    Interrupted = "not run: interrupted by the human";
+
+    (* arno's own instructions, which a conversation's own system prompt
+       replaces; the workspace follows either *)
+    Own = "You are Arno, a terse coding assistant working beside a programmer in their " +
+        "terminal.\n\n" +
+        "# How to work\n" +
+        "- Look before you answer: search and read the code rather than guess. Never make up " +
+        "file contents, paths or tool results.\n" +
+        "- Find before you read, read before you edit: find or grep to locate code, then read " +
+        "it to see its exact current text, always right before an edit.\n" +
+        "- When you need a tool, call it in this same reply. Do not say you are about to call " +
+        "one and then stop, and do not ask permission to read or search.\n" +
+        "- Calls that do not depend on each other, such as reading three files, go together " +
+        "in one reply.\n" +
+        "- If a call fails or finds nothing, change your approach; never repeat the same call.\n" +
+        "- The human is your best source. When a few searches have come up empty, or the " +
+        "answer turns on what they intend (which feature, which of two places, whether a " +
+        "change is wanted), stop and ask them one clear question instead of searching on.\n" +
+        "- Edit only when asked, in small exact replacements. The human approves each edit; " +
+        "never repeat a declined one. When they say why, the reason follows \"declined by user:\" " +
+        "and tells you what to do instead; when they do not, ask what they want.\n" +
+        "- After changing code, run check if it is on offer, and fix what it reports. Build and " +
+        "check after each piece of a larger change, not only at the end, and before saying " +
+        "something works, run what you built on that very case.\n" +
+        "- Find out how something behaves once, in one batch of tries, then use what you " +
+        "learned; do not probe the same thing again.\n" +
+        "- Answer briefly, in light markdown. Refer to code as path:line.";
+
+(* a made ready to run turns against prov, telling front; the fence
+   set from the working directory. *)
+proc init*(a: ^Agent; prov: ^Awire.Prov; front: Front);
+begin
+    a^ := {prov: prov, front: front, maxSteps: MaxSteps};
+    Awire.initClient(ADR(a^.client));
+    if not Arena.init(ADR(a^.mem), CallMemory) then Rt.stop("arno: out of memory"); end;
+    Buf.init(ADR(a^.seen), Heap.heap);
+    Afence.init;
+end;
+
+proc note(a: ^Agent; s: []U8);
+begin
+    if a^.front.note # nil then a^.front.note(s, a^.front.arg); end;
+end;
+
+proc stopped(a: ^Agent): BOOL;
+begin
+    return (a^.front.stopped # nil) and a^.front.stopped();
+end;
+
+(* The system prompt of c's turns, added to b. *)
+proc system(c: ^Astore.Conv; b: ^Buf.Buf);
+var dir: []U8; e: INT;
+begin
+    if LEN(c^.system) > 0 then Buf.str(b, c^.system); else Buf.str(b, Own); end;
+    Buf.str(b, "\n\n# Workspace\nWorking directory: ");
+    dir, e := Sys.workDir();
+    if e = 0 then Buf.str(b, dir); end;
+    Buf.str(b, ". Project root: ");
+    Buf.str(b, Afence.zone);
+    Buf.str(b, ". Date: ");
+    Astore.date(b);
+    Buf.add(b, '.');
+end;
+
+(* The model asked, once, with c's messages; its reply added to them,
+   unless the request failed with nothing said. *)
+proc ask(a: ^Agent; c: ^Astore.Conv; sys: []U8; why: ^Buf.Buf): ERROR;
+var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; err: ERROR;
+begin
+    r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(ADR(c^.msgs)),
+        tools: Atools.Offered, emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
+    err := Awire.chat(ADR(r), ADR(reply), ADR(u), why);
+    INC(a^.used.inp, u.inp);
+    INC(a^.used.cached, u.cached);
+    INC(a^.used.written, u.written);
+    INC(a^.used.out, u.out);
+    if (err = nil) or (LEN(reply.text) > 0) then
+        Msgs.push(ADR(c^.msgs), reply);
+    else
+        Amsg.free(ADR(reply));
+    end;
+    return err;
+end;
+
+(* Every call seen forgotten: seen holds only the NUL each key
+   starts with, so that a key is never found inside another. *)
+proc forget(a: ^Agent);
+begin
+    Buf.reset(ADR(a^.seen));
+    Buf.add(ADR(a^.seen), 0);
+end;
+
+(* Whether the call was made already this turn, by a tool that only
+   reads; noted if not. A call to any other tool forgets the rest. *)
+proc again(a: ^Agent; name, args: []U8): BOOL;
+var key: Buf.Buf; seen: BOOL;
+begin
+    if not Atools.readOnly(name) then
+        forget(a);
+        return false;
+    end;
+    Buf.init(ADR(key), Heap.heap);
+    defer Buf.done(ADR(key));
+    Buf.add(ADR(key), 0);
+    Buf.str(ADR(key), name);
+    Buf.add(ADR(key), 1);
+    Buf.str(ADR(key), args);
+    Buf.add(ADR(key), 0);
+    seen := Str.find(Buf.bytes(ADR(a^.seen)), Buf.bytes(ADR(key))) >= 0;
+    if not seen then Buf.str(ADR(a^.seen), Buf.bytes(ADR(key))[1..key.len]); end;
+    return seen;
+end;
+
+(* Whether a result says its call failed: an error, or not run. A
+   call the human declined didn't fail; the model was told no. *)
+proc failed(res: []U8): BOOL;
+begin
+    return Str.hasPrefix(res, "error") or Str.hasPrefix(res, "not run");
+end;
+
+(* The calls of c's last message run, each result added to c as a
+   tool's message: how many of them failed. Once the human says to
+   stop, the calls left aren't run, but answered all the same, as a
+   request must answer every call. *)
+proc run(a: ^Agent; c: ^Astore.Conv): INT;
+var calls: []Amsg.Call; res: Buf.Buf; m: ^Amsg.Msg; i, bad: INT;
+begin
+    Buf.init(ADR(res), Heap.heap);
+    defer Buf.done(ADR(res));
+    (* the calls stay where they are as messages are added: a message
+       keeps its calls in memory of their own *)
+    calls := Calls.all(ADR(Msgs.all(ADR(c^.msgs))[c^.msgs.len - 1].calls));
+    bad := 0;
+    for i := 0 to LEN(calls) - 1 do
+        Buf.reset(ADR(res));
+        if a^.front.call # nil then a^.front.call(calls[i].name, calls[i].args, a^.front.arg); end;
+        if stopped(a) then
+            Buf.str(ADR(res), Interrupted);
+        elsif again(a, calls[i].name, calls[i].args) then
+            Buf.str(ADR(res), Repeated);
+        else
+            Atools.call(calls[i].name, calls[i].args, a^.front.ask, a^.front.arg, ADR(a^.mem.base), ADR(res));
+            Arena.reset(ADR(a^.mem));
+        end;
+        if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(ADR(res)), a^.front.arg); end;
+        if failed(Buf.bytes(ADR(res))) then INC(bad); end;
+        m := Msgs.add(ADR(c^.msgs));
+        Amsg.init(m, Amsg.Role.tool);
+        m^.callId := Amsg.keep(calls[i].id);
+        m^.tool := Amsg.keep(calls[i].name);
+        Amsg.setText(m, Buf.bytes(ADR(res)));
+    end;
+    return bad;
+end;
+
+(* The model asked, by a message of the human's that the conversation
+   doesn't keep, to say where it got to, for the reason why: its reply
+   kept without calls. The tools are still offered, so that the
+   request is the turn's last one and one more step, and the cache
+   holds. *)
+proc handBack(a: ^Agent; c: ^Astore.Conv; sys, reason, request: []U8; why: ^Buf.Buf): ERROR;
+var b: Buf.Buf; m: ^Amsg.Msg; reply: Amsg.Msg; n: INT; err: ERROR;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.str(ADR(b), reason);
+    Buf.str(ADR(b), "; asking the model to hand back");
+    note(a, Buf.bytes(ADR(b)));
+    m := Msgs.add(ADR(c^.msgs));
+    Amsg.init(m, Amsg.Role.user);
+    Amsg.setText(m, request);
+    n := c^.msgs.len;
+    err := ask(a, c, sys, why);
+    (* the request taken out, and with it the reply, which comes back
+       without its calls *)
+    if c^.msgs.len > n then
+        reply := Msgs.all(ADR(c^.msgs))[n];
+        Msgs.resize(ADR(c^.msgs), n);
+    end;
+    Amsg.free(ADR(Msgs.all(ADR(c^.msgs))[n - 1]));
+    Msgs.resize(ADR(c^.msgs), n - 1);
+    if LEN(reply.text) > 0 then
+        m := Msgs.add(ADR(c^.msgs));
+        Amsg.init(m, Amsg.Role.assistant);
+        Amsg.setText(m, reply.text);
+    end;
+    if reply.role = Amsg.Role.assistant then Amsg.free(ADR(reply)); end;
+    return err;
+end;
+
+(* A turn of c, whose last message is the human's: run until the model
+   answers, hands back, or the human stops it. nil then, or Awire's
+   Stopped; Failed for a request that failed, why saying why. What the
+   model said is in c either way, what it said for this turn alone
+   dropped (Amsg.settle). *)
+proc turn*(a: ^Agent; c: ^Astore.Conv; why: ^Buf.Buf): ERROR;
+var sys, b: Buf.Buf; first, step, failing, calls, i: INT; m: []Amsg.Msg; err: ERROR;
+begin
+    first := c^.msgs.len;
+    forget(a);
+    Buf.init(ADR(sys), Heap.heap);
+    defer Buf.done(ADR(sys));
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    system(c, ADR(sys));
+    failing := 0;
+    err := nil;
+    for step := 1 to a^.maxSteps do
+        err := ask(a, c, Buf.bytes(ADR(sys)), why);
+        if err # nil then break; end;
+        calls := Msgs.all(ADR(c^.msgs))[c^.msgs.len - 1].calls.len;
+        if calls = 0 then break; end;
+        if run(a, c) = calls then INC(failing); else failing := 0; end;
+        if stopped(a) then err := Awire.Stopped; break; end;
+        if step = a^.maxSteps then
+            Fmt.write(ADR(b), "{} steps used", [Fmt.int(a^.maxSteps)]);
+            err := handBack(a, c, Buf.bytes(ADR(sys)), Buf.bytes(ADR(b)), StepsAsk, why);
+        elsif failing = FailSteps then
+            Fmt.write(ADR(b), "{} steps of failed calls in a row", [Fmt.int(FailSteps)]);
+            err := handBack(a, c, Buf.bytes(ADR(sys)), Buf.bytes(ADR(b)), StuckAsk, why);
+            break;
+        end;
+    end;
+    m := Msgs.all(ADR(c^.msgs));
+    for i := first to LEN(m) - 1 do Amsg.settle(ADR(m[i])); end;
+    return err;
+end;
+
+end Agent.
