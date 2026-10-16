@@ -61,7 +61,7 @@ const
 
 type
     (* The files under a path, one at a time. *)
-    Walk = record
+    Walk* = record
         w: Rwalk.Walk;
         e: Rwalk.Entry;
     end;
@@ -75,7 +75,8 @@ type
 
 (* Walking *)
 
-proc open(w: ^Walk; path: []U8);
+(* w made to walk the files under path, or the file path. *)
+proc open*(w: ^Walk; path: []U8);
 begin
     Rwalk.init(ADR(w^.w), Heap.heap, path, {});
 end;
@@ -83,7 +84,7 @@ end;
 (* The next file of the walk, its path as a program writes it, without
    the "./" a walk from "." puts before each; false when there are no
    more. *)
-proc next(w: ^Walk): ([]U8, BOOL);
+proc next*(w: ^Walk): ([]U8, BOOL);
 var p: []U8; i: Sys.Info; e: INT;
 begin
     while Rwalk.next(ADR(w^.w), ADR(w^.e)) do
@@ -100,7 +101,7 @@ begin
     return "", false;
 end;
 
-proc close(w: ^Walk);
+proc close*(w: ^Walk);
 begin
     Rwalk.done(ADR(w^.w));
 end;

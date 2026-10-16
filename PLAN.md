@@ -122,9 +122,16 @@ one or more commits that build with `-Werror`.
      for a no. A near miss names the first line whose blanks differ,
      not the first line alone. git's arguments that are on disk are
      fenced, as the Pascal arno's Guard fenced them.
-   - [ ] d. The system prompt in full: context files, `note` and
+   - [x] d. The system prompt in full: context files, `note` and
      notes.json, memory.json, `ahead` (the map, prefetch, stale
-     notes); pruning; `turn_budget`.
+     notes); pruning; `turn_budget`. `Aprompt` makes the prompt,
+     `Aahead` the map, prefetch and notes, `Aprice` the list prices
+     turn_budget is counted in. The prompt leaves out, until their
+     stages, the commands and modes (3), the scratch and the stage (4)
+     and te (6). memory.json is read; `/remember` and `/notes` come
+     with the screen. The map counts what rwalk walks, so hidden files
+     are left out, where the Pascal arno counted what git tracks; the
+     off-peak half price waits for the status line.
    - [ ] e. `search`, `fetch` and `delegate`.
    `check` and `run` run commands, and come with the jail, in stage 4.
 3. **The full screen** on rtui: transcript, input, status line, copy

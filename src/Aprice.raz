@@ -1,0 +1,145 @@
+(* Aprice: what a model costs, at list price.
+
+   The prices of the models arno knows, in dollars per million tokens:
+   input, input read back from the provider's prompt cache, and output;
+   and how many tokens the model's context window holds. They come from
+   the providers' own pages, as of 2026-09-28 (Ollama Cloud's of
+   2026-10-11), and are kept by hand, so they fall behind; config's
+   price and context_window cover a model the table lacks, or a price
+   that moved. A model run on the human's own machine costs nothing a
+   token and isn't listed.
+
+   Depends on Awire (a provider, and what a request cost in tokens),
+   Str and Math. Leaves out the half price some models are billed off
+   peak, which the status line and the turns' ledger show, in stage 3. *)
+module Aprice;
+import Awire, Str, Math, Out;
+
+type
+    Price* = record
+        inp*, cached*, out*: F64;   (* dollars per million tokens *)
+        window*: I64;               (* tokens; 0 if unknown *)
+    end;
+
+    Listed = record
+        model: []U8;
+        inp, cached, out: F64;
+        window: I64;
+    end;
+
+const
+    Table: []Listed = [
+        {model: "claude-opus-5-5", inp: 4.0, cached: 0.20, out: 20.0, window: 1000000},
+        {model: "claude-sonnet-5-5", inp: 2.0, cached: 0.20, out: 10.0, window: 1000000},
+        {model: "claude-sonnet-5", inp: 2.0, cached: 0.20, out: 10.0, window: 1000000},
+        {model: "claude-haiku-4-5", inp: 1.0, cached: 0.10, out: 5.0, window: 200000},
+        {model: "claude-haiku-4-5-20251001", inp: 1.0, cached: 0.10, out: 5.0, window: 200000},
+        {model: "gpt-5", inp: 1.25, cached: 0.125, out: 10.0, window: 400000},
+        {model: "gpt-5-mini", inp: 0.25, cached: 0.025, out: 2.0, window: 400000},
+        {model: "gpt-5-nano", inp: 0.05, cached: 0.005, out: 0.40, window: 400000},
+        {model: "gemini-3.1-pro-preview", inp: 2.0, cached: 0.20, out: 12.0, window: 1048576},
+        {model: "gemini-3.8-flash", inp: 0.75, cached: 0.075, out: 3.75, window: 1048576},
+        {model: "gemini-3.5-flash-lite", inp: 0.30, cached: 0.03, out: 2.50, window: 1048576},
+        {model: "deepseek-v4.1-flash", inp: 0.30, cached: 0.006, out: 1.20, window: 1048576},
+        {model: "deepseek-v4.1-flash:cloud", inp: 0.30, cached: 0.006, out: 1.20, window: 1048576},
+        {model: "deepseek-v4-pro", inp: 1.32, cached: 0.044, out: 3.96, window: 1048576},
+        {model: "deepseek-v4-pro:cloud", inp: 1.32, cached: 0.044, out: 3.96, window: 1048576},
+        {model: "kimi-k2.7-code", inp: 0.95, cached: 0.19, out: 4.0, window: 262144},
+        {model: "kimi-k2.7-code:cloud", inp: 0.95, cached: 0.19, out: 4.0, window: 262144},
+        {model: "kimi-k3", inp: 3.0, cached: 0.30, out: 15.0, window: 1048576},
+        {model: "kimi-k3:cloud", inp: 3.0, cached: 0.30, out: 15.0, window: 1048576},
+        {model: "gemma4:31b", inp: 0.14, cached: 0.05, out: 0.40, window: 262144},
+        {model: "gemma4:31b-cloud", inp: 0.14, cached: 0.05, out: 0.40, window: 262144},
+        {model: "glm-5.3", inp: 1.40, cached: 0.26, out: 4.40, window: 1048576},
+        {model: "glm-5.3:cloud", inp: 1.40, cached: 0.26, out: 4.40, window: 1048576},
+        {model: "glm-5.3-flash", inp: 0.15, cached: 0.03, out: 0.50, window: 1048576},
+        {model: "glm-5.3-flash:cloud", inp: 0.15, cached: 0.03, out: 0.50, window: 1048576},
+        {model: "gpt-oss:120b", inp: 0.15, cached: 0.014, out: 0.60, window: 131072},
+        {model: "gpt-oss:120b-cloud", inp: 0.15, cached: 0.014, out: 0.60, window: 131072},
+        {model: "minimax-m2.7", inp: 0.30, cached: 0.06, out: 1.20, window: 196608},
+        {model: "minimax-m2.7:cloud", inp: 0.30, cached: 0.06, out: 1.20, window: 196608},
+        {model: "nemotron-3-ultra", inp: 0.10, cached: 0.1, out: 3.0, window: 262144},
+        {model: "nemotron-3-ultra:cloud", inp: 0.10, cached: 0.1, out: 3.0, window: 262144}];
+
+(* The row of model in Table, or -1. *)
+proc row(model: []U8): INT;
+var i: INT;
+begin
+    for i := 0 to LEN(Table) - 1 do
+        if Table[i].model = model then return i; end;
+    end;
+    return -1;
+end;
+
+(* p's model's price and window: from Table, then as config says:
+   "price = IN OUT [CACHED]", dollars per million tokens, cached input
+   a tenth of IN if not given, the usual discount; and "context_window
+   = N" tokens. False if no price is known; the window is given either
+   way, 0 if unknown. A tagged name the table lacks, as Ollama Cloud's
+   dated deepseek-v4-pro:0813, is priced as the name before its colon,
+   if that is listed: a snapshot of a model is sold at the model's
+   price. *)
+proc price*(p: ^Awire.Prov): (Price, BOOL);
+var pr: Price; w, rest, before: []U8; vals: [3]F64; i, n: INT; window: I64; known, ok: BOOL;
+begin
+    pr := {};
+    i := row(p^.model);
+    before, _, ok := Str.cut(p^.model, ":");
+    if (i < 0) and ok then i := row(before); end;
+    known := i >= 0;
+    if known then pr := {inp: Table[i].inp, cached: Table[i].cached, out: Table[i].out, window: Table[i].window}; end;
+    n := 0;
+    w, rest := Str.field(Awire.param(p, "price"));
+    while (LEN(w) > 0) and (n < 3) do
+        vals[n], ok := Math.toReal(w);
+        if not ok then break; end;
+        INC(n);
+        w, rest := Str.field(rest);
+    end;
+    if n >= 2 then
+        pr.inp := vals[0];
+        pr.out := vals[1];
+        pr.cached := pr.inp / 10.0;
+        if n = 3 then pr.cached := vals[2]; end;
+        known := true;
+    end;
+    window, ok := Str.toInt(Awire.param(p, "context_window"));
+    if ok then pr.window := window; end;
+    return pr, known;
+end;
+
+(* What a request cost, in dollars. The prompt is billed three ways:
+   what was read from the cache at the cache's price, what was written
+   to it at 1.25 times the input's (Anthropic's cache of five minutes;
+   the others never say they wrote), and the rest at the input's. *)
+proc cost*(pr: Price; u: Awire.Usage): F64;
+begin
+    return (F64(u.inp - u.cached - u.written) * pr.inp + F64(u.cached) * pr.cached +
+        F64(u.written) * pr.inp * 1.25 + F64(u.out) * pr.out) / 1.0E6;
+end;
+
+(* The module's test. *)
+
+proc main*: INT;
+var p: Awire.Prov; pr: Price; known: BOOL;
+begin
+    p := {model: "deepseek-v4-pro:0813"};
+    pr, known := price(ADR(p));
+    if not known or (pr.inp # 1.32) then Out.str("Aprice: a tagged name\n"); return 1; end;
+    if cost(pr, {inp: 1000000, cached: 500000, out: 1000000}) # 0.66 + 0.022 + 3.96 then
+        Out.str("Aprice: cost\n");
+        return 1;
+    end;
+    p := {model: "mine", params: ["price=2 8", "context_window=4096"]};
+    pr, known := price(ADR(p));
+    if not known or (pr.cached # 0.2) or (pr.out # 8.0) or (pr.window # 4096) then
+        Out.str("Aprice: config's price\n");
+        return 1;
+    end;
+    p := {model: "mine"};
+    _, known := price(ADR(p));
+    if known then Out.str("Aprice: a price made up\n"); return 1; end;
+    return 0;
+end;
+
+end Aprice.

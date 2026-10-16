@@ -10,6 +10,8 @@
 //     the conversation; and so for a key not set, and a conversation
 //     not there;
 //   - say what is wrong with its configuration, and go on;
+//   - tell the model the project's map and notes, keep a note, and
+//     attach the definition of a name the prompt mentions;
 //   - run the tools the model calls, saying each on the standard
 //     error, and send their results back: read, grep, def and git;
 //     refuse a call made twice, and hand back after four steps of
@@ -51,7 +53,7 @@ end;
 // wrote in dir/out and what it said in dir/err
 function run(a);
 begin
-  $arno $a > "$dir/out" 2> "$dir/err"
+  $arno $a < /dev/null > "$dir/out" 2> "$dir/err"
   result := status
 end;
 
@@ -81,11 +83,14 @@ begin
   if status <> 0 then fail("arno $(join(a)): no '$text' in its $out: " + `cat "$dir/$out"`)
 end;
 
-// the configuration: the stub's url, and the lines in the list more
+// the configuration: the stub's url, no context files, which would
+// be asked about first on the standard input, and the lines in the
+// list more
 procedure configure(more);
 var line;
 begin
   echo "url = http://127.0.0.1:$(port)/v1" > "$dir/config/arno/config"
+  echo 'context_files = no' >> "$dir/config/arno/config"
   for line in more do echo $line >> "$dir/config/arno/config"
 end;
 
@@ -139,6 +144,16 @@ expect(['call', 'grep', '{"pattern":"module Arno;","path":"src/","glob":"*.raz"}
 expect(['call', 'def', '{"name":"interrupted","path":"src"}'], 0, 'out', '	proc interrupted: BOOL;')
 expect(['call', 'git', '{"args":"log --format=%s -n 1"}'], 0, 'out',
   'the tool said: ' + `git log --format=%s -n 1`)
+
+// the system prompt: the project's map, and a note kept
+expect(['call', 'note', '{"text":"the stub is test/Astub.raz"}'], 0, 'out', 'the tool said: ok: noted (1 of 30)')
+expect(['system'], 0, 'out', '# Project map')
+holds('the system prompt', 'out', '- the stub is test/Astub.raz')
+// a name in the prompt, its definition attached, shown as a def
+expect(['how', 'does', '`interrupted`', 'work'], 0, 'err', '▸ def {"name":"interrupted"}')
+last := split(`ls -t "$dir/data/arno"`)[0]
+grep -qF '<file path=\"src/Arno.raz\" lines=' "$dir/data/arno/$last"
+if status <> 0 then fail('no definition attached: ' + `cat "$dir/data/arno/$last"`)
 
 // a call made again refused, and four steps of them a hand-back,
 // whose request the conversation doesn't keep

@@ -1,0 +1,411 @@
+(* Aprompt: the system prompt, what the model is told before the
+   conversation.
+
+   It is made of sections, in this order: arno's own instructions, or
+   the conversation's own system prompt in their place; the workspace,
+   where the model is and when; the human's context files; the
+   project's map; the project's notes; the facts the human asked arno
+   to remember; and what arno is.
+
+   What describes the human or the project rather than the conversation,
+   the context files, the map and the remembered facts, is found once,
+   when the session starts (load), and kept: it outlives the
+   conversation, and a system prompt that stays the same is one the
+   provider can cache. The notes are read for every request, so that a
+   note the model keeps counts from its next step.
+
+   Context files are AGENTS.md and CLAUDE.md, in the home directory, in
+   ~/.claude, and in each directory from just below home down to the
+   working one, so that a ~/lib/CLAUDE.md shared by the projects under
+   it counts too; outside home, in the project's root and the working
+   directory. Each brings the files it names with @path, to five levels.
+   They go general first, so that the more particular one comes later,
+   where it reads as the last word. config's context_files decides
+   whether they are read: ask (the default) says what was found and
+   asks, once; yes reads them; no never looks. Asking is the default
+   because a context file comes with the repository, not from the
+   human, and what it names, which may be anywhere on the disk, goes to
+   the provider with every request: the list shows what that would be
+   before anything is sent.
+
+   Depends on Aahead (the map and the notes), Afence, Astore (arno's
+   directory, for memory.json), Atools (how the human is asked), Awire
+   (the provider) and rjson's Json. Leaves out what comes with later
+   stages: the commands and modes the human has, which the screen
+   brings; the scratch directory and the stage; te. *)
+module Aprompt;
+import Aahead, Afence, Astore, Atools, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
+    Strs := Vec([]U8);
+
+const
+    MaxDepth = 5;   (* files a context file brings, and they bring, and so on *)
+    Names: [][]U8 = ["AGENTS.md", "CLAUDE.md"];
+
+    (* arno's own instructions, which a conversation's own system prompt
+       replaces *)
+    Own* = "You are Arno, a terse coding assistant working beside a programmer in their " +
+        "terminal.\n\n" +
+        "# How to work\n" +
+        "- Look before you answer: search and read the code rather than guess. Never make up " +
+        "file contents, paths or tool results.\n" +
+        "- Find before you read, read before you edit: find or grep to locate code, then read " +
+        "it to see its exact current text, always right before an edit.\n" +
+        "- When you need a tool, call it in this same reply. Do not say you are about to call " +
+        "one and then stop, and do not ask permission to read or search.\n" +
+        "- Calls that do not depend on each other, such as reading three files, go together " +
+        "in one reply.\n" +
+        "- If a call fails or finds nothing, change your approach; never repeat the same call.\n" +
+        "- The human is your best source. When a few searches have come up empty, or the " +
+        "answer turns on what they intend (which feature, which of two places, whether a " +
+        "change is wanted), stop and ask them one clear question instead of searching on.\n" +
+        "- Edit only when asked, in small exact replacements. The human approves each edit; " +
+        "never repeat a declined one. When they say why, the reason follows \"declined by user:\" " +
+        "and tells you what to do instead; when they do not, ask what they want.\n" +
+        "- After changing code, run check if it is on offer, and fix what it reports. Build and " +
+        "check after each piece of a larger change, not only at the end, and before saying " +
+        "something works, run what you built on that very case.\n" +
+        "- Find out how something behaves once, in one batch of tries, then use what you " +
+        "learned; do not probe the same thing again.\n" +
+        "- Answer briefly, in light markdown. Refer to code as path:line.\n\n" +
+        "# Exploring code\n" +
+        "Every step resends the whole conversation, so make each one count.\n" +
+        "- Orient once: the project map below, when there is one, gives the layout; outline " +
+        "a directory for the rest.\n" +
+        "- Definitions of names in the human's message may already be attached to it: use " +
+        "those before searching.\n" +
+        "- Found something only by searching, that the next session would search for too " +
+        "(where a feature lives, an unexpected layout)? Keep it with note.";
+
+type
+    (* What lasts the session, each a section of the prompt or "". *)
+    Prompt* = record
+        context: Buf.Buf;
+        map: Buf.Buf;
+        memory: Buf.Buf;
+    end;
+
+    (* The context files found, and the paths they were found by. *)
+    Found = record
+        mem: ^Mem.Allocator;
+        home: []U8;
+        seen: Strs.Vec;     (* the files taken, resolved *)
+        names: Buf.Buf;     (* their paths, ~ for home, ", " between *)
+        text: Buf.Buf;      (* their blocks *)
+    end;
+
+(* Context files *)
+
+(* The @paths in a context file's text, pushed on l as written: an @ at
+   the start of a line or after a blank or a (, up to the next blank,
+   less the punctuation that ends a sentence; not in a code span or a
+   fenced block. *)
+proc imports(s: []U8; l: ^Strs.Vec);
+var ref: []U8; i, j: INT; fenced, ticked, bol: BOOL;
+begin
+    fenced := false;
+    ticked := false;
+    bol := true;
+    i := 0;
+    while i < LEN(s) do
+        if bol and Str.hasPrefix(s[i..LEN(s)], "```") then fenced := not fenced; end;
+        bol := s[i] = '\n';
+        if bol then
+            ticked := false;
+        elsif s[i] = '`' then
+            ticked := not ticked;
+        elsif (s[i] = '@') and not fenced and not ticked and
+            ((i = 0) or (s[i - 1] = ' ') or (s[i - 1] = '\t') or (s[i - 1] = '(')) then
+            j := i + 1;
+            while (j < LEN(s)) and (s[j] # ' ') and (s[j] # '\t') and (s[j] # '\n') and (s[j] # '`') do INC(j); end;
+            ref := s[i + 1..j];
+            while (LEN(ref) > 0) and (Str.find(",.;:)?!", ref[LEN(ref) - 1..LEN(ref)]) >= 0) do
+                ref := ref[0..LEN(ref) - 1];
+            end;
+            if LEN(ref) > 0 then Strs.push(l, ref); end;
+            i := j;
+            continue;
+        end;
+        INC(i);
+    end;
+end;
+
+(* The context file at path taken, if it is one not taken yet, and the
+   files it names after it, depth the levels above it. *)
+proc take(f: ^Found; path: []U8; depth: INT);
+var r, text, p: Buf.Buf; refs: Strs.Vec; s, nice: []U8; seen, l: [][]U8; i: Sys.Info; e, k: INT;
+begin
+    Buf.init(ADR(r), f^.mem);
+    Afence.resolve(path, ADR(r));
+    seen := Strs.all(ADR(f^.seen));
+    for k := 0 to LEN(seen) - 1 do
+        if seen[k] = Buf.bytes(ADR(r)) then return; end;
+    end;
+    i, e := Sys.info(Buf.bytes(ADR(r)));
+    if (e # 0) or not i.file then return; end;
+    Buf.init(ADR(text), f^.mem);
+    if Files.load(Buf.bytes(ADR(r)), ADR(text)) # 0 then return; end;
+    s := Buf.bytes(ADR(text));
+    k := LEN(s);
+    if k > 8192 then k := 8192; end;
+    if Str.find(s[0..k], "\x00") >= 0 then return; end;
+    Strs.push(ADR(f^.seen), Buf.bytes(ADR(r)));
+    nice := Buf.bytes(ADR(r));
+    if Str.hasPrefix(nice, f^.home) and (LEN(nice) > LEN(f^.home)) and (nice[LEN(f^.home)] = '/') then
+        Buf.init(ADR(p), f^.mem);
+        Buf.add(ADR(p), '~');
+        Buf.str(ADR(p), nice[LEN(f^.home)..LEN(nice)]);
+        nice := Buf.bytes(ADR(p));
+    end;
+    Aahead.block(ADR(f^.text), nice, "", s);
+    Buf.add(ADR(f^.text), '\n');
+    if f^.names.len > 0 then Buf.str(ADR(f^.names), ", "); end;
+    Buf.str(ADR(f^.names), nice);
+    if depth >= MaxDepth then return; end;
+    Strs.init(ADR(refs), f^.mem);
+    imports(s, ADR(refs));
+    l := Strs.all(ADR(refs));
+    for k := 0 to LEN(l) - 1 do
+        Buf.init(ADR(p), f^.mem);
+        if Str.hasPrefix(l[k], "~/") then
+            Buf.str(ADR(p), f^.home);
+            Buf.str(ADR(p), l[k][1..LEN(l[k])]);
+        elsif Str.hasPrefix(l[k], "/") then
+            Buf.str(ADR(p), l[k]);
+        else
+            Buf.str(ADR(p), Buf.bytes(ADR(r))[0..Str.findLast(Buf.bytes(ADR(r)), "/") + 1]);
+            Buf.str(ADR(p), l[k]);
+        end;
+        take(f, Buf.bytes(ADR(p)), depth + 1);
+    end;
+end;
+
+(* Every context file of the directories dirs, general first, into f. *)
+proc context(f: ^Found; dirs: [][]U8);
+var p: Buf.Buf; i, k: INT;
+begin
+    Buf.init(ADR(p), f^.mem);
+    for i := 0 to LEN(dirs) - 1 do
+        for k := 0 to LEN(Names) - 1 do
+            Buf.reset(ADR(p));
+            Buf.str(ADR(p), dirs[i]);
+            Buf.add(ADR(p), '/');
+            Buf.str(ADR(p), Names[k]);
+            take(f, Buf.bytes(ADR(p)), 0);
+        end;
+    end;
+end;
+
+(* The directories whose context files count, general first, pushed on
+   l: home, ~/.claude, and each from just below home down to the
+   working directory; outside home, the project's root and the working
+   directory instead. *)
+proc places(f: ^Found; l: ^Strs.Vec);
+var b, wd: Buf.Buf; down: Strs.Vec; d: []U8; all: [][]U8; i: INT;
+begin
+    Buf.init(ADR(b), f^.mem);
+    Buf.init(ADR(wd), f^.mem);
+    Strs.init(ADR(down), f^.mem);
+    Strs.push(l, f^.home);
+    Buf.str(ADR(b), f^.home);
+    Buf.str(ADR(b), "/.claude");
+    Strs.push(l, Buf.bytes(ADR(b)));
+    Afence.resolve(".", ADR(wd));
+    d := Buf.bytes(ADR(wd));
+    if Afence.within(d, f^.home) and (d # f^.home) then
+        while d # f^.home do
+            Strs.push(ADR(down), d);
+            d := d[0..Str.findLast(d, "/")];
+        end;
+        all := Strs.all(ADR(down));
+        for i := LEN(all) - 1 to 0 by -1 do Strs.push(l, all[i]); end;
+    elsif d # f^.home then
+        Strs.push(l, Afence.zone);
+        Strs.push(l, d);
+    end;
+end;
+
+(* The remembered facts *)
+
+(* memory.json's facts, a line each with their tags, as a section of
+   the prompt, added to out; nothing if there are none. The file is an
+   array of {"fact", "tags", "created"}. *)
+proc memory(mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d: Json.Doc; path, text: Buf.Buf; v, m, tags: Json.Value; i, k: INT;
+begin
+    Buf.init(ADR(path), mem);
+    Buf.init(ADR(text), mem);
+    Buf.str(ADR(path), Astore.dir());
+    Buf.str(ADR(path), "memory.json");
+    if Files.load(Buf.bytes(ADR(path)), ADR(text)) # 0 then return; end;
+    if not Json.init(ADR(d), mem) then return; end;
+    v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
+    if Json.len(ADR(d), v) = 0 then return; end;
+    Buf.str(out, "# Remembered facts\nAbout the human and this project:");
+    for i := 0 to Json.len(ADR(d), v) - 1 do
+        m := Json.item(ADR(d), v, i);
+        Buf.str(out, "\n  - ");
+        Buf.str(out, Json.text(ADR(d), Json.member(ADR(d), m, "fact")));
+        tags := Json.member(ADR(d), m, "tags");
+        for k := 0 to Json.len(ADR(d), tags) - 1 do
+            if k = 0 then Buf.str(out, " ["); else Buf.add(out, ','); end;
+            Buf.str(out, Json.text(ADR(d), Json.item(ADR(d), tags, k)));
+        end;
+        if Json.len(ADR(d), tags) > 0 then Buf.add(out, ']'); end;
+    end;
+end;
+
+(* The prompt *)
+
+(* The context files of home, the home directory, made p's section, as
+   mode says; the human asked through h if it says ask. *)
+proc readContext(p: ^Prompt; home, mode: []U8; h: ^Atools.Human; say: Aahead.Said; mem: ^Mem.Allocator);
+var f: Found; dirs: Strs.Vec; b: Buf.Buf; yes: BOOL;
+begin
+    Buf.reset(ADR(p^.context));
+    if mode = "no" then return; end;
+    Buf.init(ADR(b), mem);
+    Afence.resolve(home, ADR(b));
+    f := {mem: mem, home: Buf.bytes(ADR(b))};
+    Strs.init(ADR(f.seen), mem);
+    Buf.init(ADR(f.names), mem);
+    Buf.init(ADR(f.text), mem);
+    Strs.init(ADR(dirs), mem);
+    places(ADR(f), ADR(dirs));
+    context(ADR(f), Strs.all(ADR(dirs)));
+    if f.text.len = 0 then return; end;
+    Buf.init(ADR(b), mem);
+    Fmt.write(ADR(b), "context files: {}", [Fmt.str(Buf.bytes(ADR(f.names)))]);
+    if say # nil then say(Buf.bytes(ADR(b)), h^.arg); end;
+    yes := mode = "yes";
+    if not yes and (h^.ask # nil) then yes := h^.ask("read them into every request?", "", "yn", h^.arg) = 'y'; end;
+    if not yes then
+        if say # nil then say("context files left out", h^.arg); end;
+        return;
+    end;
+    Buf.str(ADR(p^.context), "# Context files\nStanding instructions from the human's context files. Follow " +
+        "them. Where two disagree, the later one is more specific and wins.\n\n");
+    Buf.str(ADR(p^.context), Str.trimRight(Buf.bytes(ADR(f.text))));
+end;
+
+(* p made for the session: the context files, as config's context_files
+   (mode) says, the human asked through h if it says ask; the map, if
+   map; the remembered facts. What arno does is said through say. *)
+proc load*(p: ^Prompt; mode: []U8; map: BOOL; h: ^Atools.Human; say: Aahead.Said);
+var ar: Arena.Arena;
+begin
+    Buf.init(ADR(p^.context), Heap.heap);
+    Buf.init(ADR(p^.map), Heap.heap);
+    Buf.init(ADR(p^.memory), Heap.heap);
+    if not Arena.init(ADR(ar), 1 shl 26) then return; end;
+    defer Arena.done(ADR(ar));
+    readContext(p, Sys.env("HOME"), mode, h, say, ADR(ar.base));
+    if map then Aahead.map(ADR(ar.base), ADR(p^.map)); end;
+    memory(ADR(ar.base), ADR(p^.memory));
+end;
+
+(* The system prompt of c's next request, added to out: c's own system
+   prompt, or Own, then the sections. mem is for the work, say for a
+   note dropped as stale. *)
+proc write*(p: ^Prompt; c: ^Astore.Conv; prov: ^Awire.Prov; mem: ^Mem.Allocator; say: Aahead.Said; arg: ^U8;
+    out: ^Buf.Buf);
+var dir: []U8; e, at: INT;
+begin
+    if LEN(c^.system) > 0 then Buf.str(out, c^.system); else Buf.str(out, Own); end;
+    Buf.str(out, "\n\n# Workspace\nWorking directory: ");
+    dir, e := Sys.workDir();
+    if e = 0 then Buf.str(out, dir); end;
+    Fmt.write(out, ". Project root: {}. Date: ", [Fmt.str(Afence.zone)]);
+    Astore.date(out);
+    Buf.add(out, '.');
+    if p^.context.len > 0 then
+        Buf.str(out, "\n\n");
+        Buf.str(out, Buf.bytes(ADR(p^.context)));
+    end;
+    if p^.map.len > 0 then
+        Buf.str(out, "\n\n");
+        Buf.str(out, Buf.bytes(ADR(p^.map)));
+    end;
+    at := out^.len;
+    Buf.str(out, "\n\n");
+    Aahead.notes(mem, say, arg, out);
+    if out^.len = at + 2 then out^.len := at; end;
+    if p^.memory.len > 0 then
+        Buf.str(out, "\n\n");
+        Buf.str(out, Buf.bytes(ADR(p^.memory)));
+    end;
+    Fmt.write(out, "\n\n# About Arno\nYou run inside Arno, a small terminal harness. Provider {}, model {}. The " +
+        "config file is ~/.config/arno/config; arno(1) documents its keys. Your file tools reach {} and below " +
+        "without asking; for any other path the human is asked first, and a refusal is final: do not look for " +
+        "a way around it. When asked how Arno works, answer from this.",
+        [Fmt.str(prov^.name), Fmt.str(prov^.model), Fmt.str(Afence.zone)]);
+end;
+
+(* The module's test, in build/prompt, which it makes. *)
+
+var failed: BOOL;
+
+proc expect(what, got, want: []U8);
+begin
+    if got = want then return; end;
+    Out.str("Aprompt: ");
+    Out.str(what);
+    Out.str(":\n");
+    Out.str(got);
+    Out.str("\nnot\n");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+proc no(_question, _detail, _keys: []U8; _arg: ^U8): U8;
+begin
+    return 'n';
+end;
+
+proc main*: INT;
+var p: Prompt; h: Atools.Human; l: Strs.Vec; b: Buf.Buf; dir: []U8;
+begin
+    Strs.init(ADR(l), Heap.heap);
+    imports("see @a.md, and (@~/b.md).\n```\n@not\n```\n`@nor` @/c/d.md\nx@y", ADR(l));
+    Buf.init(ADR(b), Heap.heap);
+    Str.join(ADR(b), Strs.all(ADR(l)), " ");
+    expect("imports", Buf.bytes(ADR(b)), "a.md ~/b.md /c/d.md");
+
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/prompt");
+    _ := Sys.makeDir("build/prompt/home");
+    _ := Sys.makeDir("build/prompt/home/proj");
+    _ := Sys.makeDir("build/prompt/home/proj/.git");
+    _ := Sys.makeDir("build/prompt/data");
+    _ := Files.write("build/prompt/home/CLAUDE.md", "general, and @more.md\n");
+    _ := Files.write("build/prompt/home/more.md", "more\n");
+    _ := Files.write("build/prompt/home/proj/AGENTS.md", "particular, and @../more.md again\n");
+    _ := Files.write("build/prompt/data/memory.json", `[{"fact":"likes tea","tags":["me","x"],"created":"t"}]`);
+    dir, _ := Sys.workDir();
+    dir, _ := Str.copy(Heap.heap, dir);
+    Buf.reset(ADR(b));
+    Buf.str(ADR(b), dir);
+    Buf.str(ADR(b), "/build/prompt/data/");
+    Astore.use(Buf.bytes(ADR(b)));
+    Buf.init(ADR(b), Heap.heap);
+    Buf.str(ADR(b), dir);
+    Buf.str(ADR(b), "/build/prompt/home");
+    if Sys.setWorkDir("build/prompt/home/proj") # 0 then Out.str("Aprompt: no build/prompt\n"); return 1; end;
+    Afence.init;
+    h := {ask: no};
+    load(ADR(p), "no", false, ADR(h), nil);
+    readContext(ADR(p), Buf.bytes(ADR(b)), "yes", ADR(h), nil, Heap.heap);
+    expect("context", Buf.bytes(ADR(p.context)), "# Context files\nStanding instructions from the human's " +
+        "context files. Follow them. Where two disagree, the later one is more specific and wins.\n\n" +
+        "<file path=\"~/CLAUDE.md\">\ngeneral, and @more.md\n</file>\n<file path=\"~/more.md\">\nmore\n</file>\n" +
+        "<file path=\"~/proj/AGENTS.md\">\nparticular, and @../more.md again\n</file>");
+    expect("memory", Buf.bytes(ADR(p.memory)), "# Remembered facts\nAbout the human and this project:\n" +
+        "  - likes tea [me,x]");
+    readContext(ADR(p), Buf.bytes(ADR(b)), "ask", ADR(h), nil, Heap.heap);
+    expect("context, declined", Buf.bytes(ADR(p.context)), "");
+    _ := Sys.setWorkDir(dir);
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Aprompt.

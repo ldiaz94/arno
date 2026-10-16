@@ -33,14 +33,14 @@
    which rjson reads only as UTF-8.
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git),
-   Awire (for Tool), rjson's Json. Leaves out the tools of the steps
-   after this one: note, search, fetch, delegate, run and shell; the
+   Aahead (note), Awire (for Tool), rjson's Json. Leaves out the tools
+   of the steps after this one: search, fetch, delegate, run and shell; the
    images read shows as pictures, which come with the screen; the
    model's scratch directory, where a change needs no approval, which
    comes with the stage; and an editor's buffers, which come with the
    peers. *)
 module Atools;
-import Afence, Afind, Arun, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8),
+import Afence, Afind, Arun, Aahead, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8),
     Refusals := Vec(Refusal);
 
 type
@@ -167,7 +167,18 @@ const
          description: "Delete one file. The human approves each removal. Not for directories.",
          params: `{"type":"object","properties":` +
             `{"path":{"type":"string","description":"the file to delete, relative to the working directory"}},` +
-            `"required":["path"]}`}];
+            `"required":["path"]}`},
+        {name: "note",
+         description: "Keep a note about this project for your later sessions, which see every note in " +
+            "their instructions. Note what you had to search for and the next session would too: where a " +
+            "feature lives, a layout that surprised you, how to build or test, how an outside tool behaves. " +
+            "One fact per note, one short line, project paths written from its root. Not for what this " +
+            "conversation alone needs, nor what the project map already says, and never for what the code you " +
+            "are changing does now: the next edit changes that, and a note that outlives it misleads every " +
+            "later session.",
+         params: `{"type":"object","properties":` +
+            `{"text":{"type":"string","description":"the note, one line of at most 200 characters"}},` +
+            `"required":["text"]}`}];
 
     (* What git may run, and what may follow git branch --list. *)
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
@@ -941,6 +952,8 @@ begin
         move(ADR(a), h, mem, ADR(res));
     elsif name = "remove" then
         remove(ADR(a), h, mem, ADR(res));
+    elsif name = "note" then
+        Aahead.note(str(ADR(a), "text"), mem, ADR(res));
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
         Buf.str(ADR(res), "error: there is no tool named \"");
@@ -1049,7 +1062,7 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove");
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove note");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");

@@ -10,6 +10,9 @@
    last message of "fail" it answers a 500 with an error, as a
    provider does.
 
+   To a last message of "system" it answers the request's system
+   prompt, for a test of what arno tells the model.
+
    A test asks for a tool call by the human's last message: to "call
    NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
    answers its result with "the tool said: " and the result; to
@@ -97,7 +100,9 @@ begin
             break;
         end;
     end;
-    if not tool(asked, role, last) then
+    if asked = "system" then
+        said(Json.text(ADR(d), Json.member(ADR(d), Json.item(ADR(d), msgs, 0), "content")));
+    elsif not tool(asked, role, last) then
         digits, k := Str.fromInt(n);
         said(digits[0..k]);
         said(" messages");

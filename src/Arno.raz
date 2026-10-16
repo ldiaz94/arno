@@ -23,7 +23,7 @@
    stages after this one, what the Pascal arno's one-shot run has
    besides: the screen, --serve and --attach. *)
 module Arno;
-import Agent, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Msgs := Vec(Amsg.Msg);
+import Agent, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Math, Msgs := Vec(Amsg.Msg);
 
 const Usage = `
     usage: arno [prompt ...]
@@ -143,7 +143,7 @@ end;
 
 proc main*: INT;
 var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, failure, id: Buf.Buf; m: ^Amsg.Msg;
-    a: Agent.Agent; steps: I64; ok: BOOL; err: ERROR;
+    a: Agent.Agent; n: I64; mode: []U8; ok: BOOL; err: ERROR;
 begin
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
         Out.str(Usage);
@@ -189,8 +189,15 @@ begin
     Buf.init(ADR(answer), Heap.heap);
     Agent.init(ADR(a), ADR(conf.prov),
         {text: show, call: called, result: answered, note: told, ask: asked, why: why, stopped: interrupted});
-    steps, ok := Str.toInt(Aconf.get(ADR(conf), "max_steps"));
-    if ok and (steps > 0) then a.maxSteps := INT(steps); end;
+    n, ok := Str.toInt(Aconf.get(ADR(conf), "max_steps"));
+    if ok and (n > 0) then a.maxSteps := INT(n); end;
+    n, ok := Str.toInt(Aconf.get(ADR(conf), "prune"));
+    if ok and (n >= 0) then a.prune := INT(n); end;
+    a.budget, _ := Math.toReal(Aconf.get(ADR(conf), "turn_budget"));
+    a.prefetch := Aconf.get(ADR(conf), "prefetch") # "no";
+    mode := Aconf.get(ADR(conf), "context_files");
+    if LEN(mode) = 0 then mode := "ask"; end;
+    Agent.prepare(ADR(a), mode, Aconf.get(ADR(conf), "project_map") # "no");
     _ := Sys.handle(Sys.sigInt);
     ended := true;
     err := Agent.turn(ADR(a), ADR(c), ADR(failure));
