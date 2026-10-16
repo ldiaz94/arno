@@ -81,10 +81,10 @@ one or more commits that build with `-Werror`.
 
 - **rnet: bytes held back from `poll`.** `Conn` reads ahead into its
   own buffer, and a TLS backend holds decrypted bytes, so `poll` on the
-  socket can say nothing while data waits. rnet wants `Conn.pending`,
-  covering both, for any program with an event loop. arno doesn't need
-  it (its reads block on their own thread); it is rnet's step, on the
-  owner's word.
+  socket can say nothing while data waits. Done in rnet `3c15249`:
+  `Conn.pending` counts both (a transport reports its own through
+  `Conn.held`). arno's reads block on their own thread and don't need
+  it.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; check that nothing else in rtui needs raz's
   `Thread`.
