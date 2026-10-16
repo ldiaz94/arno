@@ -216,16 +216,24 @@ one or more commits that build with `-Werror`.
      display. raz's `spawn` makes a group, not a session, and a
      program with threads mustn't fork, so arno runs itself again as a
      helper (`Arun.child`), which calls setsid and runs the program in
-     its place; the jail of 4c is entered the same way. `check` and
+     its place; the jail of 4d is entered the same way. `check` and
      `/test` start detached too, where the Pascal arno ran them in its
      own session, with the display.
-   - [ ] b. The scratch directory and the stage: `Astage` (the
-     worktree, seeded from the tree as it stands; the diff asked about
-     once at a turn's end; apply, drop, carry on resume), `/stage`,
-     `stage.json`; the scratch directory per conversation, where a
-     change needs no approval, `$ARNO_SCRATCH`, swept, moved and
-     cleared with its conversation.
-   - [ ] c. `Ajail` and `shell`: the namespaces by raz's `SYSCALL`,
+   - [x] b. The scratch directory, per conversation, under the cache
+     (`Astore.scratch`, made with the conversation's first use): a
+     change in it (`Afence.ours`, resolved like any path) needs no
+     approval, `run` and `check` see it as `$ARNO_SCRATCH`, and the prompt
+     names it. A detached job's variables now take the place of arno's
+     of the same name, which came first and won before. `/clear` empties it, `/compact` moves it to the new id, and
+     start-up sweeps those a day old whose conversation is gone. Not
+     as the Pascal arno did: `ours` doesn't refuse a file hard-linked
+     to one outside the scratch until raz has a link count, and there
+     is no `Forget`, which comes with `--serve` in stage 6.
+   - [ ] c. The stage: `Astage` (the worktree, seeded from the tree as
+     it stands; the diff asked about once at a turn's end; apply,
+     drop, carry on resume), `/stage`, `stage.json`; the stage's copy
+     joins the scratch in `ours`.
+   - [ ] d. `Ajail` and `shell`: the namespaces by raz's `SYSCALL`,
      entered by the helper; the jail's own test, jailtest's 25 cases
      and cases that must fail; `shell` in the stage, its timeout, the
      tail kept, a flood past 4 MB killed.
@@ -252,6 +260,10 @@ one or more commits that build with `-Werror`.
 - **rtui: a program's own sequence to the terminal.** Copy mode sends
   OSC 52 to set the clipboard: done in rtui `b34b06d`,
   `TuiLoop.send`, written after the next draw.
+- **raz: a file's link count.** `Sys.Info` has no `st_nlink`; the
+  scratch's `ours` cannot refuse a file hard-linked to one outside it,
+  as the Pascal arno did (`92b6bea`). Proposed in raz's PROPOSALS.md
+  (`aa7f5df`): `Info.links`. Until then not checked.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; nothing else in rtui uses raz's `Thread`, and a
   job's thread wakes the loop as it should (3b).

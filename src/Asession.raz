@@ -59,6 +59,15 @@ const
     Listed = 20;   (* conversations /list shows, and /load N counts in *)
     MaxTest = 50000;   (* bytes of a failed /test's output put to the model, the last *)
 
+(* The tools' scratch directory made the one of s's conversation. *)
+proc useScratch(s: ^Session);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Afence.useScratch(Astore.scratch(s^.conv.id, ADR(b)));
+end;
+
 (* s made the session the config sets up, telling front of turns and
    show of commands, with a new conversation. What is wrong with the
    config is shown. *)
@@ -77,6 +86,7 @@ begin
     Astore.newId(ADR(id));
     Astore.init(ADR(s^.conv), Buf.bytes(ADR(id)));
     Agent.init(ADR(s^.agent), ADR(s^.conf.prov), front);
+    useScratch(s);
     n, ok := Str.toInt(Aconf.get(ADR(s^.conf), "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;
     n, ok := Str.toInt(Aconf.get(ADR(s^.conf), "prune"));
@@ -140,6 +150,7 @@ proc switch(s: ^Session; c: ^Astore.Conv);
 begin
     Astore.done(ADR(s^.conv));
     s^.conv := c^;
+    useScratch(s);
     Afence.forget;
     Atools.forgive;
     changed(s);
@@ -280,9 +291,10 @@ begin
     Msgs.resize(ADR(s^.conv.msgs), keep);
     save(s);
     changed(s);
+    Astore.clearScratch(s^.conv.id);
     Afence.forget;
     Atools.forgive;
-    say(s, "history cleared to the first exchange, path grants dropped");
+    say(s, "history cleared to the first exchange, scratch directory emptied, path grants dropped");
 end;
 
 (* The history replaced by the model's summary of it, focus, if not "",
@@ -334,8 +346,10 @@ begin
         Amsg.setText(m, Agent.CompactAck);
         Fmt.write(ADR(s^.out), "compacted {} messages ({} KB) into a summary ({} KB); the full history is kept as {}",
             [Fmt.int(n), Fmt.int(before div 1024), Fmt.int(sum.len div 1024), Fmt.str(s^.conv.id)]);
+        Astore.moveScratch(s^.conv.id, c.id);
         Astore.done(ADR(s^.conv));
         s^.conv := c;
+        useScratch(s);
         save(s);
         changed(s);
         say(s, Buf.bytes(ADR(s^.out)));

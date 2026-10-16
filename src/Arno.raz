@@ -33,7 +33,7 @@
    after this one, what the Pascal arno has besides: --serve and
    --attach. *)
 module Arno;
-import Asession, Ascreen, Arun, Awire, Buf, Str, Sys, Files, Out, Heap;
+import Asession, Ascreen, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
 
 const Usage = `
     usage: arno
@@ -226,6 +226,7 @@ begin
         return 2;
     end;
 
+    Astore.sweep;
     if (ARGC() < 2) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
         Asession.init(ADR(s), Ascreen.front(), Ascreen.show, nil);
         s.changed := Ascreen.changed;

@@ -19,7 +19,7 @@
    threads, as arno on the screen is, mustn't fork to make one; so a
    detached program is started by arno itself, run again as a helper
    (child), which makes the session and runs the program in its own
-   place. The jail, in stage 4c, is entered the same way.
+   place. The jail, in stage 4d, is entered the same way.
 
    Depends on Sys, Buf, and the C library's setsid. Leaves out a time
    limit and the jail, which come with shell. *)
@@ -95,6 +95,19 @@ begin
     return dropped;
 end;
 
+(* Whether e, a variable as NAME=value, is named in vars, of the same
+   form. *)
+proc named(e: []U8; vars: [][]U8): BOOL;
+var name: []U8; i: INT; ok: BOOL;
+begin
+    name, _, ok := Str.cut(e, "=");
+    if not ok then return false; end;
+    for i := 0 to LEN(vars) - 1 do
+        if Str.hasPrefix(vars[i], e[0..LEN(name) + 1]) then return true; end;
+    end;
+    return false;
+end;
+
 (* The program j says run: its status, 128 and the signal if one ended
    it; or minus an errno if it couldn't be started, as 127 is if there
    is no such program. At most max bytes of what it wrote are added to
@@ -110,7 +123,9 @@ begin
     p := {path: j^.args[0], args: j^.args, env: j^.env, fds: [nul, wr, wr]};
     if j^.detach then
         (* arno itself, as the helper, with an environment that is
-           arno's, less the display, and j's *)
+           arno's, less the display, and j's; j's in place of arno's
+           of the same name, since a program reading its environment
+           takes the first it finds *)
         Strs.init(ADR(args), Heap.heap);
         defer Strs.done(ADR(args));
         Strs.init(ADR(env), Heap.heap);
@@ -121,7 +136,8 @@ begin
         i := 0;
         e, more := Sys.envAt(0);
         while more do
-            if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=") then
+            if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=")
+                    and not named(e, j^.env) then
                 Strs.push(ADR(env), e);
             end;
             INC(i);

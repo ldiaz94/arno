@@ -17,9 +17,12 @@
 
    The module only decides; asking is the caller's, Atools'.
 
-   Depends on Sys, Buf and Str. Leaves out the conversation's scratch
-   directory and the stage, which are the model's own and come with
-   the stage, and config's grant. *)
+   The conversation's scratch directory is the model's own: inside, and
+   ours, which Atools takes as a change needing no approval. Leaves out
+   the stage, which is the model's own too and comes with its stage,
+   and config's grant.
+
+   Depends on Sys, Buf and Str. *)
 module Afence;
 import Buf, Str, Sys, Heap, Rt, Out, Strs := Vec([]U8);
 
@@ -29,6 +32,7 @@ const
 
 var
     zone*: []U8;           (* resolved; set by init *)
+    scratch*: []U8;        (* resolved, from Heap; set by useScratch, "" before *)
     rooted*: BOOL;         (* zone holds a mark, rather than being the bare working directory *)
     grants: Strs.Vec;      (* the directories granted, resolved, each from Heap *)
     ready: BOOL;           (* grants made *)
@@ -147,7 +151,7 @@ begin
     end;
 end;
 
-(* Whether path is in the zone, or under a grant. *)
+(* Whether path is in the zone, in the scratch directory, or under a grant. *)
 proc inside*(path: []U8): BOOL;
 var b: Buf.Buf; p: []U8; g: [][]U8; i: INT;
 begin
@@ -156,11 +160,41 @@ begin
     resolve(path, ADR(b));
     p := Buf.bytes(ADR(b));
     if within(p, zone) then return true; end;
+    if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
     g := Strs.all(ADR(grants));
     for i := 0 to LEN(g) - 1 do
         if within(p, g[i]) then return true; end;
     end;
     return false;
+end;
+
+(* path, resolved, the conversation's scratch directory from now on;
+   the one before it is let go. *)
+proc useScratch*(path: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    resolve(path, ADR(b));
+    if LEN(scratch) > 0 then Str.free(Heap.heap, scratch); end;
+    scratch := keep(Buf.bytes(ADR(b)));
+end;
+
+(* Whether path is in the scratch directory, the model's own, so that
+   a change there needs no approval. It is resolved like any path, so
+   a link left there that points out doesn't count. The Pascal arno
+   also refused a file with a second hard link, one sharing its
+   contents with a name elsewhere, maybe the human's; raz's Sys.Info
+   has no link count yet (proposed to raz as Info.links), so until
+   then that isn't checked. *)
+proc ours*(path: []U8): BOOL;
+var b: Buf.Buf;
+begin
+    if LEN(scratch) = 0 then return false; end;
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    resolve(path, ADR(b));
+    return within(Buf.bytes(ADR(b)), scratch);
 end;
 
 (* path, and everything below it, inside for the rest of the run;

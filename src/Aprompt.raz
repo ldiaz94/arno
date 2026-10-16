@@ -4,7 +4,8 @@
    It is made of sections, in this order: arno's own instructions, or
    the conversation's own system prompt in their place; the workspace,
    where the model is and when; the human's context files; the
-   project's map; the project's notes; the facts the human asked arno
+   project's map; the conversation's scratch directory; the project's
+   notes; the facts the human asked arno
    to remember; and what arno is, with the commands and modes the human
    has. The mode's instructions, or a worker's, end it; Agent adds them.
 
@@ -13,7 +14,8 @@
    when the session starts (load), and kept: it outlives the
    conversation, and a system prompt that stays the same is one the
    provider can cache. The notes are read for every request, so that a
-   note the model keeps counts from its next step.
+   note the model keeps counts from its next step; and so is the scratch
+   directory, which is the conversation's and changes with it.
 
    Context files are AGENTS.md and CLAUDE.md, in the home directory, in
    ~/.claude, and in each directory from just below home down to the
@@ -35,8 +37,7 @@
 
    Depends on Aahead (the map and the notes), Amemory (the facts),
    Afence, Astore (the date), Atools (how the human is asked) and Awire
-   (the provider). Leaves out what comes with later stages: the scratch
-   directory and the stage; te. *)
+   (the provider). Leaves out what comes with later stages: the stage; te. *)
 module Aprompt;
 import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
     Strs := Vec([]U8);
@@ -376,6 +377,12 @@ begin
     if p^.map.len > 0 then
         Buf.str(out, "\n\n");
         Buf.str(out, Buf.bytes(ADR(p^.map)));
+    end;
+    if LEN(Afence.scratch) > 0 then
+        Fmt.write(out, "\n\n# Scratch\n{} is yours to write, for this conversation: fixture trees, throwaway " +
+            "files, output to compare. Nothing of the human's is there, so edit, move and remove in it are not " +
+            "asked about, and check and run see its path as $ARNO_SCRATCH. What should last belongs in the " +
+            "project instead.", [Fmt.str(Afence.scratch)]);
     end;
     at := out^.len;
     Buf.str(out, "\n\n");

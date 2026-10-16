@@ -42,6 +42,7 @@ rm -rf $dir
 mkdir -p "$dir/config/arno" "$dir/data"
 export XDG_CONFIG_HOME := "$dir/config"
 export XDG_DATA_HOME := "$dir/data"
+export XDG_CACHE_HOME := "$dir/cache"
 failures := 0
 server := ''
 
@@ -241,6 +242,14 @@ holds('/list', 'out', '  named one')
 holds('/load', 'out', ': named one, 2 messages')
 holds('/load', 'out', '4 messages')
 holds('/export', 'out', '{"title":"named one","named":true')
+
+// the conversation's scratch directory: a change in it needs no
+// approval, so the line of input that would answer one is not read
+scratch := "$dir/cache/arno/scratch/$id"
+edit := '{"path":"' + scratch + '/fixture","old":"","new":"hello"}'
+answering(['--resume', id, 'call', 'edit', edit], 'n')
+holds('a scratch edit', 'out', 'the tool said: ok: created ' + scratch + '/fixture')
+if `cat "$scratch/fixture"` <> 'hello' then fail('the scratch edit is not there')
 
 // the history cleared to the first exchange, and compacted
 answering([], 'a' + #10 + 'b' + #10 + 'c' + #10 + '/clear' + #10 + 'd')

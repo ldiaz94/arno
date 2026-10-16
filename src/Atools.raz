@@ -40,11 +40,11 @@
    run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
    Awire (for Tool), rnet's Http (search and fetch), rjson's Json.
    Delegate is the agent's, which runs the worker; it is described
-   here, with the rest. Leaves out shell, which comes with the jail; the
-   images read shows as pictures, which come with the screen; the
-   model's scratch directory, where a change needs no approval, which
-   comes with the stage; and an editor's buffers, which come with the
-   peers. *)
+   here, with the rest. A change in the conversation's scratch
+   directory (Afence.ours) needs no approval, and run and check see its
+   path as $ARNO_SCRATCH. Leaves out shell, which comes with the jail;
+   the images read shows as pictures, which come with the screen; and an
+   editor's buffers, which come with the peers. *)
 module Atools;
 import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
@@ -664,6 +664,18 @@ begin
     return true;
 end;
 
+(* ARNO_SCRATCH=, the scratch directory, from mem: the variable run and
+   check give each program, so a script can name the scratch without
+   knowing the conversation. *)
+proc scratchVar(mem: ^Mem.Allocator): []U8;
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), mem);
+    Buf.str(ADR(b), "ARNO_SCRATCH=");
+    Buf.str(ADR(b), Afence.scratch);
+    return Buf.bytes(ADR(b));
+end;
+
 (* The 'run' tool: one of the programs config's run names, with the
    model's arguments, its exit status and output, so that a model can
    use the human's own tools (render a drawing, read a manual) without
@@ -772,6 +784,7 @@ begin
         end;
     end;
 
+    Strs.push(ADR(env), scratchVar(a^.mem));
     for k := 0 to LEN(c) - 1 do
         if k > 0 then Buf.str(out, "\n\n"); end;
         start := out^.len;
@@ -811,7 +824,7 @@ begin
         Buf.str(out, "error: no test command for this project; ask the human to run /test COMMAND once");
         return;
     end;
-    j := {args: ["sh", "-c", cmd], detach: true, tail: true};
+    j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
     status, cut := Arun.start(ADR(j), MaxOut - 1000, ADR(got));
     if status = 0 then
         Fmt.write(out, "passed: {}", [Fmt.str(cmd)]);
@@ -1038,7 +1051,7 @@ begin
         marked(ADR(diff), '-', old, MaxFile);
     end;
     marked(ADR(diff), '+', new, MaxFile);
-    if not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    if not Afence.ours(p) and not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
     if LEN(old) = 0 then
         Buf.str(ADR(b), new);
         if not makeDirs(p) then
@@ -1100,7 +1113,7 @@ begin
     end;
     Buf.init(ADR(q), mem);
     Fmt.write(ADR(q), "move {} to {}?", [Fmt.str(p), Fmt.str(dest)]);
-    if not approve(h, Buf.bytes(ADR(q)), "", out) then return; end;
+    if not (Afence.ours(p) and Afence.ours(dest)) and not approve(h, Buf.bytes(ADR(q)), "", out) then return; end;
     if not makeDirs(dest) then
         Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(dest)]);
         return;
@@ -1134,7 +1147,7 @@ begin
         end;
     end;
     Fmt.write(ADR(q), "remove {}?", [Fmt.str(p)]);
-    if not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    if not Afence.ours(p) and not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
     e := Sys.remove(p);
     if e # 0 then
         Fmt.write(out, "error: cannot remove {} (errno {})", [Fmt.str(p), Fmt.int(-e)]);

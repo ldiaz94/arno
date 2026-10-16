@@ -39,7 +39,7 @@
    Depends on Amsg, rjson's Json, and the C library's localtime_r, for
    the local time; arno uses C for TLS already. Leaves out the other
    files the agent keeps beside the conversations (memory, notes, the
-   tool cache), and each conversation's scratch directory. *)
+   tool cache), and the stage. *)
 module Astore;
 import Amsg, Json, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
     Items := Vec(Item), Order := Sort(Item, before);
@@ -72,11 +72,13 @@ const
     BadId*: ERROR = "no conversation has that id";
     NotSaved*: ERROR = "the conversation can't be written";
     Unreadable*: ERROR = "the conversation's file isn't one arno reads";
+    DayNs = 86400000000000;   (* a day, in nanoseconds *)
 
 extern proc localtime_r(t: ^I64; tm: ^Tm): ^Tm;
 
 var
     where: Buf.Buf;   (* arno's directory, with a slash after it *)
+    cached: Buf.Buf;  (* the cache's, the same *)
     lockFd, lockDepth: INT;
 
 (* arno's directory, with a slash after it: $XDG_DATA_HOME/arno, or
@@ -106,6 +108,26 @@ begin
     if where.len = 0 then Buf.init(ADR(where), Heap.heap); end;
     Buf.reset(ADR(where));
     Buf.str(ADR(where), path);
+end;
+
+(* arno's cache directory, with a slash after it: $XDG_CACHE_HOME/arno,
+   or ~/.cache/arno, made if it isn't there. *)
+proc cache*: []U8;
+var base: []U8;
+begin
+    if cached.len > 0 then return Buf.bytes(ADR(cached)); end;
+    Buf.init(ADR(cached), Heap.heap);
+    base := Sys.env("XDG_CACHE_HOME");
+    if LEN(base) > 0 then
+        Buf.str(ADR(cached), base);
+    else
+        Buf.str(ADR(cached), Sys.env("HOME"));
+        Buf.str(ADR(cached), "/.cache");
+    end;
+    _ := Sys.makeDir(Buf.bytes(ADR(cached)));
+    Buf.str(ADR(cached), "/arno/");
+    _ := Sys.makeDir(Buf.bytes(ADR(cached)));
+    return Buf.bytes(ADR(cached));
 end;
 
 (* The path of name in arno's directory, into b. *)
@@ -270,6 +292,121 @@ begin
     Buf.str(b, id);
     Buf.str(b, ".json");
     return Buf.bytes(b);
+end;
+
+(* the scratch *)
+
+(* The names in the directory path, each kept, into names; none if
+   it can't be opened. *)
+proc namesIn(path: []U8; names: ^Strs.Vec);
+var d: Sys.Dir; name: []U8; more: BOOL;
+begin
+    if Sys.openDir(ADR(d), path) < 0 then return; end;
+    name, more := Sys.nextEntry(ADR(d));
+    while more do
+        Strs.push(names, Amsg.keep(name));
+        name, more := Sys.nextEntry(ADR(d));
+    end;
+    Sys.closeDir(ADR(d));
+end;
+
+(* Removes path and all below it. A link is removed as a link, never
+   followed, so that one the model left pointing out of the scratch
+   costs nothing outside it. *)
+proc wipe(path: []U8);
+var info: Sys.Info; names: Strs.Vec; all: [][]U8; i: INT; e: INT; b: Buf.Buf;
+begin
+    info, e := Sys.linkInfo(path);
+    if e # 0 then return; end;
+    if not info.dir then
+        _ := Sys.remove(path);
+        return;
+    end;
+    Strs.init(ADR(names), Heap.heap);
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    namesIn(path, ADR(names));
+    all := Strs.all(ADR(names));
+    for i := 0 to LEN(all) - 1 do
+        Buf.reset(ADR(b));
+        Buf.str(ADR(b), path);
+        Buf.add(ADR(b), '/');
+        Buf.str(ADR(b), all[i]);
+        wipe(Buf.bytes(ADR(b)));
+        Str.free(Heap.heap, all[i]);
+    end;
+    Strs.done(ADR(names));
+    _ := Sys.removeDir(path);
+end;
+
+(* The path of the scratch directory of the conversation id, into b,
+   not made. *)
+proc scratchPath(id: []U8; b: ^Buf.Buf): []U8;
+begin
+    Buf.reset(b);
+    Buf.str(b, cache());
+    Buf.str(b, "scratch/");
+    Buf.str(b, id);
+    return Buf.bytes(b);
+end;
+
+(* The scratch directory of the conversation id, into b, made if it
+   isn't there, so that the path the prompt names exists from the
+   start; the directory of them all first. *)
+proc scratch*(id: []U8; b: ^Buf.Buf): []U8;
+begin
+    _ := Sys.makeDir(scratchPath("", b));
+    _ := Sys.makeDir(scratchPath(id, b));
+    return Buf.bytes(b);
+end;
+
+(* The scratch directory of id emptied. *)
+proc clearScratch*(id: []U8);
+var b: Buf.Buf;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    wipe(scratch(id, ADR(b)));
+    _ := scratch(id, ADR(b));
+end;
+
+(* The scratch directory of old now the one of new, with what is in
+   it, as the work goes on under the new id. *)
+proc moveScratch*(old, new: []U8);
+var a, b: Buf.Buf;
+begin
+    Buf.init(ADR(a), Heap.heap);
+    defer Buf.done(ADR(a));
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    _ := Sys.rename(scratch(old, ADR(a)), scratchPath(new, ADR(b)));
+end;
+
+(* At start-up, removes the scratch directories left by conversations
+   that are gone: those not touched in the last day, since another
+   session may be in its first turn, writing there before its
+   conversation is saved, and that no conversation's file has the id of. *)
+proc sweep*;
+var names: Strs.Vec; all: [][]U8; i, e: INT; info: Sys.Info; b, f: Buf.Buf;
+begin
+    Strs.init(ADR(names), Heap.heap);
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.init(ADR(f), Heap.heap);
+    defer Buf.done(ADR(f));
+    Buf.str(ADR(b), cache());
+    Buf.str(ADR(b), "scratch/");
+    namesIn(Buf.bytes(ADR(b)), ADR(names));
+    all := Strs.all(ADR(names));
+    for i := 0 to LEN(all) - 1 do
+        info, e := Sys.linkInfo(scratchPath(all[i], ADR(b)));
+        if (e = 0) and (Sys.now() - info.mtime > DayNs) and (LEN(file(all[i], ADR(f))) > 0)
+                and (Sys.access(Buf.bytes(ADR(f)), {}) # 0) then
+            wipe(Buf.bytes(ADR(b)));
+        end;
+        Str.free(Heap.heap, all[i]);
+    end;
+    Strs.done(ADR(names));
 end;
 
 (* A new conversation's id, now in local time, into b: yyyymmdd-hhmmss,
