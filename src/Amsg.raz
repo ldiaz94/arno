@@ -139,38 +139,31 @@ begin
     end;
 end;
 
-(* c, a byte quote escapes, added to b as its escape. *)
-proc escape(b: ^Buf.Buf; c: U8);
-const Hex = "0123456789abcdef";
-begin
-    match c of
-    | '"': Buf.str(b, "\\\"");
-    | '\\': Buf.str(b, "\\\\");
-    | '\n': Buf.str(b, "\\n");
-    | '\r': Buf.str(b, "\\r");
-    | '\t': Buf.str(b, "\\t");
-    | else:
-        Buf.str(b, "\\u00");
-        Buf.add(b, Hex[c shr 4]);
-        Buf.add(b, Hex[c & 15]);
-    end;
-end;
-
 (* s added to b as a JSON string, quoted as the Pascal arno quoted it:
    a double quote, a backslash, a line feed, a carriage return and a
    tab by their escapes, every other byte below a space as \u00xx, and
    the rest as it is. *)
 proc quote*(b: ^Buf.Buf; s: []U8);
+const Hex = "0123456789abcdef";
 var i, from: INT; c: U8;
 begin
     Buf.add(b, '"');
     from := 0;
     for i := 0 to LEN(s) - 1 do
         c := s[i];
-        if (c < ' ') or (c = '"') or (c = '\\') then
-            Buf.str(b, s[from..i]);
-            from := i + 1;
-            escape(b, c);
+        if (c >= ' ') and (c # '"') and (c # '\\') then continue; end;
+        Buf.str(b, s[from..i]);
+        from := i + 1;
+        match c of
+        | '"': Buf.str(b, "\\\"");
+        | '\\': Buf.str(b, "\\\\");
+        | '\n': Buf.str(b, "\\n");
+        | '\r': Buf.str(b, "\\r");
+        | '\t': Buf.str(b, "\\t");
+        | else:
+            Buf.str(b, "\\u00");
+            Buf.add(b, Hex[c shr 4]);
+            Buf.add(b, Hex[c & 15]);
         end;
     end;
     Buf.str(b, s[from..LEN(s)]);
