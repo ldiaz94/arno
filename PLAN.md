@@ -106,9 +106,15 @@ one or more commits that build with `-Werror`.
      only read waits until it is wanted. `read` stops before its
      note of where it cut, so the cap of every result can't cut the
      note off, as it did in the Pascal arno.
-   - [ ] b. `find`, `grep`, `outline`, `def`, `git`: the walk, globs
-     and ignore files are rwalk's; grep's matcher is rrem's once rrem
-     matches (it parses only, so far).
+   - [x] b. `Afind`: `find`, `grep`, `outline`, `def`, over rwalk's
+     walk, globs and ignore files (hidden names left out, links to
+     files followed inside the fence); `Arun`, a program run with its
+     output caught, for `git`. grep matches a fixed text until rrem
+     matches patterns (it parses only, so far); the Pascal arno's
+     `grep_cmd` and `find_cmd` (rg, fd) are gone. outline and def take
+     raz as Pascal, know `proc`, and pass over lines inside a block
+     comment that opens a line, which the Pascal arno took for
+     declarations when prose began with "type" or "procedure".
    - [ ] c. `edit` (approved, with its diff), `move`, `remove`; a
      declined change remembered and not asked again; "old text not
      found" naming the near misses.

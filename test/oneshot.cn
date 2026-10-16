@@ -11,10 +11,10 @@
 //     not there;
 //   - say what is wrong with its configuration, and go on;
 //   - run the tools the model calls, saying each on the standard
-//     error, and send their results back; refuse a call made twice,
-//     and hand back after four steps of failed calls, or at the step
-//     cap; ask about a path outside the project, a line of the
-//     standard input the answer.
+//     error, and send their results back: read, grep, def and git;
+//     refuse a call made twice, and hand back after four steps of
+//     failed calls, or at the step cap; ask about a path outside the
+//     project, a line of the standard input the answer.
 //
 // Run from the top of the tree, by make check; what it makes goes
 // under build/oneshot, its configuration and conversations among it.
@@ -133,6 +133,11 @@ expect(['call', 'read', '{"path":"Makefile","limit":1}'], 0, 'out', 'the tool sa
 holds('a call', 'err', '▸ read {"path":"Makefile","limit":1}')
 holds('a call', 'err', '  1 line')
 expect(['call', 'write', '{}'], 0, 'out', 'the tool said: error: there is no tool named "write"')
+expect(['call', 'grep', '{"pattern":"module Arno;","path":"src/","glob":"*.raz"}'], 0, 'out',
+  'the tool said: src/Arno.raz:')
+expect(['call', 'def', '{"name":"interrupted","path":"src"}'], 0, 'out', '	proc interrupted: BOOL;')
+expect(['call', 'git', '{"args":"log --format=%s -n 1"}'], 0, 'out',
+  'the tool said: ' + `git log --format=%s -n 1`)
 
 // a call made again refused, and four steps of them a hand-back,
 // whose request the conversation doesn't keep

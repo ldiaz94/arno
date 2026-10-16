@@ -1,6 +1,7 @@
 # arno is a harness for language models in the terminal, written in raz
-# over rjson (JSON) and rnet (HTTP and TLS), which it reaches with -I;
-# they are siblings of this directory unless RJSON, RNET say otherwise.
+# over rjson (JSON), rnet (HTTP and TLS) and rwalk (walking directories),
+# which it reaches with -I; they are siblings of this directory unless
+# RJSON, RNET, RWALK say otherwise.
 # It builds with the raz on PATH, which must be the version it is
 # written for, RAZVERSION: make warns of any other. Its tarball is on
 # raz's website, at download/raz-$(RAZVERSION)-linux-x86_64.tar.gz.
@@ -16,14 +17,15 @@ $(warning arno is written for raz $(RAZVERSION), from $(RAZSITE); $(RAZ) is $(or
 endif
 RJSON ?= ../rjson
 RNET ?= ../rnet
+RWALK ?= ../rwalk
 # rnet's TLS backend, OpenSSL unless TLS says GnuTLS
 TLS ?= openssl
-INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS)
+INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS) -I $(RWALK)/lib
 # the modules whose main is their test
-MODS = Amsg Awire Astore Aconf Afence Atools
+MODS = Amsg Awire Astore Aconf Afence Afind Arun Atools
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
-LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz)
+LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz $(RWALK)/lib/*.raz)
 CONCHA = concha
 
 all: build/arno

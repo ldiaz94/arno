@@ -1,0 +1,68 @@
+(* Arun: a program run to its end, what it writes caught.
+
+   The program gets no input, /dev/null, and writes its output and its
+   errors into one pipe, as a terminal would show them, interleaved.
+   Only so much of it is kept: past that the pipe is closed, and the
+   program, writing on, ends by SIGPIPE rather than filling the memory
+   with what nobody reads. A call the human's ^C breaks into is
+   tried again; the human's stop is the caller's to see.
+
+   Depends on Sys and Buf. Leaves out a time limit, an environment of
+   its own and the jail, which come with run and shell, in stage 4. *)
+module Arun;
+import Sys, Buf, Heap, Out;
+
+(* The program args[0], found on PATH, run with args: its status, 128
+   and the signal if one ended it; or minus an errno if it couldn't be
+   started, as 127 is if there is no such program. At most max bytes of
+   what it wrote are added to out. *)
+proc run*(args: [][]U8; max: INT; out: ^Buf.Buf): INT;
+var rd, wr, nul, pid, n, status, kept, got: INT; how: Sys.Status;
+begin
+    nul := Sys.openRead("/dev/null");
+    if nul < 0 then return nul; end;
+    defer Sys.close(nul);
+    rd, wr := Sys.pipe();
+    if rd < 0 then return rd; end;
+    pid := Sys.spawn({path: args[0], args: args, fds: [nul, wr, wr]});
+    Sys.close(wr);
+    if pid < 0 then Sys.close(rd); return pid; end;
+    kept := 0;
+    while kept < max do
+        n := Sys.read(rd, Buf.spare(out, max - kept));
+        if n = -4 then continue; end;   (* ^C: the caller sees it *)
+        if n <= 0 then break; end;
+        INC(out^.len, n);
+        INC(kept, n);
+    end;
+    Sys.close(rd);
+    repeat got, how, status := Sys.wait(pid, true); until got # -4;
+    if got < 0 then return got; end;
+    if how = Sys.Status.killed then return 128 + status; end;
+    return status;
+end;
+
+(* The module's test. *)
+
+proc main*: INT;
+var b: Buf.Buf; failed: BOOL;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    if (run(["sh", "-c", "echo out; echo err >&2; exit 3"], 100, ADR(b)) # 3) or (Buf.bytes(ADR(b)) # "out\nerr\n") then
+        Out.str("Arun: output and status\n");
+        failed := true;
+    end;
+    Buf.reset(ADR(b));
+    if (run(["sh", "-c", "yes"], 10, ADR(b)) # 128 + Sys.sigPipe) or (Buf.bytes(ADR(b)) # "y\ny\ny\ny\ny\n") then
+        Out.str("Arun: output cut\n");
+        failed := true;
+    end;
+    if run(["no-such-program-of-arno"], 10, ADR(b)) # 127 then
+        Out.str("Arun: no program\n");
+        failed := true;
+    end;
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Arun.

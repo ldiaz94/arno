@@ -22,13 +22,13 @@
    that starts no character made U+FFFD: it goes into the conversation,
    which rjson reads only as UTF-8.
 
-   Depends on Afence, Awire (for Tool), rjson's Json. Leaves out the
-   tools of the steps after this one: find, grep, outline, def, git,
-   edit, move, remove, note, search, fetch, delegate, run and shell;
-   and the images read shows as pictures, which come with the
-   screen. *)
+   Depends on Afence, Afind (find, grep, outline and def), Arun (git),
+   Awire (for Tool), rjson's Json. Leaves out the tools of the steps
+   after this one: edit, move, remove, note, search, fetch, delegate,
+   run and shell; and the images read shows as pictures, which come
+   with the screen. *)
 module Atools;
-import Afence, Awire, Json, Buf, Str, Sys, Files, Heap, Mem, Arena, Rt, Out;
+import Afence, Afind, Arun, Awire, Json, Buf, Str, Sys, Files, Heap, Mem, Arena, Rt, Out, Strs := Vec([]U8);
 
 type
     (* What the human answers to question: one of the bytes of keys,
@@ -39,7 +39,7 @@ type
     Args* = record
         d*: ^Json.Doc;
         v*: Json.Value;
-        home: Buf.Buf;   (* a path with ~ made $HOME's, as path gives it *)
+        mem: ^Mem.Allocator;   (* for what the arguments are made into *)
     end;
 
 const
@@ -61,14 +61,72 @@ const
             `{"path":{"type":"string","description":"file path, relative to the working directory"},` +
             `"offset":{"type":"integer","description":"first line to read, from 1; default 1"},` +
             `"limit":{"type":"integer","description":"most lines to return; default 2000"}},` +
-            `"required":["path"]}`}];
+            `"required":["path"]}`},
+        {name: "find",
+         description: "Find files by name. Lists the files under a directory whose name matches " +
+            "a glob: * is any run of characters but /, ? one character, ** any depth of " +
+            "directories. Use this to locate a file before reading it. A glob without / is " +
+            "matched against the file name and every directory name on its path, so *NAME* also " +
+            "lists the files in a directory called NAME. Hidden files, and files git ignores, " +
+            "are left out.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"directory to search; default ."},` +
+            `"name":{"type":"string","description":"glob for the file name, such as *.EXT; default *"}}}`},
+        {name: "grep",
+         description: "Search file contents for a text, in one file or a whole directory tree. " +
+            "Returns matching lines as \"path:line: text\"; with context, the lines around " +
+            "each match too, as \"path-line- text\", groups separated by \"--\". Use this to " +
+            "find where something is defined or used; with context 5 or so, the answer is " +
+            "often right there without a read.",
+         params: `{"type":"object","properties":` +
+            `{"pattern":{"type":"string","description":` +
+            `"the text to look for, matched as it is: no regular expressions, so one word or phrase a call"},` +
+            `"path":{"type":"string","description":"file or directory to search; default ."},` +
+            `"glob":{"type":"string","description":"only search files whose name matches, such as *.EXT"},` +
+            `"ignore_case":{"type":"boolean","description":"match regardless of case; default false"},` +
+            `"context":{"type":"integer","description":"lines to show before and after each match, up to 10; default 0"}},` +
+            `"required":["pattern"]}`},
+        {name: "def",
+         description: "Go to where something is defined: give a function, class, type or method " +
+            "name and get its whole definition, the comment above it included, numbered like " +
+            "read. Use it instead of grep then read whenever you know the name; for a method, the " +
+            "bare name finds it (NAME finds CLASS.NAME). It knows the common shapes of " +
+            "declarations, not every one: if it finds nothing, grep for the name.",
+         params: `{"type":"object","properties":` +
+            `{"name":{"type":"string","description":"the name defined"},` +
+            `"path":{"type":"string","description":"file or directory to look in; default ."}},` +
+            `"required":["name"]}`},
+        {name: "outline",
+         description: "See what a file or directory holds: every function, class, type and " +
+            "method declaration (in Markdown, every heading), one line each with its line " +
+            "number. Outline a file before reading it, to read only the part you need, or a " +
+            "directory to get the lay of it.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"file or directory; default ."}}}`},
+        {name: "git",
+         description: "Run a read-only git command: status, diff, log, show, blame, and to look " +
+            "at other branches branch (lists them), merge-base, ls-tree and rev-list. Compare " +
+            "branches with diff BASE..OTHER, read a file on another branch with show " +
+            "OTHER:PATH. Nothing that changes the repository is allowed.",
+         params: `{"type":"object","properties":` +
+            `{"args":{"type":"array","items":{"type":"string"},"description":` +
+            `"the arguments after git, subcommand first, one per item"}},` +
+            `"required":["args"]}`}];
+
+    (* What git may run, and what may follow git branch --list. *)
+    GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
+    BranchOptions = " -a -r -v -vv -i --all --remotes --verbose --ignore-case --contains --no-contains " +
+        "--merged --no-merged --points-at --sort --format --abbrev --no-abbrev --column --no-column ";
 
 (* Whether the tool called name only reads: a call to one made twice
    in a turn is refused the second time, as nothing it saw has
    changed. *)
 proc readOnly*(name: []U8): BOOL;
 begin
-    return name = "read";
+    match name of
+    | "read", "find", "grep", "def", "outline", "git": return true;
+    | else: return false;
+    end;
 end;
 
 (* Arguments *)
@@ -79,17 +137,70 @@ begin
     return Json.text(a^.d, Json.member(a^.d, a^.v, key));
 end;
 
-(* The argument key as a path: a string, with a leading ~, alone or
-   before a '/', made $HOME. Never ~user. *)
+(* s with a leading ~, alone or before a '/', made $HOME, in a's
+   memory if it changes. Never ~user. *)
+proc home(a: ^Args; s: []U8): []U8;
+var b: Buf.Buf;
+begin
+    if (s # "~") and not Str.hasPrefix(s, "~/") then return s; end;
+    Buf.init(ADR(b), a^.mem);
+    Buf.str(ADR(b), Sys.env("HOME"));
+    Buf.str(ADR(b), s[1..LEN(s)]);
+    return Buf.bytes(ADR(b));
+end;
+
+(* The argument key as a path: a string, ~ made $HOME. *)
 proc path*(a: ^Args; key: []U8): []U8;
+begin
+    return home(a, str(a, key));
+end;
+
+(* The argument key as the path of a directory to look in: ".", if it
+   isn't given, and without the /s at its end, so that "src/" and "src"
+   are one. *)
+proc dir(a: ^Args; key: []U8): []U8;
 var s: []U8;
 begin
-    s := str(a, key);
-    if (s # "~") and not Str.hasPrefix(s, "~/") then return s; end;
-    Buf.reset(ADR(a^.home));
-    Buf.str(ADR(a^.home), Sys.env("HOME"));
-    Buf.str(ADR(a^.home), s[1..LEN(s)]);
-    return Buf.bytes(ADR(a^.home));
+    s := path(a, key);
+    if LEN(s) = 0 then return "."; end;
+    while (LEN(s) > 1) and (s[LEN(s) - 1] = '/') do s := s[0..LEN(s) - 1]; end;
+    return s;
+end;
+
+(* The argument key as a flag: true, or the string "true". *)
+proc flag(a: ^Args; key: []U8): BOOL;
+var v: Json.Value;
+begin
+    v := Json.member(a^.d, a^.v, key);
+    return (v = Json.True) or (str(a, key) = "true");
+end;
+
+(* The argument key as a list of strings, each ~ made $HOME. A model
+   sends git's list in three shapes: an array; the array's own JSON
+   text, as a string, which split at its blanks would make a subcommand
+   of '["diff",'; and the words as one string, "diff --stat". *)
+proc list(a: ^Args; key: []U8): [][]U8;
+var l: Strs.Vec; v, w: Json.Value; s, word: []U8; i: INT;
+begin
+    Strs.init(ADR(l), a^.mem);
+    v := Json.member(a^.d, a^.v, key);
+    s := Json.text(a^.d, v);
+    if (Json.kind(a^.d, v) = Json.Kind.string) and Str.hasPrefix(Str.trimLeft(s), "[") then
+        w := Json.parse(a^.d, Json.copy(a^.d, s));
+        if Json.kind(a^.d, w) = Json.Kind.array then v := w; end;
+    end;
+    if Json.kind(a^.d, v) = Json.Kind.array then
+        for i := 0 to Json.len(a^.d, v) - 1 do
+            Strs.push(ADR(l), home(a, Json.text(a^.d, Json.item(a^.d, v, i))));
+        end;
+    else
+        word, s := Str.field(s);
+        while LEN(word) > 0 do
+            Strs.push(ADR(l), home(a, word));
+            word, s := Str.field(s);
+        end;
+    end;
+    return Strs.all(ADR(l));
 end;
 
 (* The argument key as a number, from a number or a string that holds
@@ -108,7 +219,7 @@ proc parse*(d: ^Json.Doc; mem: ^Mem.Allocator; text: []U8; a: ^Args): BOOL;
 var v: Json.Value;
 begin
     a^.d := d;
-    Buf.init(ADR(a^.home), mem);
+    a^.mem := mem;
     if LEN(Str.trim(text)) = 0 then text := "{}"; end;
     v := Json.parse(d, Json.copy(d, text));   (* parsing rewrites its text *)
     if Json.kind(d, v) = Json.Kind.string then v := Json.parse(d, Json.text(d, v)); end;
@@ -238,16 +349,99 @@ begin
                 Buf.add(out, ']');
                 return;
             end;
-            for e := k to 4 do Buf.add(out, ' '); end;
-            Buf.str(out, digits[0..k]);
-            Buf.add(out, '\t');
-            Buf.str(out, s[at..j]);
-            Buf.add(out, '\n');
+            Afind.numbered(out, n, s[at..j]);
         end;
         INC(n);
         at := j + 1;
     end;
     if out^.len = 0 then Buf.str(out, "(empty)"); end;
+end;
+
+(* find, grep, def or outline, the tool name, run with a. *)
+proc look(name: []U8; a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d, s: []U8;
+begin
+    d := dir(a, "path");
+    if name = "find" then
+        s := str(a, "name");
+        if LEN(s) = 0 then s := "*"; end;
+        Afind.find(d, s, out);
+    elsif name = "grep" then
+        Afind.grep(d, str(a, "pattern"), str(a, "glob"), flag(a, "ignore_case"), int(a, "context", 0), mem, out);
+    elsif name = "outline" then
+        Afind.outline(d, MaxOut, mem, out);
+    elsif LEN(Str.trim(str(a, "name"))) = 0 then
+        Buf.str(out, "error: give the name to look up");
+    elsif Afind.defs(d, str(a, "name"), mem, out) >= Afind.MaxDefs then
+        Buf.str(out, "[stopped at 10 definitions; give a path]");
+    elsif out^.len = 0 then
+        Buf.str(out, "no definition of ");
+        Buf.str(out, Str.trim(str(a, "name")));
+        Buf.str(out, " found in ");
+        Buf.str(out, d);
+        Buf.str(out, "; def knows common declaration shapes, not every one: grep for the name with some context instead.");
+    end;
+end;
+
+(* git, with the arguments args: a read-only subcommand, subcommand
+   first. diff, log and show run no program a repository's config
+   names (--no-ext-diff, --no-textconv), and no option that writes a
+   file or runs one is passed on. branch alone of them also makes,
+   renames and deletes, by what follows it; it goes out as branch
+   --list, which makes every other word a pattern to list, and only the
+   options that choose or shape the list get past it. A log not
+   limited is limited to 50 commits. *)
+proc git(a: ^Args; out: ^Buf.Buf);
+var args: [][]U8; argv: Strs.Vec; sub, x, o: []U8; i: INT; limited: BOOL;
+begin
+    args := list(a, "args");
+    if LEN(args) = 0 then
+        Buf.str(out, "error: args must be an array of strings, the subcommand first");
+        return;
+    end;
+    sub := args[0];
+    if not Afind.listed(sub, GitVerbs) then
+        Buf.str(out, "error: ");
+        Buf.str(out, sub);
+        Buf.str(out, " is not allowed; only status, diff, log, show, blame, branch, merge-base, " +
+            "ls-tree and rev-list, subcommand first, without \"git\"");
+        return;
+    end;
+    Strs.init(ADR(argv), a^.mem);
+    Strs.push(ADR(argv), "git");
+    Strs.push(ADR(argv), "--no-pager");
+    Strs.push(ADR(argv), sub);
+    if (sub = "diff") or (sub = "log") or (sub = "show") then
+        Strs.push(ADR(argv), "--no-ext-diff");
+        Strs.push(ADR(argv), "--no-textconv");
+    end;
+    if sub = "branch" then Strs.push(ADR(argv), "--list"); end;
+    limited := false;
+    for i := 1 to LEN(args) - 1 do
+        x := args[i];
+        o, _, _ := Str.cut(x, "=");
+        if Str.hasPrefix(x, "--output") or Str.hasPrefix(x, "--ext") or Str.hasPrefix(x, "--textconv") or
+            Str.hasPrefix(x, "--no-in") or (sub = "branch") and Str.hasPrefix(x, "-") and not Afind.listed(o, BranchOptions) then
+            Buf.str(out, "error: option not allowed: ");
+            Buf.str(out, x);
+            return;
+        end;
+        if Str.hasPrefix(x, "-n") or Str.hasPrefix(x, "--max-count") or
+            (LEN(x) > 1) and (x[0] = '-') and (x[1] >= '0') and (x[1] <= '9') then
+            limited := true;
+        end;
+        Strs.push(ADR(argv), x);
+    end;
+    if (sub = "log") and not limited then
+        Strs.push(ADR(argv), "-n");
+        Strs.push(ADR(argv), "50");
+    end;
+    i := Arun.run(Strs.all(ADR(argv)), MaxOut + 1, out);
+    if (i = 127) and (out^.len = 0) or (i < 0) then
+        Buf.str(out, "error: git can't be run");
+    elsif out^.len = 0 then
+        Buf.str(out, "(no output)");
+    end;
 end;
 
 (* A call *)
@@ -283,6 +477,10 @@ begin
         Buf.str(ADR(res), args[0..cut]);
     elsif name = "read" then
         if fence(name, path(ADR(a), "path"), ask, arg, ADR(res)) then read(ADR(a), mem, ADR(res)); end;
+    elsif (name = "find") or (name = "grep") or (name = "def") or (name = "outline") then
+        if fence(name, dir(ADR(a), "path"), ask, arg, ADR(res)) then look(name, ADR(a), mem, ADR(res)); end;
+    elsif name = "git" then
+        git(ADR(a), ADR(res));
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
         Buf.str(ADR(res), "error: there is no tool named \"");
@@ -370,7 +568,21 @@ begin
     expect("not UTF-8", run("read", `{"path":"bad"}`, nil), "    1\tcaf\xEF\xBF\xBD\n");
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
-    expect("no such tool", run("write", "", nil), "error: there is no tool named \"write\". The tools are: read");
+    expect("no such tool", run("write", "", nil),
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git");
+    expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
+    expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
+    expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");
+    expect("outline, none", run("outline", `{"path":"f"}`, nil),
+        "no declarations found in f; find lists its files, grep searches them");
+    expect("git, a verb refused", run("git", `{"args":"[\"push\",\"origin\"]"}`, nil),
+        "error: push is not allowed; only status, diff, log, show, blame, branch, merge-base, " +
+        "ls-tree and rev-list, subcommand first, without \"git\"");
+    expect("git, part of a verb", run("git", `{"args":"rev HEAD"}`, nil)[0..19], "error: rev is not a");
+    expect("git, a branch option", run("git", `{"args":["branch","-D","x"]}`, nil), "error: option not allowed: -D");
+    expect("git, an output", run("git", `{"args":["diff","--output=x"]}`, nil), "error: option not allowed: --output=x");
+    expect("git, no args", run("git", `{}`, nil), "error: args must be an array of strings, the subcommand first");
+    expect("grep outside, nobody", run("grep", `{"pattern":"far","path":"../out"}`, nil)[0..9], "declined:");
     s := run("read", `{"path":"long"}`, nil);
     expect("cut", s[LEN(s) - 49..LEN(s)], "\n[cut before line 1065; read on with offset 1065]");
 
