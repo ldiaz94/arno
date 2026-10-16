@@ -24,19 +24,32 @@
    or RET is no, and C-c stops the turn too. After a no to a change,
    the rule asks why, a line that RET gives and C-g or Esc leaves empty.
 
+   The lines sent are kept (Ahistory). <up> and C-p on the input's
+   first line recall the one before, <down> and C-n on its last the
+   one after; M-p and M-n the one before or after that begins as the
+   input does up to the point. C-r searches them, newest first, case
+   aside: what is typed narrows it, C-r looks further back, DEL takes a
+   character off, C-g or Esc puts the input back as it was, and any
+   other key keeps what was found and does what it does.
+
+   C-x C-e hands the input to the editor in $VISUAL or $EDITOR, with
+   the last exchange under it, below git's scissors line, to read while
+   writing; what is above that line comes back. Not during a job, whose
+   exchange isn't over.
+
    A stop is heard after the next read of the reply: the human's C-c
    can't yet break into a wait for the server, since raz has no way to
    signal one thread (PLAN.md, asked of raz).
 
-   Depends on Asession, Agent, Aboard, Astore, Amsg, Aprompt, rtui
-   (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiLine, TuiWidth),
-   rterm's Term, Thread and Sys. Leaves out, for the steps after this
-   one: the input's history, completion, @path attachments, ^V images
-   and ^X ^E; copy mode; the mouse; vim's keys. *)
+   Depends on Asession, Agent, Aboard, Ahistory, Astore, Amsg, Aprompt,
+   rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
+   TuiLine, TuiWidth), rterm's Term, Thread and Sys. Leaves out, for
+   the steps after this one: completion, @path attachments, ^V images;
+   copy mode; the mouse; vim's keys. *)
 module Ascreen;
-import Asession, Agent, Aboard, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiLine,
-    TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event), Msgs := Vec(Amsg.Msg),
-    Calls := Vec(Amsg.Call);
+import Asession, Agent, Aboard, Ahistory, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+    TuiText, TuiLine, TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
+    Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 
 type
     (* What a job tells the loop. *)
@@ -52,6 +65,8 @@ const
     MaxInput = 8;   (* rows the input grows to *)
     Hints = "^O tools \u{B7} S-Tab mode \u{B7} /help";
     Prompt = "\u{203A} ";
+    (* git commit -v's line, byte for byte, which an editor may know *)
+    Scissors = "# ------------------------ >8 ------------------------";
 
 var
     session: ^Asession.Session;
@@ -82,6 +97,11 @@ var
     no: U8;             (* the one of them that is no *)
     why: TuiLine.Line;  (* the reason for a no, while why.open *)
     mode: INT;          (* the mode S-TAB chose during a job, for after it; -1 for none *)
+    searching: BOOL;    (* C-r is searching the history *)
+    query: Buf.Buf;     (* what it searches for *)
+    found: INT;         (* the entry it found last; Ahistory.count() for none *)
+    failing: BOOL;      (* the query is in no entry *)
+    saved: Buf.Buf;     (* the input before the search, or before the editor *)
 
 (* A job's side: what it is told, put in the queue *)
 
@@ -332,13 +352,14 @@ begin
     if LEN(s) = 0 then return; end;
     _ := Aboard.push(Aboard.user, s);
     back := 0;
+    Ahistory.add(s);
     start(s);
     TuiEdit.setText(ADR(editor), "");
 end;
 
 proc stop(_n: INT);
 begin
-    if thread = nil then TuiEdit.setText(ADR(editor), ""); return; end;
+    if thread = nil then TuiEdit.setText(ADR(editor), ""); Ahistory.reset; return; end;
     Thread.lock(ADR(mutex));
     stopping := true;
     Thread.unlock(ADR(mutex));
@@ -411,6 +432,185 @@ begin
     TuiScreen.redraw(TuiLoop.theScreen());
 end;
 
+(* the history *)
+
+(* The input made s, the point at p, or at its end if p is past it. *)
+proc fill(s: []U8; p: INT);
+begin
+    TuiEdit.setText(ADR(editor), s);
+    if p < LEN(s) then editor.point := p; end;
+end;
+
+(* The line of the input the point is on, and how many there are. *)
+proc lineOf: (INT, INT);
+begin
+    return TuiText.lineOf(ADR(editor.text), editor.point), TuiText.lines(ADR(editor.text));
+end;
+
+(* The line before, on the input's first line; else a line up. *)
+proc historyBack(n: INT);
+var s: []U8; l, _lines: INT; ok: BOOL;
+begin
+    l, _lines := lineOf();
+    if l > 0 then _ := TuiMap.run("edit-previous-line", n); return; end;
+    s, ok := Ahistory.back(TuiEdit.text(ADR(editor)));
+    if ok then fill(s, LEN(s)); end;
+end;
+
+(* The line after, on the input's last line; else a line down. *)
+proc historyOnward(n: INT);
+var s: []U8; l, lines: INT; ok: BOOL;
+begin
+    l, lines := lineOf();
+    if l < lines - 1 then _ := TuiMap.run("edit-next-line", n); return; end;
+    s, ok := Ahistory.onward(TuiEdit.text(ADR(editor)));
+    if ok then fill(s, LEN(s)); end;
+end;
+
+(* The line before (dir -1) or after (dir 1) that begins as the input
+   does up to the point, which stays where it is. *)
+proc prefixed(dir: INT);
+var s: []U8; p: INT; ok: BOOL;
+begin
+    p := editor.point;
+    s, ok := Ahistory.prefixed(TuiEdit.text(ADR(editor)), TuiEdit.text(ADR(editor))[0..p], dir);
+    if ok then fill(s, p); end;
+end;
+
+proc prefixedBack(_n: INT);
+begin
+    prefixed(-1);
+end;
+
+proc prefixedOnward(_n: INT);
+begin
+    prefixed(1);
+end;
+
+(* The newest line at or before from that holds the query, in the
+   input, the point on what matched; failing if there is none. *)
+proc seek(from: INT);
+var i, k: INT; s: []U8;
+begin
+    failing := false;
+    if query.len = 0 then return; end;
+    i, s, k := Ahistory.search(Buf.bytes(ADR(query)), from, TuiEdit.text(ADR(editor)));
+    if i < 0 then failing := true; return; end;
+    found := i;
+    fill(s, k);
+end;
+
+proc searchBack(_n: INT);
+begin
+    searching := true;
+    failing := false;
+    Buf.reset(ADR(query));
+    Buf.reset(ADR(saved));
+    Buf.str(ADR(saved), TuiEdit.text(ADR(editor)));
+    found := Ahistory.count();
+end;
+
+(* A key while C-r searches: true if it was the search's; false if it
+   ended the search, and is to do what it does. *)
+proc searchKey(ev: TuiKeys.Event): BOOL;
+var c: [4]U8; n: INT; s: []U8;
+begin
+    if ev.key = TuiKeys.ctrl('r') then
+        seek(found - 1);
+    elsif (ev.key = TuiKeys.ctrl('g')) or (ev.key = TuiKeys.Esc) then
+        searching := false;
+        fill(Buf.bytes(ADR(saved)), LEN(Buf.bytes(ADR(saved))));
+        Ahistory.reset;
+    elsif (ev.key = TuiKeys.Backspace) or (ev.key = TuiKeys.ctrl('h')) then
+        s := Buf.bytes(ADR(query));
+        if LEN(s) > 0 then
+            _, n := Str.decodeLast(s);
+            query.len := query.len - n;
+            seek(Ahistory.count());
+        end;
+    elsif ev.key = TuiKeys.Paste then
+        Buf.str(ADR(query), ev.paste);
+        seek(found);
+    elsif TuiKeys.printable(ev.key) then
+        c, n := Str.encode(I32(ev.key));
+        Buf.str(ADR(query), c[0..n]);
+        seek(found);
+    else
+        searching := false;
+        return false;
+    end;
+    return true;
+end;
+
+(* the editor *)
+
+(* The last exchange as text, for the editor to show below the input:
+   from the human's last message on, the message quoted as mail is, a
+   reply as it was written, a call its line; arno's own lines left
+   out. Nothing if nothing has been said. *)
+proc exchange(b: ^Buf.Buf);
+var e: []Aboard.Entry; i, first: INT; s, line: []U8; ok: BOOL;
+begin
+    e := Aboard.all();
+    first := LEN(e) - 1;
+    while (first >= 0) and (e[first].kind # Aboard.user) do DEC(first); end;
+    if first < 0 then return; end;
+    for i := first to LEN(e) - 1 do
+        s := Buf.bytes(ADR(e[i].text));
+        match e[i].kind of
+        | user:
+            repeat
+                line, s, ok := Str.cut(s, "\n");
+                Fmt.write(b, "\n> {}", [Fmt.str(line)]);
+            until not ok;
+            Buf.add(b, '\n');
+        | reply: if LEN(Str.trim(s)) > 0 then Fmt.write(b, "\n{}\n", [Fmt.str(Str.trim(s))]); end;
+        | tool:
+            line := Buf.bytes(ADR(e[i].args));
+            if LEN(line) > 100 then line := line[0..100]; end;
+            Fmt.write(b, "\n\u{25B8} {} ", [Fmt.str(s)]);
+            Str.replace(b, line, "\n", " ");
+            Buf.add(b, '\n');
+        | error: Fmt.write(b, "\n{}\n", [Fmt.str(s)]);
+        | info:
+        end;
+    end;
+end;
+
+(* C-x C-e: the input written in the editor, the last exchange below
+   the scissors line; what is above it comes back. *)
+proc external(_n: INT);
+var b, last: Buf.Buf; s: []U8; k: INT;
+begin
+    if thread # nil then Buf.str(ADR(flash), "the editor waits until the reply is in"); return; end;
+    Buf.reset(ADR(saved));
+    Buf.str(ADR(saved), TuiEdit.text(ADR(editor)));
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    Buf.init(ADR(last), Heap.heap);
+    defer Buf.done(ADR(last));
+    Buf.str(ADR(b), Buf.bytes(ADR(saved)));
+    exchange(ADR(last));
+    if last.len > 0 then
+        Fmt.write(ADR(b), "\n\n{}\n# Not sent: this line and all below it are dropped. The last exchange:\n{}",
+            [Fmt.str(Scissors), Fmt.str(Buf.bytes(ADR(last)))]);
+    end;
+    TuiEdit.setText(ADR(editor), Buf.bytes(ADR(b)));
+    if not TuiEdit.external(ADR(editor)) then
+        fill(Buf.bytes(ADR(saved)), LEN(Buf.bytes(ADR(saved))));
+        Buf.str(ADR(flash), "the editor failed or was quit; the input is as it was");
+        return;
+    end;
+    (* only a whole line is the scissors: a sentence may quote it *)
+    Buf.reset(ADR(b));
+    Fmt.write(ADR(b), "\n{}\n", [Fmt.str(TuiEdit.text(ADR(editor)))]);
+    s := Buf.bytes(ADR(b));
+    k := Str.find(s, "\n" + Scissors + "\n");
+    if k >= 0 then s := s[0..k]; end;
+    s := Str.trimRight(s[1..LEN(s)]);
+    fill(s, LEN(s));
+end;
+
 (* A key while a question is asked: one of its keys answers, C-c, Esc
    and RET are no, C-c stopping the turn too, and the keys that move
    the transcript move it. *)
@@ -451,6 +651,7 @@ begin
         return;
     end;
     if question.len > 0 then answering(ev); return; end;
+    if searching and searchKey(ev) then return; end;
     if ev.key = TuiKeys.Paste then TuiEdit.paste(ADR(editor), ev.paste); return; end;
     map.parent := TuiEdit.keymap(ADR(editor));
     if TuiMap.feed(ADR(reader), ADR(map), ev.key) = TuiMap.unbound then
@@ -472,6 +673,12 @@ begin
     if question.len > 0 then
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
         col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(question)), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
+        col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+    elsif searching then
+        col := TuiScreen.putTo(s, r, 0, right, " history", TuiScreen.style(Term.info, {}));
+        if failing then col := TuiScreen.putTo(s, r, col, right, ", failing", TuiScreen.style(Term.bad, {})); end;
+        col := TuiScreen.putTo(s, r, col, right, ": ", TuiScreen.style(Term.info, {}));
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(query)), TuiScreen.style(Term.strong, {}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
     elsif flash.len > 0 then
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
@@ -525,6 +732,14 @@ begin
     TuiMap.define("arno-line-up", "the transcript scrolled back a line", lineUp);
     TuiMap.define("arno-line-down", "the transcript scrolled on a line", lineDown);
     TuiMap.define("arno-redraw", "the screen drawn again", redraw);
+    TuiMap.define("arno-history-back", "the line sent before, on the input's first line; else a line up",
+        historyBack);
+    TuiMap.define("arno-history-onward", "the line sent after, on the input's last line; else a line down",
+        historyOnward);
+    TuiMap.define("arno-prefixed-back", "the line sent before that begins as the input does", prefixedBack);
+    TuiMap.define("arno-prefixed-onward", "the line sent after that begins as the input does", prefixedOnward);
+    TuiMap.define("arno-search-back", "the lines sent searched, newest first", searchBack);
+    TuiMap.define("arno-external", "the input written in $VISUAL or $EDITOR", external);
     TuiMap.init(ADR(map), "arno", nil);
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "RET", "arno-send");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-RET", "edit-newline");
@@ -538,6 +753,14 @@ begin
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "S-<up>", "arno-line-up");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "S-<down>", "arno-line-down");
     _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-l", "arno-redraw");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "<up>", "arno-history-back");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-p", "arno-history-back");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "<down>", "arno-history-onward");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-n", "arno-history-onward");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-p", "arno-prefixed-back");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "M-n", "arno-prefixed-onward");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-r", "arno-search-back");
+    _ := TuiMap.bind(ADR(map), TuiKeys.emacs, "C-x C-e", "arno-external");
 end;
 
 (* The session s run on the screen until the human ends it: false, at
@@ -554,6 +777,9 @@ begin
     TuiLine.init(ADR(why));
     define();
     mode := -1;
+    Fmt.write(ADR(made), "{}history", [Fmt.str(Astore.dir())]);
+    Ahistory.load(Buf.bytes(ADR(made)));
+    Buf.reset(ADR(made));
     Fmt.write(ADR(made), "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
         Fmt.str(s^.conf.prov.name)]);
     _ := Aboard.push(Aboard.info, Buf.bytes(ADR(made)));
@@ -582,6 +808,8 @@ begin
     Buf.init(ADR(flash), Heap.heap);
     Buf.init(ADR(question), Heap.heap);
     Buf.init(ADR(keys), Heap.heap);
+    Buf.init(ADR(query), Heap.heap);
+    Buf.init(ADR(saved), Heap.heap);
 end;
 
 begin

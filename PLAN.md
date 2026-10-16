@@ -176,9 +176,14 @@ one or more commits that build with `-Werror`.
      again from its messages (`Asession.changed`). Shift-tab during a
      turn sets the mode for the next. A stop is heard at the next read
      of the reply, until raz can signal one thread.
-   - [ ] c. The input's extras: history, completion of `/` and `@`
-     (and `/models`), `@path` attachments, `^V` images, `^X ^E`.
-   - [ ] d. Copy mode.
+   - [x] c. History and `^X ^E`. `Ahistory` keeps the lines sent in
+     arno's `history`, as the Pascal arno did; the input recalls them
+     with the arrows on its first and last line, `M-p` and `M-n` by
+     what is typed, `C-r` by search. `^X ^E` is rtui's
+     `TuiEdit.external`, the last exchange under git's scissors line.
+   - [ ] d. `@path` attachments and `^V` images.
+   - [ ] e. Completion of `/` and `@`, and `/models`.
+   - [ ] f. Copy mode.
 4. **Stage, jail, shell.** The stage worktree; the jail from
    unprivileged namespaces, with `eval/jailtest`'s 25 escapes kept and
    cases that must fail added; `run` and `shell`.
