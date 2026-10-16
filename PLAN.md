@@ -197,12 +197,11 @@ one or more commits that build with `-Werror`.
   it.
 - **raz: a signal to one thread.** A stop on the screen must break
   into the turn's wait for the server, as `^C` does in one-shot mode;
-  `Sys.kill` signals the process, which any thread may take. Asked of
-  raz: `pthread_kill`, or a `Thread.signal`. Until then a stop waits
-  for the next read.
+  `Sys.kill` signals the process, which any thread may take. Proposed
+  in raz's PROPOSALS.md (`db917e5`): `Thread.signal(t, sig)`. Until
+  then a stop waits for the next read.
 - **rtui: the rows an editor's text takes.** The input grows with its
-  text, so arno counts the rows `TuiEdit.draw` will wrap it to, a copy
-  of `TuiEdit`'s layout (`Ascreen.rows`). Asked of rtui: that count.
+  text: done in rtui `f1f1b73`, `TuiEdit.rows`.
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; nothing else in rtui uses raz's `Thread`, and a
   job's thread wakes the loop as it should (3b).

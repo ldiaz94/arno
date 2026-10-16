@@ -458,31 +458,6 @@ begin
     end;
 end;
 
-(* The rows s takes, wrapped at cols as TuiEdit wraps it. *)
-proc rows(s: []U8; cols: INT): INT;
-var i, n, w, cw: INT; c: I32;
-begin
-    if cols < 1 then cols := 1; end;
-    n := 1;
-    w := 0;
-    i := 0;
-    while i < LEN(s) do
-        if s[i] = '\n' then
-            INC(n);
-            w := 0;
-            INC(i);
-        else
-            c, cw := Str.decode(s[i..LEN(s)]);
-            if cw < 1 then cw := 1; end;
-            i := i + cw;
-            cw := TuiWidth.char(c);
-            if (w + cw > cols) and (w > 0) then INC(n); w := 0; end;
-            w := w + cw;
-        end;
-    end;
-    return n;
-end;
-
 (* The rule on row r: what is going on, then a line, then how far the
    transcript is scrolled back; or the line a reason is typed on. *)
 proc rule(s: ^TuiScreen.Screen; r: INT);
@@ -525,7 +500,7 @@ end;
 proc draw(s: ^TuiScreen.Screen);
 var n, v: INT;
 begin
-    n := rows(TuiEdit.text(ADR(editor)), s^.cols - 2);
+    n := TuiEdit.rows(ADR(editor), s^.cols - 2);
     if n > MaxInput then n := MaxInput; end;
     v := s^.rows - n - 2;
     if v < 1 then v := 1; end;
