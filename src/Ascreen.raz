@@ -32,6 +32,13 @@
    character off, C-g or Esc puts the input back as it was, and any
    other key keeps what was found and does what it does.
 
+   While a command or an @path is typed, what it may become is shown
+   over the foot of the transcript (Acomplete): TAB takes the one
+   chosen, RET too, and sends a command that takes it as it is, with
+   no blank after it; C-n, C-p and the arrows choose, Esc hides them
+   until the input changes. A command isn't completed during a job,
+   which has the session.
+
    C-v types in an @path to the clipboard's image, saved to a file of
    its own (Aattach.paste); or says on the rule why there is none.
 
@@ -44,13 +51,13 @@
    can't yet break into a wait for the server, since raz has no way to
    signal one thread (PLAN.md, asked of raz).
 
-   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Astore, Amsg, Aprompt,
+   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Astore, Amsg, Aprompt,
    rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
    TuiLine, TuiWidth), rterm's Term, Thread and Sys. Leaves out, for
-   the steps after this one: completion; copy mode; the mouse; vim's
-   keys. *)
+   the step after this one: copy mode; and the mouse and vim's keys.
+   *)
 module Ascreen;
-import Asession, Agent, Aboard, Ahistory, Aattach, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+import Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
     TuiText, TuiLine, TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 
@@ -66,6 +73,7 @@ type
 
 const
     MaxInput = 8;   (* rows the input grows to *)
+    MaxMenu = 8;    (* rows of completions shown *)
     Hints = "^O tools \u{B7} S-Tab mode \u{B7} /help";
     Prompt = "\u{203A} ";
     (* git commit -v's line, byte for byte, which an editor may know *)
@@ -105,6 +113,12 @@ var
     found: INT;         (* the entry it found last; Ahistory.count() for none *)
     failing: BOOL;      (* the query is in no entry *)
     saved: Buf.Buf;     (* the input before the search, or before the editor *)
+    menu: []Acomplete.Item;   (* what the word being typed may become *)
+    chosen: INT;        (* the one of them chosen *)
+    wordA, wordB: INT;  (* where that word is in the input *)
+    hidden: BOOL;       (* Esc hid the menu until the input changes *)
+    looked: Buf.Buf;    (* the input the menu was made for *)
+    lookedAt: INT;      (* and its point *)
 
 (* A job's side: what it is told, put in the queue *)
 
@@ -564,6 +578,94 @@ begin
     TuiEdit.paste(ADR(editor), Buf.bytes(ADR(t)));
 end;
 
+(* completion *)
+
+(* The menu made again for the input, if it changed. *)
+proc refresh;
+var s: []U8;
+begin
+    s := TuiEdit.text(ADR(editor));
+    if (Buf.bytes(ADR(looked)) = s) and (lookedAt = editor.point) then return; end;
+    Buf.reset(ADR(looked));
+    Buf.str(ADR(looked), s);
+    lookedAt := editor.point;
+    hidden := false;
+    menu := [];
+    chosen := 0;
+    wordA, wordB := Acomplete.token(s, editor.point);
+    if wordA < 0 then return; end;
+    if (s[wordA] = '/') and (thread # nil) then return; end;
+    menu := Acomplete.complete(s[wordA..wordB], Asession.models(session));
+end;
+
+(* Whether the menu is shown. *)
+proc offered: BOOL;
+begin
+    return (LEN(menu) > 0) and not hidden and (question.len = 0) and not why.open and not searching;
+end;
+
+(* The word being typed made the item chosen. *)
+proc take;
+var b: Buf.Buf; s: []U8;
+begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
+    s := TuiEdit.text(ADR(editor));
+    Buf.str(ADR(b), s[0..wordA]);
+    Buf.str(ADR(b), menu[chosen].text);
+    Buf.str(ADR(b), s[wordB..LEN(s)]);
+    fill(Buf.bytes(ADR(b)), wordA + LEN(menu[chosen].text));
+end;
+
+(* A key while the menu is shown: true if it was the menu's. *)
+proc menuKey(ev: TuiKeys.Event): BOOL;
+var k: INT; s: []U8;
+begin
+    k := ev.key;
+    if k = TuiKeys.Tab then
+        take();
+    elsif k = TuiKeys.Enter then
+        take();
+        s := TuiEdit.text(ADR(editor));
+        if Str.hasPrefix(s, "/") and not Str.hasSuffix(s, " ") then send(1); end;
+    elsif (k = TuiKeys.ctrl('n')) or (k = TuiKeys.Down) then
+        chosen := (chosen + 1) mod LEN(menu);
+    elsif (k = TuiKeys.ctrl('p')) or (k = TuiKeys.Up) then
+        chosen := (chosen + LEN(menu) - 1) mod LEN(menu);
+    elsif k = TuiKeys.Esc then
+        hidden := true;
+    else
+        return false;
+    end;
+    return true;
+end;
+
+(* The menu drawn on the rows above row r, the one chosen reversed. *)
+proc drawMenu(s: ^TuiScreen.Screen; r: INT);
+var n, first, i, w, col, row: INT; st: TuiScreen.Style;
+begin
+    n := LEN(menu);
+    if n > MaxMenu then n := MaxMenu; end;
+    if n > r then n := r; end;
+    first := 0;
+    if chosen >= n then first := chosen - n + 1; end;
+    w := 0;
+    for i := first to first + n - 1 do
+        if TuiWidth.text(menu[i].text) > w then w := TuiWidth.text(menu[i].text); end;
+    end;
+    if w > s^.cols div 2 then w := s^.cols div 2; end;
+    for i := first to first + n - 1 do
+        row := r - n + i - first;
+        st := TuiScreen.style(Term.line, {});
+        if i = chosen then st := TuiScreen.style(Term.select, {}); end;
+        TuiScreen.fill(s, row, 0, s^.cols, TuiScreen.Plain);
+        TuiScreen.fill(s, row, 2, s^.cols - 2, st);
+        col := TuiScreen.putTo(s, row, 3, 3 + w, menu[i].text, st);
+        _ := TuiScreen.putTo(s, row, 5 + w, s^.cols - 1, menu[i].desc, st);
+        _ := col;
+    end;
+end;
+
 (* the editor *)
 
 (* The last exchange as text, for the editor to show below the input:
@@ -674,11 +776,16 @@ begin
     end;
     if question.len > 0 then answering(ev); return; end;
     if searching and searchKey(ev) then return; end;
-    if ev.key = TuiKeys.Paste then TuiEdit.paste(ADR(editor), ev.paste); return; end;
-    map.parent := TuiEdit.keymap(ADR(editor));
-    if TuiMap.feed(ADR(reader), ADR(map), ev.key) = TuiMap.unbound then
-        _ := TuiEdit.typeKey(ADR(editor), ev.key);
+    if offered() and not TuiMap.busy(ADR(reader)) and menuKey(ev) then refresh(); return; end;
+    if ev.key = TuiKeys.Paste then
+        TuiEdit.paste(ADR(editor), ev.paste);
+    else
+        map.parent := TuiEdit.keymap(ADR(editor));
+        if TuiMap.feed(ADR(reader), ADR(map), ev.key) = TuiMap.unbound then
+            _ := TuiEdit.typeKey(ADR(editor), ev.key);
+        end;
     end;
+    refresh();
 end;
 
 (* The rule on row r: what is going on, then a line, then how far the
@@ -734,6 +841,7 @@ begin
     v := s^.rows - n - 2;
     if v < 1 then v := 1; end;
     back := Aboard.draw(s, {row: 0, col: 0, rows: v, cols: s^.cols}, back);
+    if offered() then drawMenu(s, v); end;
     rule(s, v);
     _ := TuiScreen.put(s, v + 1, 0, Prompt, TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}));
     TuiEdit.draw(ADR(editor), s, {row: v + 1, col: 2, rows: n, cols: s^.cols - 2},
@@ -835,6 +943,7 @@ begin
     Buf.init(ADR(keys), Heap.heap);
     Buf.init(ADR(query), Heap.heap);
     Buf.init(ADR(saved), Heap.heap);
+    Buf.init(ADR(looked), Heap.heap);
 end;
 
 begin

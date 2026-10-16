@@ -89,6 +89,7 @@ const
         {name: "/system", args: "[TEXT|-]", desc: "show or set this conversation's own system prompt, - for arno's"},
         {name: "/mode", args: "[NAME]", desc: "show or set the mode"},
         {name: "/model", args: "[NAME]", desc: "show or set the model"},
+        {name: "/models", args: "", desc: "list the provider's models"},
         {name: "/provider", args: "[NAME]", desc: "show or set the provider"},
         {name: "/tools", args: "", desc: "list tools"},
         {name: "/usage", args: "", desc: "tokens and cost of this session"},

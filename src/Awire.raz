@@ -48,7 +48,7 @@
    (Aconf, later) sets in a Prov; and the threads: chat runs on the
    caller's. *)
 module Awire;
-import Amsg, Json, Http, Tls, Buf, Str, Sys, Heap, Rt, Out, Thread, Slots := Vec(Slot), Msgs := Vec(Amsg.Msg),
+import Amsg, Json, Http, Tls, Buf, Str, Sys, Heap, Fmt, Rt, Out, Thread, Slots := Vec(Slot), Msgs := Vec(Amsg.Msg),
     Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 
 type
@@ -154,6 +154,18 @@ begin
     p^.backoff := 2;
     p^.timeout := 300000;   (* a model may think for minutes before it says a word *)
     return true;
+end;
+
+(* The models arno knows the preset name to have, a line each, for when
+   its server can't be asked; "" for one it knows none of. *)
+proc known*(name: []U8): []U8;
+begin
+    match name of
+    | "openai": return "gpt-5\ngpt-5-mini\ngpt-5-nano";
+    | "gemini": return "gemini-3.1-pro-preview\ngemini-3.8-flash\ngemini-3.5-flash-lite";
+    | "claude": return "claude-opus-5-5\nclaude-sonnet-5-5\nclaude-sonnet-5\nclaude-haiku-4-5";
+    | else: return "";
+    end;
 end;
 
 (* The value of the param key, or "" if p has none. *)
@@ -790,6 +802,61 @@ begin
     else
         Buf.str(why, "no response");
     end;
+end;
+
+(* The models p's server lists, their ids added to out a line each:
+   Failed, with why in why, if it lists none. Gemini names each
+   models/NAME, which chat wants as NAME. *)
+proc models*(p: ^Prov; out, why: ^Buf.Buf): ERROR;
+var cl: Http.Client; req, res: Http.Message; url, auth: Buf.Buf; d: Json.Doc; data: Json.Value; key, version, id: []U8;
+    i: INT; err: ERROR;
+begin
+    key := "";
+    if LEN(p^.keyEnv) > 0 then
+        key := Sys.env(p^.keyEnv);
+        if LEN(key) = 0 then
+            Fmt.write(why, "{} is not set", [Fmt.str(p^.keyEnv)]);
+            return Failed;
+        end;
+    end;
+    initClient(ADR(cl));
+    defer Http.doneClient(ADR(cl));
+    Http.init(ADR(res), Heap.heap);
+    defer Http.done(ADR(res));
+    Buf.init(ADR(url), Heap.heap);
+    defer Buf.done(ADR(url));
+    Buf.init(ADR(auth), Heap.heap);
+    defer Buf.done(ADR(auth));
+    req := {method: "GET", minor: 1};
+    if p^.dialect = anthropic then
+        _ := Http.add(ADR(req), "x-api-key", key);
+        version := param(p, "anthropic_version");
+        if LEN(version) = 0 then version := "2023-06-01"; end;
+        _ := Http.add(ADR(req), "anthropic-version", version);
+    elsif LEN(key) > 0 then
+        _ := Http.add(ADR(req), "Authorization", join(ADR(auth), "Bearer ", key));
+    end;
+    cl.deadline := Sys.clock() + 30 * 1000000000;
+    err := Http.fetch(ADR(cl), ADR(req), join(ADR(url), p^.url, "/models"), ADR(res));
+    if err # nil then
+        Buf.str(why, MSG(err));
+        return Failed;
+    end;
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    data := Json.member(ADR(d), Json.parse(ADR(d), res.body), "data");
+    if (res.status >= 400) or (Json.len(ADR(d), data) = 0) then
+        Fmt.write(why, "HTTP {}", [Fmt.int(res.status)]);
+        return Failed;
+    end;
+    for i := 0 to Json.len(ADR(d), data) - 1 do
+        id := Json.text(ADR(d), Json.member(ADR(d), Json.item(ADR(d), data, i), "id"));
+        if Str.hasPrefix(id, "models/") then id := id[7..LEN(id)]; end;
+        if LEN(id) = 0 then continue; end;
+        Buf.str(out, id);
+        Buf.add(out, '\n');
+    end;
+    return nil;
 end;
 
 (* r sent, and its reply read into m, made an assistant's message

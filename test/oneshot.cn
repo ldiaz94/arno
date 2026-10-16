@@ -24,7 +24,8 @@
 //     and run the commands: switch, list, load, rename, clear and
 //     compact conversations; set the mode, which the system prompt
 //     and the tools follow, and the system prompt; remember and forget
-//     facts, and the project's notes; count what the session cost.
+//     facts, and the project's notes; count what the session cost;
+//     list the provider's models.
 //
 // Run from the top of the tree, by make check; what it makes goes
 // under build/oneshot, its configuration and conversations among it.
@@ -278,5 +279,9 @@ holds('/notes', 'out', ' 1  the stub is test/Astub.raz')
 holds('/notes forget', 'out', 'forgot: the stub is test/Astub.raz')
 holds('/notes forget', 'out', 'no notes for ')
 holds('/notes forget', 'err', 'arno: no note 1')
+
+// the models the provider's server lists, Gemini's models/ taken off
+answering([], '/models')
+holds('/models', 'out', 'stub-one' + #10 + 'stub-two')
 
 if failures > 0 then halt(1)

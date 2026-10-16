@@ -185,9 +185,16 @@ one or more commits that build with `-Werror`.
      file, its lines, a directory's listing or an image, as the Pascal
      arno's attach.pas did, less te's open files, `@git` and `@cmd`; a
      range must be N or N-M, so `@a.txt:2-3,` loses its comma, where
-     the Pascal arno read 2-3, as 2. `^V` saves the clipboard's PNG by
+     the Pascal arno read `2-3,` as line 2. `^V` saves the clipboard's PNG by
      xclip, under `$XDG_RUNTIME_DIR`, removed as arno ends.
-   - [ ] e. Completion of `/` and `@`, and `/models`.
+   - [x] e. Completion of `/` and `@`, and `/models`. `Acomplete`
+     completes a command, its argument for /mode, /provider, /model
+     and /load, and an @path, as the Pascal arno's Suggest and Files
+     did, less te's open files; the screen shows a menu over the foot
+     of the transcript. `/models` asks the server (`Awire.models`), or
+     says arno's own list (`Awire.known`); what the server said
+     completes /model. A command isn't completed during a job, which
+     has the session.
    - [ ] f. Copy mode.
 4. **Stage, jail, shell.** The stage worktree; the jail from
    unprivileged namespaces, with `eval/jailtest`'s 25 escapes kept and

@@ -15,7 +15,8 @@
 
    It also serves fetch and search: /page is a page of HTML, and
    /search?format=json&q=... what SearXNG answers, a result that is the
-   query.
+   query. /v1/models lists two models, the second as Gemini names
+   them, models/NAME.
 
    A test asks for a tool call by the human's last message: to "call
    NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
@@ -84,6 +85,10 @@ begin
     if req^.target = "/page" then
         _ := Http.add(res, "Content-Type", "text/html; charset=utf-8");
         res^.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
+        return;
+    end;
+    if req^.target = "/v1/models" then
+        res^.body := `{"object":"list","data":[{"id":"stub-one"},{"id":"models/stub-two"}]}`;
         return;
     end;
     if Str.hasPrefix(req^.target, "/search?format=json&q=") then

@@ -17,8 +17,12 @@
 
    Depends on Agent, Aprompt (the commands and modes), Amemory, Aahead
    (the notes), Aattach, Astore, Aconf, Aprice, Atools and Afence.
-   Leaves out what comes with later stages: /models, with completion;
-   /test and /stage, with the jail and the stage.
+   Leaves out what comes with later stages: /test and /stage, with the
+   jail and the stage.
+
+   /models asks the provider's server for its models, or else says
+   arno's own list of them (Awire.known); what the server said is kept
+   for the screen to complete /model with (models).
 
    status makes the screen's status line; /usage shows its context in
    use too, from the last request, or guessed from the text before
@@ -45,6 +49,8 @@ type
         named: []U8;           (* the model or provider a command named, kept from Heap; "" for none *)
         mem: Arena.Arena;      (* a command's work *)
         out: Buf.Buf;          (* what a command says *)
+        listed: Buf.Buf;       (* the models /models was told, a line each *)
+        listedOf: Buf.Buf;     (* by which provider *)
     end;
 
 const
@@ -60,6 +66,8 @@ begin
     Aconf.load(ADR(s^.conf));
     if not Arena.init(ADR(s^.mem), 1 shl 28) then Rt.stop("arno: out of memory"); end;
     Buf.init(ADR(s^.out), Heap.heap);
+    Buf.init(ADR(s^.listed), Heap.heap);
+    Buf.init(ADR(s^.listedOf), Heap.heap);
     if s^.conf.warnings.len > 0 then show(Str.trimRight(Buf.bytes(ADR(s^.conf.warnings))), true, arg); end;
     Buf.init(ADR(id), Heap.heap);
     defer Buf.done(ADR(id));
@@ -425,6 +433,40 @@ begin
     say(s, Buf.bytes(ADR(s^.out)));
 end;
 
+(* The models of s's provider, a line each: those its server told
+   /models, or arno's own list of them. *)
+proc models*(s: ^Session): []U8;
+begin
+    if Buf.bytes(ADR(s^.listedOf)) = s^.conf.prov.name then return Buf.bytes(ADR(s^.listed)); end;
+    return Awire.known(s^.conf.prov.name);
+end;
+
+(* /models: those the provider's server lists, kept for models; or else
+   arno's own list, said to be. *)
+proc listModels(s: ^Session);
+var why: Buf.Buf; p: ^Awire.Prov;
+begin
+    p := ADR(s^.conf.prov);
+    Buf.init(ADR(why), Heap.heap);
+    defer Buf.done(ADR(why));
+    if Awire.models(p, ADR(s^.out), ADR(why)) = nil then
+        Buf.reset(ADR(s^.listed));
+        Buf.str(ADR(s^.listed), Buf.bytes(ADR(s^.out)));
+        Buf.reset(ADR(s^.listedOf));
+        Buf.str(ADR(s^.listedOf), p^.name);
+        say(s, Str.trimRight(Buf.bytes(ADR(s^.out))));
+        return;
+    end;
+    if LEN(Awire.known(p^.name)) = 0 then
+        Fmt.write(ADR(s^.out), "{} lists no models: {}", [Fmt.str(p^.name), Fmt.str(Buf.bytes(ADR(why)))]);
+        fail(s, Buf.bytes(ADR(s^.out)));
+        return;
+    end;
+    Fmt.write(ADR(s^.out), "{}\n(arno's own list: {} didn't say, {})", [Fmt.str(Awire.known(p^.name)),
+        Fmt.str(p^.name), Fmt.str(Buf.bytes(ADR(why)))]);
+    say(s, Buf.bytes(ADR(s^.out)));
+end;
+
 (* /provider: one of Awire's presets, with none of the config's params,
    which were the other provider's. *)
 proc provider(s: ^Session; name: []U8);
@@ -638,6 +680,7 @@ begin
     | "/system": system(s, arg);
     | "/mode": mode(s, arg);
     | "/model": model(s, arg);
+    | "/models": listModels(s);
     | "/provider": provider(s, arg);
     | "/tools": tools(s, ADR(s^.out)); say(s, Buf.bytes(ADR(s^.out)));
     | "/usage": usage(s, ADR(s^.out)); say(s, Buf.bytes(ADR(s^.out)));
