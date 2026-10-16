@@ -204,6 +204,31 @@ one or more commits that build with `-Werror`.
 4. **Stage, jail, shell.** The stage worktree; the jail from
    unprivileged namespaces, with `eval/jailtest`'s 25 escapes kept and
    cases that must fail added; `run` and `shell`.
+   - [x] a. `run`, `check` and `/test`. `run` starts a program of
+     config's `run`, its arguments fenced (all of them, or only those
+     on disk for `run_ro`), several commands parted by a lone `;` and
+     asked about once, `always` trusting a program until the
+     conversation changes, `env` of `run_env`'s names. `check` and
+     `/test` run the project's test command, from `tests.json`
+     (`Astore.keyed`) or config's `test_cmd`, keeping the end of the
+     output; a failed `/test` is a turn. Each program starts detached
+     (`Arun.Job`): in a session of its own, without a terminal or a
+     display. raz's `spawn` makes a group, not a session, and a
+     program with threads mustn't fork, so arno runs itself again as a
+     helper (`Arun.child`), which calls setsid and runs the program in
+     its place; the jail of 4c is entered the same way. `check` and
+     `/test` start detached too, where the Pascal arno ran them in its
+     own session, with the display.
+   - [ ] b. The scratch directory and the stage: `Astage` (the
+     worktree, seeded from the tree as it stands; the diff asked about
+     once at a turn's end; apply, drop, carry on resume), `/stage`,
+     `stage.json`; the scratch directory per conversation, where a
+     change needs no approval, `$ARNO_SCRATCH`, swept, moved and
+     cleared with its conversation.
+   - [ ] c. `Ajail` and `shell`: the namespaces by raz's `SYSCALL`,
+     entered by the helper; the jail's own test, jailtest's 25 cases
+     and cases that must fail; `shell` in the stage, its timeout, the
+     tail kept, a flood past 4 MB killed.
 5. **MCP.**
 6. **Peers, serve, attach:** `arno-peer(5)`, `--serve`, `--attach`.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`

@@ -97,6 +97,7 @@ const
         {name: "/forget", args: "TAG|WORD", desc: "forget memories matching a tag or word"},
         {name: "/my-memory", args: "[TAG]", desc: "list remembered facts"},
         {name: "/notes", args: "[forget N|WORD]", desc: "list the model's notes on this project, or forget some"},
+        {name: "/test", args: "[COMMAND]", desc: "run the project's test command, or set it; ask about failures"},
         {name: "/quit", args: "", desc: "leave (also ^D)"}];
 
     MaxDepth = 5;   (* files a context file brings, and they bring, and so on *)

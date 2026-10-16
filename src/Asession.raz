@@ -15,10 +15,12 @@
 
    A message goes with what its @paths bring (Aattach).
 
+   /test runs the project's test command, as check does, and puts a
+   failure to the model as a turn.
+
    Depends on Agent, Aprompt (the commands and modes), Amemory, Aahead
-   (the notes), Aattach, Astore, Aconf, Aprice, Atools and Afence.
-   Leaves out what comes with later stages: /test and /stage, with the
-   jail and the stage.
+   (the notes), Aattach, Astore, Aconf, Aprice, Atools, Afence and Arun
+   (/test). Leaves out /stage, which comes with the stage.
 
    /models asks the provider's server for its models, or else says
    arno's own list of them (Awire.known); what the server said is kept
@@ -30,7 +32,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Amsg, Buf, Str, Sys, Files, Fmt,
+import Agent, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Arun, Amsg, Buf, Str, Sys, Files, Fmt,
     Heap, Arena, Math, Rt, Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
 
 type
@@ -55,6 +57,7 @@ type
 
 const
     Listed = 20;   (* conversations /list shows, and /load N counts in *)
+    MaxTest = 50000;   (* bytes of a failed /test's output put to the model, the last *)
 
 (* s made the session the config sets up, telling front of turns and
    show of commands, with a new conversation. What is wrong with the
@@ -85,6 +88,8 @@ begin
         if Aprompt.Modes[i].name = Aconf.get(ADR(s^.conf), "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
     Atools.search(Aconf.get(ADR(s^.conf), "searxng"));
+    Atools.commands(Aconf.get(ADR(s^.conf), "run"), Aconf.get(ADR(s^.conf), "run_ro"),
+        Aconf.get(ADR(s^.conf), "run_env"), Aconf.get(ADR(s^.conf), "trust"), Aconf.get(ADR(s^.conf), "test_cmd"));
 end;
 
 (* What lasts the session found: the context files, as config's
@@ -140,18 +145,34 @@ begin
     changed(s);
 end;
 
+(* A turn of s's conversation on its last message, the human's:
+   Agent.turn's error, why saying why it failed. The conversation is
+   saved after. *)
+proc answer(s: ^Session; why: ^Buf.Buf): ERROR;
+var err: ERROR;
+begin
+    err := Agent.turn(ADR(s^.agent), ADR(s^.conv), why);
+    save(s);
+    return err;
+end;
+
 (* A turn of s's conversation, on the human's message text and what its
    @paths bring: Agent.turn's error, why saying why it failed. The
    conversation is saved after. *)
 proc turn*(s: ^Session; text: []U8; why: ^Buf.Buf): ERROR;
-var m: ^Amsg.Msg; err: ERROR;
+var m: ^Amsg.Msg;
 begin
     m := Msgs.add(ADR(s^.conv.msgs));
     Amsg.init(m, Amsg.Role.user);
     Aattach.expand(m, text);
-    err := Agent.turn(ADR(s^.agent), ADR(s^.conv), why);
-    save(s);
-    return err;
+    return answer(s, why);
+end;
+
+(* A turn's failure, err, shown: why says why it failed. *)
+proc failed(s: ^Session; err: ERROR; why: []U8);
+begin
+    if err = Awire.Failed then fail(s, why); end;
+    if err = Awire.Stopped then fail(s, "stopped"); end;
 end;
 
 (* The id of the conversation arg names, into id: a number from /list,
@@ -661,6 +682,48 @@ begin
     say(s, Buf.bytes(ADR(s^.out)));
 end;
 
+(* /test: the project's test command run, as check runs it, or first
+   set to arg, for this project, in tests.json. A failure is put to the
+   model as a turn, with the end of the output: the human runs the
+   tests to have what failed fixed. *)
+proc test(s: ^Session; arg: []U8);
+var b, got, output, why: Buf.Buf; cmd: []U8; j: Arun.Job; m: ^Amsg.Msg; status: INT; cut: BOOL;
+begin
+    Buf.init(ADR(b), ADR(s^.mem.base));
+    Buf.init(ADR(got), ADR(s^.mem.base));
+    Buf.init(ADR(output), ADR(s^.mem.base));
+    Buf.init(ADR(why), ADR(s^.mem.base));
+    cmd := arg;
+    if LEN(cmd) = 0 then
+        cmd := Atools.testFor(ADR(b));
+    elsif cmd # Astore.keyed("tests.json", Afence.zone, ADR(b)) then
+        if Astore.setKeyed("tests.json", Afence.zone, cmd) # nil then
+            fail(s, "tests.json can't be written");
+            return;
+        end;
+        Fmt.write(ADR(s^.out), "test command for {}: {}", [Fmt.str(Afence.zone), Fmt.str(cmd)]);
+        say(s, Buf.bytes(ADR(s^.out)));
+        Buf.reset(ADR(s^.out));
+    end;
+    if LEN(cmd) = 0 then fail(s, "usage: /test COMMAND, or set test_cmd in config"); return; end;
+    j := {args: ["sh", "-c", cmd], detach: true, tail: true};
+    status, cut := Arun.start(ADR(j), MaxTest, ADR(got));
+    if status = 0 then
+        Fmt.write(ADR(s^.out), "tests passed: {}", [Fmt.str(cmd)]);
+        say(s, Buf.bytes(ADR(s^.out)));
+        return;
+    end;
+    Buf.reset(ADR(b));
+    Fmt.write(ADR(b), "Tests failed (`{}`, exit {}). What should I fix?\n\n", [Fmt.str(cmd), Fmt.int(status)]);
+    if cut then Buf.str(ADR(output), "[...]\n"); end;
+    Buf.str(ADR(output), Buf.bytes(ADR(got)));
+    Aahead.block(ADR(b), cmd, "", Buf.bytes(ADR(output)));
+    m := Msgs.add(ADR(s^.conv.msgs));
+    Amsg.init(m, Amsg.Role.user);
+    Amsg.setText(m, Buf.bytes(ADR(b)));
+    failed(s, answer(s, ADR(why)), Buf.bytes(ADR(why)));
+end;
+
 (* A command, line, which starts with a /. *)
 proc command(s: ^Session; line: []U8);
 var name, arg: []U8;
@@ -691,6 +754,7 @@ begin
         if s^.out.len = 0 then Buf.str(ADR(s^.out), "nothing remembered"); end;
         say(s, Buf.bytes(ADR(s^.out)));
     | "/notes": notes(s, arg);
+    | "/test": test(s, arg);
     | else: fail(s, "unknown command; /help lists them");
     end;
     Arena.reset(ADR(s^.mem));
@@ -709,8 +773,7 @@ begin
     Buf.init(ADR(why), Heap.heap);
     defer Buf.done(ADR(why));
     err := turn(s, text, ADR(why));
-    if err = Awire.Failed then fail(s, Buf.bytes(ADR(why))); end;
-    if err = Awire.Stopped then fail(s, "stopped"); end;
+    failed(s, err, Buf.bytes(ADR(why)));
     return true;
 end;
 

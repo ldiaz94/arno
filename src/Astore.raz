@@ -32,9 +32,13 @@
    files save writes, not arno's other files beside them (notes.json,
    stage.json, tests.json), which that arno listed untitled.
 
+   Beside the conversations, it keeps a text for each project in a file
+   of them (keyed): tests.json, the project's test command, and, when
+   the stage comes, stage.json.
+
    Depends on Amsg, rjson's Json, and the C library's localtime_r, for
-   the local time; arno uses C for TLS already. Leaves out the files
-   the agent keeps beside the conversations (memory, notes, tests, the
+   the local time; arno uses C for TLS already. Leaves out the other
+   files the agent keeps beside the conversations (memory, notes, the
    tool cache), and each conversation's scratch directory. *)
 module Astore;
 import Amsg, Json, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
@@ -162,6 +166,69 @@ begin
         return NotSaved;
     end;
     return nil;
+end;
+
+(* What a file of name in arno's directory keeps for each project, a
+   text by its root: tests.json, a project's test command, and
+   stage.json, whether its stage is on. Each is an object of roots to
+   texts, read and written whole. *)
+
+(* The text name keeps for root, added to b; "" if it keeps none, or
+   the file is missing or broken. *)
+proc keyed*(name, root: []U8; b: ^Buf.Buf): []U8;
+var path, text: Buf.Buf; d: Json.Doc; v: Json.Value; start: INT;
+begin
+    Buf.init(ADR(path), Heap.heap);
+    defer Buf.done(ADR(path));
+    Buf.init(ADR(text), Heap.heap);
+    defer Buf.done(ADR(text));
+    start := b^.len;
+    if Files.load(pathOf(name, ADR(path)), ADR(text)) # 0 then return ""; end;
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    v := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(ADR(text))), root);
+    if Json.kind(ADR(d), v) # Json.Kind.string then return ""; end;
+    Buf.str(b, Json.text(ADR(d), v));
+    return Buf.bytes(b)[start..b^.len];
+end;
+
+(* name made to keep value for root, the other roots' as they were; an
+   empty value drops root. *)
+proc setKeyed*(name, root, value: []U8): ERROR;
+var path, text, out: Buf.Buf; d: Json.Doc; v: Json.Value; i, n: INT;
+begin
+    Buf.init(ADR(path), Heap.heap);
+    defer Buf.done(ADR(path));
+    Buf.init(ADR(text), Heap.heap);
+    defer Buf.done(ADR(text));
+    Buf.init(ADR(out), Heap.heap);
+    defer Buf.done(ADR(out));
+    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(ADR(d));
+    lock();
+    defer unlock();
+    v := Json.None;
+    if Files.load(pathOf(name, ADR(path)), ADR(text)) = 0 then v := Json.parse(ADR(d), Buf.bytes(ADR(text))); end;
+    Buf.add(ADR(out), '{');
+    n := 0;
+    if Json.kind(ADR(d), v) = Json.Kind.object then
+        for i := 0 to Json.len(ADR(d), v) - 1 do
+            if Json.key(ADR(d), v, i) = root then continue; end;
+            if n > 0 then Buf.add(ADR(out), ','); end;
+            Json.quote(ADR(out), Json.key(ADR(d), v, i));
+            Buf.add(ADR(out), ':');
+            Json.write(ADR(d), ADR(out), Json.item(ADR(d), v, i), {});
+            INC(n);
+        end;
+    end;
+    if LEN(value) > 0 then
+        if n > 0 then Buf.add(ADR(out), ','); end;
+        Json.quote(ADR(out), root);
+        Buf.add(ADR(out), ':');
+        Json.quote(ADR(out), value);
+    end;
+    Buf.add(ADR(out), '}');
+    return replace(Buf.bytes(ADR(path)), Buf.bytes(ADR(out)));
 end;
 
 (* n, from 0 to 99, as two digits. *)
@@ -744,6 +811,17 @@ begin
     Strs.init(ADR(args), Heap.heap);
     for i := 1 to ARGC() - 1 do Strs.push(ADR(args), Files.arg(i)); end;
     compat(Strs.all(ADR(args)));
+    (* a text kept for each project, the others' left as they were *)
+    Buf.reset(ADR(b));
+    if (setKeyed("tests.json", "/a", "make check") # nil) or (setKeyed("tests.json", "/b", "x") # nil) or
+        (setKeyed("tests.json", "/a", "make test") # nil) or (keyed("tests.json", "/a", ADR(b)) # "make test") then
+        fail("a keyed text set again");
+    end;
+    Buf.reset(ADR(b));
+    if (setKeyed("tests.json", "/b", "") # nil) or (keyed("tests.json", "/b", ADR(b)) # "") or
+        (keyed("tests.json", "/a", ADR(b)) # "make test") or (keyed("nothing.json", "/a", ADR(b)) # "") then
+        fail("a keyed text dropped");
+    end;
     if failed then return 1; end;
     return 0;
 end;

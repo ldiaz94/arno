@@ -33,7 +33,7 @@
    after this one, what the Pascal arno has besides: --serve and
    --attach. *)
 module Arno;
-import Asession, Ascreen, Awire, Buf, Str, Sys, Files, Out, Heap;
+import Asession, Ascreen, Arun, Awire, Buf, Str, Sys, Files, Out, Heap;
 
 const Usage = `
     usage: arno
@@ -202,6 +202,7 @@ end;
 proc main*: INT;
 var s: Asession.Session; first, i: INT; prompt, failure: Buf.Buf; err: ERROR;
 begin
+    Arun.child();
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
         Out.str(Usage);
         return 0;

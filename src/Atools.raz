@@ -32,18 +32,22 @@
    that starts no character made U+FFFD: it goes into the conversation,
    which rjson reads only as UTF-8.
 
-   Depends on Afence, Afind (find, grep, outline and def), Arun (git),
-   Aahead (note), Ahtml (fetch), Awire (for Tool), rnet's Http (search
-   and fetch), rjson's Json. Delegate is the agent's, which runs the
-   worker; it is described here, with the rest. Leaves out run and
-   shell, which come with the jail; the
+   run starts one of the programs config allows, asked about unless
+   trusted; check runs the project's test command, the human's, without
+   asking.
+
+   Depends on Afence, Afind (find, grep, outline and def), Arun (git,
+   run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
+   Awire (for Tool), rnet's Http (search and fetch), rjson's Json.
+   Delegate is the agent's, which runs the worker; it is described
+   here, with the rest. Leaves out shell, which comes with the jail; the
    images read shows as pictures, which come with the screen; the
    model's scratch directory, where a change needs no approval, which
    comes with the stage; and an editor's buffers, which come with the
    peers. *)
 module Atools;
-import Afence, Afind, Arun, Aahead, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
-    Strs := Vec([]U8), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
+import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+    Strs := Vec([]U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 
 type
     (* What the human answers to question, shown detail first (a diff;
@@ -59,6 +63,11 @@ type
         ask*: Ask;
         why*: Why;
         arg*: ^U8;
+    end;
+
+    (* One command of a call of run: the program and its arguments. *)
+    Cmd = record
+        args: [][]U8;
     end;
 
     (* A change the human declined: the call, as key gives it, and what
@@ -151,6 +160,23 @@ const
             `{"args":{"type":"array","items":{"type":"string"},"description":` +
             `"the arguments after git, subcommand first, one per item"}},` +
             `"required":["args"]}`},
+        {name: "run",
+         description: "Run a program the human allows, with arguments, and see its exit status and " +
+            "output. There is no shell: no pipes, redirection, globs or variables, and the program gets " +
+            "no input and no terminal, so use its non-interactive options. The human approves each " +
+            "call, so make each one count: to try a program many ways, give all the commands in one " +
+            "call, parted by \";\".",
+         params: `{"type":"object","properties":` +
+            `{"args":{"type":"array","items":{"type":"string"},"description":` +
+            `"the program, then its arguments, one per item; several commands in one call, parted by a lone \";\" item, run one after another"},` +
+            `"env":{"type":"object","additionalProperties":{"type":"string"},"description":` +
+            `"environment variables for the programs, NAME to value, of the names the human allows"}},` +
+            `"required":["args"]}`},
+        {name: "check",
+         description: "Build and test the project, with the command the human set for it, and see " +
+            "whether it passed and what it printed. Run it after changing code, and again after each " +
+            "fix, until it passes. Takes no arguments.",
+         params: `{"type":"object","properties":{}}`},
         {name: "edit",
          description: "Change a file by replacing exact text, or create a new file. old must be " +
             "copied verbatim from a read of the same file, whitespace included and without the " +
@@ -546,6 +572,256 @@ begin
         Buf.str(out, "error: git can't be run");
     elsif out^.len = 0 then
         Buf.str(out, "(no output)");
+    end;
+end;
+
+(* run and check *)
+
+var
+    runs: Buf.Buf;     (* the programs run may start, config's run, a blank at either end and between *)
+    runsRO: Buf.Buf;   (* those of them that only read, config's run_ro *)
+    runsEnv: Buf.Buf;  (* the variables run may set, config's run_env *)
+    trust: Buf.Buf;    (* those run starts without asking: config's trust, and each answered always *)
+    trustRun: INT;     (* trust's length from config, before the answers *)
+    testCmd: []U8;     (* config's test_cmd, for a project with none of its own *)
+
+(* list, words parted by blanks, into b with a blank at either end. *)
+proc words(b: ^Buf.Buf; list: []U8);
+begin
+    Buf.init(b, Heap.heap);
+    Buf.add(b, ' ');
+    Buf.str(b, list);
+    Buf.add(b, ' ');
+end;
+
+(* run and check as config says: run's programs, those that only read,
+   the variables it may set and the programs trusted; check's test
+   command for a project without one of its own. test is kept, the
+   others copied. *)
+proc commands*(run, ro, env, trusted, test: []U8);
+begin
+    words(ADR(runs), run);
+    words(ADR(runsRO), ro);
+    words(ADR(runsEnv), env);
+    words(ADR(trust), trusted);
+    trustRun := trust.len;
+    testCmd := test;
+end;
+
+(* The project's test command, added to b: the one /test last set for
+   it, in tests.json, or else config's test_cmd; "" for none. It is
+   always one the human typed, never one a project brings, as check
+   runs it without asking. *)
+proc testFor*(b: ^Buf.Buf): []U8;
+var s: []U8;
+begin
+    s := Astore.keyed("tests.json", Afence.zone, b);
+    if LEN(s) = 0 then
+        Buf.str(b, testCmd);
+        s := testCmd;
+    end;
+    return s;
+end;
+
+(* Whether x, a word for fd, asks it to run a program: --exec or
+   --exec-batch, or -x or -X alone or in a cluster of short flags (-Hx).
+   In a cluster, a flag that takes a value takes the rest of the word
+   as it (-tx is the type executable), so the scan stops there. *)
+proc fdRuns(x: []U8): BOOL;
+var i: INT;
+begin
+    if Str.hasPrefix(x, "--") then return Str.hasPrefix(x, "--exec"); end;
+    for i := 1 to LEN(x) - 1 do
+        match x[i] of
+        | 'x', 'X': return true;
+        | 't', 'e', 'E', 'd', 'S', 'c', 'j', 'o': return false;
+        | else:
+        end;
+    end;
+    return false;
+end;
+
+(* Why run mayn't give prog the argument x, added to out; false if it
+   may. The program is the human's choice, made in config, but its
+   options are the model's, and three kinds would make that choice
+   meaningless. man runs a pager or browser of the caller's naming, so
+   it takes no options at all: a section and a page are all a manual
+   needs. fd runs any program for -x and -X. And a path glued to an
+   option (-o../x) hides it from the fence, which judges words; after
+   an = it is seen, and so is a path as a word of its own. *)
+proc refusedArg(prog, x: []U8; out: ^Buf.Buf): BOOL;
+begin
+    if not Str.hasPrefix(x, "-") then return false; end;
+    if prog = "man" then
+        Buf.str(out, "error: man takes no options here; give a section and a page");
+    elsif (prog = "fd") and fdRuns(x) then
+        Buf.str(out, "error: fd may not run commands here (-x, -X, --exec, --exec-batch)");
+    elsif (Str.find(x, "/") >= 0) and (Str.find(x, "=") < 0) then
+        Fmt.write(out, "error: give the path in {} as an argument of its own", [Fmt.str(x)]);
+    else
+        return false;
+    end;
+    return true;
+end;
+
+(* The 'run' tool: one of the programs config's run names, with the
+   model's arguments, its exit status and output, so that a model can
+   use the human's own tools (render a drawing, read a manual) without
+   a shell. There is none: the arguments go to exec as they are, so
+   there is nothing to quote, and no pipe or $(...) to guard against.
+   The program starts detached (Arun), without input, a terminal or a
+   display. Several commands may come in one call, parted by a lone
+   ";", and are asked about once: a model trying a program out ran one
+   a step, each step sending the whole conversation again. The human
+   is asked about the programs not yet trusted: yes, no, or always,
+   which trusts the program until the conversation changes (forgive).
+   The variables of env must be among run_env's: a model once ran a
+   test suite 22 times only to see a program's colours under one. *)
+proc runTool(a: ^Args; h: ^Human; out: ^Buf.Buf);
+var args: [][]U8; cmds: Cmds.Vec; c: []Cmd; env: Strs.Vec; ask, lines, line, q: Buf.Buf; e, v: Json.Value;
+    x, why: []U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
+begin
+    Strs.init(ADR(env), a^.mem);
+    e := Json.member(a^.d, a^.v, "env");
+    for i := 0 to Json.len(a^.d, e) - 1 do
+        x := Json.key(a^.d, e, i);
+        v := Json.item(a^.d, e, i);
+        if LEN(Str.trim(Buf.bytes(ADR(runsEnv)))) = 0 then
+            Buf.str(out, "error: no environment variables may be set here");
+            return;
+        end;
+        if not Afind.listed(x, Buf.bytes(ADR(runsEnv))) then
+            Fmt.write(out, "error: {} may not be set; these may:{}", [Fmt.str(x), Fmt.str(Buf.bytes(ADR(runsEnv)))]);
+            return;
+        end;
+        if (Json.kind(a^.d, v) # Json.Kind.string) or (Str.find(x, "=") >= 0) then
+            Fmt.write(out, "error: {} must be set to a string", [Fmt.str(x)]);
+            return;
+        end;
+        Buf.init(ADR(line), a^.mem);
+        Fmt.write(ADR(line), "{}={}", [Fmt.str(x), Fmt.str(Json.text(a^.d, v))]);
+        Strs.push(ADR(env), Buf.bytes(ADR(line)));
+    end;
+
+    (* the commands, each a slice of args *)
+    args := list(a, "args");
+    Cmds.init(ADR(cmds), a^.mem);
+    start := 0;
+    for i := 0 to LEN(args) do
+        if (i < LEN(args)) and (args[i] # ";") then continue; end;
+        if i = start then
+            if i < LEN(args) then Buf.str(out, "error: an empty command before \";\""); return; end;
+            break;
+        end;
+        if not Afind.listed(args[start], Buf.bytes(ADR(runs))) then
+            Fmt.write(out, "error: {} is not allowed; the programs are:{}", [Fmt.str(args[start]), Fmt.str(Buf.bytes(ADR(runs)))]);
+            return;
+        end;
+        for k := start + 1 to i - 1 do
+            if refusedArg(args[start], args[k], out) then return; end;
+        end;
+        Cmds.push(ADR(cmds), {args: args[start..i]});
+        start := i + 1;
+    end;
+    c := Cmds.all(ADR(cmds));
+    if LEN(c) = 0 then
+        Buf.str(out, "error: args must be an array of strings, the program first");
+        return;
+    end;
+
+    (* one question for them all, naming the programs not yet trusted *)
+    Buf.init(ADR(ask), a^.mem);
+    Buf.init(ADR(lines), a^.mem);
+    Buf.add(ADR(ask), ' ');
+    for k := 0 to LEN(c) - 1 do
+        x := c[k].args[0];
+        if not Afind.listed(x, Buf.bytes(ADR(trust))) and not Afind.listed(x, Buf.bytes(ADR(ask))) then
+            Buf.str(ADR(ask), x);
+            Buf.add(ADR(ask), ' ');
+        end;
+        Str.join(ADR(lines), Strs.all(ADR(env)), " ");
+        if LEN(Strs.all(ADR(env))) > 0 then Buf.add(ADR(lines), ' '); end;
+        Str.join(ADR(lines), c[k].args, " ");
+        Buf.add(ADR(lines), '\n');
+    end;
+    if ask.len > 1 then
+        if h^.ask = nil then Buf.str(out, "declined: there is nobody to ask. Nothing was run."); return; end;
+        Buf.init(ADR(q), a^.mem);
+        x := Str.trim(Buf.bytes(ADR(ask)));
+        if LEN(c) = 1 then
+            Buf.str(ADR(q), "run ");
+            Str.join(ADR(q), c[0].args, " ");
+            Fmt.write(ADR(q), "? (a: always {})", [Fmt.str(x)]);
+        else
+            Fmt.write(ADR(q), "run these {} commands? (a: always {})", [Fmt.int(LEN(c)), Fmt.str(x)]);
+        end;
+        answer := h^.ask(Buf.bytes(ADR(q)), Buf.bytes(ADR(lines)), "yna", h^.arg);
+        if answer = 'a' then
+            Buf.str(ADR(trust), x);
+            Buf.add(ADR(trust), ' ');
+        elsif answer # 'y' then
+            Buf.str(out, "declined by user");
+            why := "";
+            if h^.why # nil then why := Str.trim(h^.why(h^.arg)); end;
+            if LEN(why) > 0 then
+                Buf.str(out, ": ");
+                Buf.str(out, why);
+            end;
+            Buf.str(out, ". Nothing was run.");
+            return;
+        end;
+    end;
+
+    for k := 0 to LEN(c) - 1 do
+        if k > 0 then Buf.str(out, "\n\n"); end;
+        start := out^.len;
+        Buf.str(out, "exit ");
+        j := {args: c[k].args, env: Strs.all(ADR(env)), detach: true};
+        Buf.init(ADR(line), a^.mem);
+        status, _ := Arun.start(ADR(j), MaxOut + 1, ADR(line));
+        if (status = 127) and (line.len = 0) or (status < 0) then
+            out^.len := start;
+            Fmt.write(out, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
+            continue;
+        end;
+        Fmt.write(out, "{}: ", [Fmt.int(status)]);
+        Str.join(out, c[k].args, " ");
+        if line.len > 0 then
+            Buf.add(out, '\n');
+            Buf.str(out, Str.trimRight(Buf.bytes(ADR(line))));
+        end;
+    end;
+end;
+
+(* The 'check' tool: the project's test command run, and how it went,
+   so that the model sees its own edit break the build and fixes it
+   without the human passing the errors on. It takes no arguments: the
+   command is always the human's (testFor), so it runs without asking;
+   the model chooses when, never what. The verdict comes first, as a
+   runner's output doesn't always say; the output is kept from the end,
+   where a build's or a test's summary and the error that matters
+   are. *)
+proc check(mem: ^Mem.Allocator; out: ^Buf.Buf);
+var b, got: Buf.Buf; cmd: []U8; j: Arun.Job; status: INT; cut: BOOL;
+begin
+    Buf.init(ADR(b), mem);
+    Buf.init(ADR(got), mem);
+    cmd := testFor(ADR(b));
+    if LEN(cmd) = 0 then
+        Buf.str(out, "error: no test command for this project; ask the human to run /test COMMAND once");
+        return;
+    end;
+    j := {args: ["sh", "-c", cmd], detach: true, tail: true};
+    status, cut := Arun.start(ADR(j), MaxOut - 1000, ADR(got));
+    if status = 0 then
+        Fmt.write(out, "passed: {}", [Fmt.str(cmd)]);
+    else
+        Fmt.write(out, "FAILED, exit {}: {}", [Fmt.int(status), Fmt.str(cmd)]);
+    end;
+    if got.len > 0 then
+        Buf.str(out, "\n\n");
+        if cut then Buf.str(out, "[...]\n"); end;
+        Buf.str(out, Buf.bytes(ADR(got)));
     end;
 end;
 
@@ -1016,8 +1292,10 @@ end;
    without a SearXNG, note outside a project, delegate unless lead, a
    session with a worker model, which a worker isn't. *)
 proc offered*(lead, edits: BOOL): []Awire.Tool;
-var i: INT;
+var b: Buf.Buf; i: INT;
 begin
+    Buf.init(ADR(b), Heap.heap);
+    defer Buf.done(ADR(b));
     Tools.reset(ADR(offer));
     for i := 0 to LEN(Offered) - 1 do
         match Offered[i].name of
@@ -1025,6 +1303,8 @@ begin
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
+        | "run": if LEN(Str.trim(Buf.bytes(ADR(runs)))) = 0 then continue; end;
+        | "check": if LEN(testFor(ADR(b))) = 0 then continue; end;
         | else:
         end;
         Tools.push(ADR(offer), Offered[i]);
@@ -1060,10 +1340,13 @@ begin
     return "";
 end;
 
-(* Every declined change forgotten, so that the human is asked again. *)
+(* Every declined change forgotten, so that the human is asked again,
+   and the programs run was told always for no longer trusted: the
+   conversation they were given for is left. *)
 proc forgive*;
 var r: []Refusal; i: INT;
 begin
+    trust.len := trustRun;
     r := Refusals.all(ADR(refused));
     for i := 0 to LEN(r) - 1 do
         Str.free(Heap.heap, r[i].key);
@@ -1075,9 +1358,16 @@ end;
 (* Whether every path the call of name would reach may be reached, the
    human asked of those outside the fence; if not, why is added to out.
    git's are the words of its arguments that are on disk: its
-   subcommands keep it in the repository otherwise. *)
+   subcommands keep it in the repository otherwise. run's are every
+   word, as any may be a path the program reads or writes, and one it
+   writes needn't be there yet: an option's value after its =, any
+   other word whole; a word that is no path ("5") is in the working
+   directory, inside. A program that only reads, of run_ro, has only
+   the words on disk judged, as git does: fd's patterns were asked
+   about every time and caught nothing. A program run won't start is
+   judged not at all, as asking for it would be asking for nothing. *)
 proc fenced(name: []U8; a: ^Args; h: ^Human; out: ^Buf.Buf): BOOL;
-var args: [][]U8; i: INT;
+var args: [][]U8; prog, x: []U8; i: INT; first: BOOL;
 begin
     match name of
     | "read", "edit", "remove": return fence(name, path(a, "path"), h, out);
@@ -1090,6 +1380,18 @@ begin
                 not fence(name, args[i], h, out) then
                 return false;
             end;
+        end;
+    | "run":
+        args := list(a, "args");
+        first := true;
+        for i := 0 to LEN(args) - 1 do
+            x := args[i];
+            if x = ";" then first := true; continue; end;
+            if first then prog := x; first := false; continue; end;
+            if not Afind.listed(prog, Buf.bytes(ADR(runs))) then continue; end;
+            if Str.hasPrefix(x, "-") then _, x, _ := Str.cut(x, "="); end;
+            if (LEN(x) = 0) or Afind.listed(prog, Buf.bytes(ADR(runsRO))) and (Sys.access(x, {}) # 0) then continue; end;
+            if not fence(name, x, h, out) then return false; end;
         end;
     | else:
     end;
@@ -1141,6 +1443,10 @@ begin
         look(name, ADR(a), mem, ADR(res));
     elsif name = "git" then
         git(ADR(a), ADR(res));
+    elsif name = "run" then
+        runTool(ADR(a), h, ADR(res));
+    elsif name = "check" then
+        check(mem, ADR(res));
     elsif name = "edit" then
         edit(ADR(a), h, mem, ADR(res));
     elsif name = "move" then
@@ -1231,8 +1537,9 @@ begin
 end;
 
 proc main*: INT;
-var dir, s: []U8; long: Buf.Buf; i: INT;
+var dir, s: []U8; long, store: Buf.Buf; i: INT;
 begin
+    Arun.child();
     if not Arena.init(ADR(mem), 1 shl 26) then return 1; end;
     _ := Sys.makeDir("build");
     _ := Sys.makeDir("build/tools");
@@ -1263,7 +1570,7 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git edit move remove note " +
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git run check edit move remove note " +
         "search fetch delegate");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
@@ -1344,6 +1651,51 @@ begin
     _ := Sys.removeDir("sub/dir");
     _ := Sys.removeDir("sub/new");
     _ := Sys.removeDir("sub");
+
+    (* run: the programs allowed, asked about, trusted, and fenced *)
+    commands("echo sh no-such-program-of-arno", "", "ARNO_T", "", "");
+    expect("run, not allowed", run("run", `{"args":["ls"]}`, nil),
+        "error: ls is not allowed; the programs are: echo sh no-such-program-of-arno ");
+    answer := 'n';
+    because := "";
+    expect("run, declined", run("run", `{"args":["echo","hi"]}`, human), "declined by user. Nothing was run.");
+    answer := 'y';
+    expect("run", run("run", `{"args":["echo","hi"]}`, human), "exit 0: echo hi\nhi");
+    answer := 'a';
+    expect("run, a batch", run("run", `{"args":["echo","a",";","sh","-c","exit 3"]}`, human),
+        "exit 0: echo a\na\n\nexit 3: sh -c exit 3");
+    expect("run, the batch shown", shown, "echo a\nsh -c exit 3\n");
+    expect("run, trusted", run("run", `{"args":["echo","b"]}`, nil), "exit 0: echo b\nb");
+    expect("run, env", run("run", `{"args":["sh","-c","echo $ARNO_T"],"env":{"ARNO_T":"x"}}`, nil),
+        "exit 0: sh -c echo $ARNO_T\nx");
+    expect("run, env refused", run("run", `{"args":["echo"],"env":{"PATH":"x"}}`, nil),
+        "error: PATH may not be set; these may: ARNO_T ");
+    expect("run, a glued path", run("run", `{"args":["echo","-o../x"]}`, nil),
+        "error: give the path in -o../x as an argument of its own");
+    expect("run, an empty command", run("run", `{"args":["echo",";",";","echo"]}`, nil),
+        "error: an empty command before \";\"");
+    expect("run, outside", run("run", `{"args":["echo","--in=../../nowhere"]}`, nil)[0..9], "declined:");
+    expect("run, not installed", run("run", `{"args":["no-such-program-of-arno"]}`, human),
+        "error: no-such-program-of-arno is not installed");
+    forgive;
+    asked := 0;
+    answer := 'y';
+    _ := run("run", `{"args":["echo"]}`, human);
+    if asked # 1 then Out.str("Atools: run's trust outlived the conversation\n"); failed := true; end;
+
+    (* check: config's command, or the project's own in tests.json *)
+    Buf.init(ADR(store), Heap.heap);
+    Buf.str(ADR(store), dir);
+    Buf.str(ADR(store), "/build/tools/store/");
+    _ := Sys.makeDir(Buf.bytes(ADR(store)));
+    _ := Sys.remove("../store/tests.json");
+    Astore.use(Buf.bytes(ADR(store)));
+    expect("check, none", run("check", `{}`, nil),
+        "error: no test command for this project; ask the human to run /test COMMAND once");
+    commands("", "", "", "", "echo testing; exit 1");
+    expect("check", run("check", `{}`, nil), "FAILED, exit 1: echo testing; exit 1\n\ntesting\n");
+    _ := Astore.setKeyed("tests.json", Afence.zone, "echo ok");
+    expect("check, the project's", run("check", `{}`, nil), "passed: echo ok\n\nok\n");
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;

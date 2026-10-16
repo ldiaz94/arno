@@ -2,65 +2,226 @@
 
    The program gets no input, /dev/null, and writes its output and its
    errors into one pipe, as a terminal would show them, interleaved.
-   Only so much of it is kept: past that the pipe is closed, and the
-   program, writing on, ends by SIGPIPE rather than filling the memory
-   with what nobody reads. A call the human's ^C breaks into is
-   tried again; the human's stop is the caller's to see.
+   Only so much of it is kept. Kept from the start, the pipe is closed
+   past that, and the program, writing on, ends by SIGPIPE rather than
+   filling the memory with what nobody reads. Kept from the end, as a
+   build's or a test's output wants, whose summary and the error that
+   matters come last, it is all read and the start dropped. A call the
+   human's ^C breaks into is tried again; the human's stop is the
+   caller's to see.
 
-   Depends on Sys and Buf. Leaves out a time limit, an environment of
-   its own and the jail, which come with run and shell, in stage 4. *)
+   A program the model asks for may want a terminal, and finding arno's
+   take over the screen, or stop arno's turn for good waiting for keys
+   it never gets. Started detached, it runs in a session of its own,
+   where there is no terminal, not even /dev/tty, and with no display
+   (DISPLAY and WAYLAND_DISPLAY gone), so it fails instead. raz's
+   spawn makes a process group, not a session, and a program with
+   threads, as arno on the screen is, mustn't fork to make one; so a
+   detached program is started by arno itself, run again as a helper
+   (child), which makes the session and runs the program in its own
+   place. The jail, in stage 4c, is entered the same way.
+
+   Depends on Sys, Buf, and the C library's setsid. Leaves out a time
+   limit and the jail, which come with shell. *)
 module Arun;
-import Sys, Buf, Heap, Out;
+import Sys, Buf, Str, Files, Heap, Out, Strs := Vec([]U8);
 
-(* The program args[0], found on PATH, run with args: its status, 128
-   and the signal if one ended it; or minus an errno if it couldn't be
-   started, as 127 is if there is no such program. At most max bytes of
-   what it wrote are added to out. *)
-proc run*(args: [][]U8; max: INT; out: ^Buf.Buf): INT;
-var rd, wr, nul, pid, n, status, kept, got: INT; how: Sys.Status;
-begin
-    nul := Sys.openRead("/dev/null");
-    if nul < 0 then return nul; end;
-    defer Sys.close(nul);
-    rd, wr := Sys.pipe();
-    if rd < 0 then return rd; end;
-    pid := Sys.spawn({path: args[0], args: args, fds: [nul, wr, wr]});
-    Sys.close(wr);
-    if pid < 0 then Sys.close(rd); return pid; end;
-    kept := 0;
-    while kept < max do
-        n := Sys.read(rd, Buf.spare(out, max - kept));
-        if n = -4 then continue; end;   (* ^C: the caller sees it *)
-        if n <= 0 then break; end;
-        INC(out^.len, n);
-        INC(kept, n);
+type
+    (* A program to run. *)
+    Job* = record
+        args*: [][]U8;   (* the program, found on PATH, then its arguments *)
+        env*: [][]U8;    (* NAME=value, each added to arno's environment for it *)
+        detach*: BOOL;   (* in a session of its own, without a display *)
+        tail*: BOOL;     (* what it writes kept from the end, rather than the start *)
     end;
-    Sys.close(rd);
+
+const
+    Child* = "--arno-child";   (* the first argument of arno run as the helper *)
+
+extern proc setsid: I32;
+
+(* If this run of the program is the helper start runs, its first
+   argument Child, the rest of the arguments are run in its place, in a
+   session of their own; it doesn't return. 127 if there is no such
+   program, 126 if it won't start. The program's main calls it first. *)
+proc child*;
+var args: Strs.Vec; i: INT;
+begin
+    if (ARGC() < 3) or (Files.arg(1) # Child) then return; end;
+    _ := setsid();
+    Strs.init(ADR(args), Heap.heap);
+    for i := 2 to ARGC() - 1 do Strs.push(ADR(args), Files.arg(i)); end;
+    i := Sys.exec({path: Files.arg(2), args: Strs.all(ADR(args))});
+    if (i = -2) or (i = -13) then Sys.exit(127); end;
+    Sys.exit(126);
+end;
+
+(* Waits for the program pid to end: its status, 128 and the signal if
+   one ended it, or minus an errno. *)
+proc reap(pid: INT): INT;
+var got, status: INT; how: Sys.Status;
+begin
     repeat got, how, status := Sys.wait(pid, true); until got # -4;
     if got < 0 then return got; end;
     if how = Sys.Status.killed then return 128 + status; end;
     return status;
 end;
 
+(* What fd gives, read to its end, max bytes of it added to out, the
+   last; and whether any were dropped. *)
+proc last(fd, max: INT; out: ^Buf.Buf): BOOL;
+var start, n: INT; s: []U8; dropped: BOOL;
+begin
+    start := out^.len;
+    dropped := false;
+    while true do
+        n := Sys.read(fd, Buf.spare(out, 4096));
+        if n = -4 then continue; end;
+        if n <= 0 then break; end;
+        INC(out^.len, n);
+        if out^.len - start > 2 * max then
+            s := Buf.bytes(out);
+            COPY(s[start..start + max], s[out^.len - max..out^.len]);
+            out^.len := start + max;
+            dropped := true;
+        end;
+    end;
+    if out^.len - start > max then
+        s := Buf.bytes(out);
+        COPY(s[start..start + max], s[out^.len - max..out^.len]);
+        out^.len := start + max;
+        dropped := true;
+    end;
+    return dropped;
+end;
+
+(* The program j says run: its status, 128 and the signal if one ended
+   it; or minus an errno if it couldn't be started, as 127 is if there
+   is no such program. At most max bytes of what it wrote are added to
+   out, and whether more were written is given. *)
+proc start*(j: ^Job; max: INT; out: ^Buf.Buf): (INT, BOOL);
+var p: Sys.Program; args, env: Strs.Vec; rd, wr, nul, pid, n, i, kept: INT; e: []U8; more, cut: BOOL;
+begin
+    nul := Sys.openRead("/dev/null");
+    if nul < 0 then return nul, false; end;
+    defer Sys.close(nul);
+    rd, wr := Sys.pipe();
+    if rd < 0 then return rd, false; end;
+    p := {path: j^.args[0], args: j^.args, env: j^.env, fds: [nul, wr, wr]};
+    if j^.detach then
+        (* arno itself, as the helper, with an environment that is
+           arno's, less the display, and j's *)
+        Strs.init(ADR(args), Heap.heap);
+        defer Strs.done(ADR(args));
+        Strs.init(ADR(env), Heap.heap);
+        defer Strs.done(ADR(env));
+        Strs.push(ADR(args), "arno");
+        Strs.push(ADR(args), Child);
+        for i := 0 to LEN(j^.args) - 1 do Strs.push(ADR(args), j^.args[i]); end;
+        i := 0;
+        e, more := Sys.envAt(0);
+        while more do
+            if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=") then
+                Strs.push(ADR(env), e);
+            end;
+            INC(i);
+            e, more := Sys.envAt(i);
+        end;
+        for i := 0 to LEN(j^.env) - 1 do Strs.push(ADR(env), j^.env[i]); end;
+        p.path := "/proc/self/exe";
+        p.args := Strs.all(ADR(args));
+        p.env := Strs.all(ADR(env));
+        p.onlyEnv := true;
+    end;
+    pid := Sys.spawn(p);
+    Sys.close(wr);
+    if pid < 0 then Sys.close(rd); return pid, false; end;
+    if j^.tail then
+        cut := last(rd, max, out);
+    else
+        kept := 0;
+        while kept < max do
+            n := Sys.read(rd, Buf.spare(out, max - kept));
+            if n = -4 then continue; end;   (* ^C: the caller sees it *)
+            if n <= 0 then break; end;
+            INC(out^.len, n);
+            INC(kept, n);
+        end;
+        cut := kept = max;
+    end;
+    Sys.close(rd);
+    return reap(pid), cut;
+end;
+
+(* The program args[0], found on PATH, run with args, as start runs
+   it: at most max bytes of what it wrote, the first, are added to
+   out. *)
+proc run*(args: [][]U8; max: INT; out: ^Buf.Buf): INT;
+var j: Job; status: INT;
+begin
+    j := {args: args};
+    status, _ := start(ADR(j), max, out);
+    return status;
+end;
+
 (* The module's test. *)
 
-proc main*: INT;
-var b: Buf.Buf; failed: BOOL;
+var failed: BOOL;
+
+proc expect(what: []U8; status, want: INT; got, wanted: []U8);
 begin
+    if (status = want) and (got = wanted) then return; end;
+    Out.str("Arun: ");
+    Out.str(what);
+    Out.str("\n  got:  ");
+    Out.int(status);
+    Out.str(" ");
+    Out.str(got);
+    Out.str("\n  want: ");
+    Out.int(want);
+    Out.str(" ");
+    Out.str(wanted);
+    Out.ln;
+    failed := true;
+end;
+
+proc main*: INT;
+var b: Buf.Buf; j: Job; status: INT; cut: BOOL;
+begin
+    child();
     Buf.init(ADR(b), Heap.heap);
-    if (run(["sh", "-c", "echo out; echo err >&2; exit 3"], 100, ADR(b)) # 3) or (Buf.bytes(ADR(b)) # "out\nerr\n") then
-        Out.str("Arun: output and status\n");
-        failed := true;
-    end;
+    status := run(["sh", "-c", "echo out; echo err >&2; exit 3"], 100, ADR(b));
+    expect("output and status", status, 3, Buf.bytes(ADR(b)), "out\nerr\n");
     Buf.reset(ADR(b));
-    if (run(["sh", "-c", "yes"], 10, ADR(b)) # 128 + Sys.sigPipe) or (Buf.bytes(ADR(b)) # "y\ny\ny\ny\ny\n") then
-        Out.str("Arun: output cut\n");
-        failed := true;
-    end;
-    if run(["no-such-program-of-arno"], 10, ADR(b)) # 127 then
-        Out.str("Arun: no program\n");
-        failed := true;
-    end;
+    status := run(["sh", "-c", "yes"], 10, ADR(b));
+    expect("output cut", status, 128 + Sys.sigPipe, Buf.bytes(ADR(b)), "y\ny\ny\ny\ny\n");
+    Buf.reset(ADR(b));
+    status := run(["no-such-program-of-arno"], 10, ADR(b));
+    expect("no program", status, 127, Buf.bytes(ADR(b)), "");
+
+    (* the end kept, past twice max, which moves it down as it reads *)
+    Buf.reset(ADR(b));
+    Buf.str(ADR(b), "before:");
+    j := {args: ["sh", "-c", "seq 1 10000"], tail: true};
+    status, cut := start(ADR(j), 11, ADR(b));
+    expect("the tail", status, 0, Buf.bytes(ADR(b)), "before:9999\n10000\n");
+    if not cut then Out.str("Arun: the tail isn't said to be cut\n"); failed := true; end;
+
+    (* detached: a session of its own, which it leads, so no terminal; an
+       environment added, the display gone *)
+    Buf.reset(ADR(b));
+    _ := Sys.setEnv("DISPLAY", ":9");
+    j := {args: ["sh", "-c", "test \"$(cut -d' ' -f6 /proc/$$/stat)\" = $$ || exit 5"],
+        env: ["ARUN_TEST=set"], detach: true};
+    status, _ := start(ADR(j), 1000, ADR(b));
+    expect("detached: its own session", status, 0, Buf.bytes(ADR(b)), "");
+    j.args := ["sh", "-c", "echo $ARUN_TEST.$DISPLAY."];
+    status, _ := start(ADR(j), 1000, ADR(b));
+    expect("detached's environment", status, 0, Buf.bytes(ADR(b)), "set..\n");
+    Buf.reset(ADR(b));
+    j.args := ["no-such-program-of-arno"];
+    status, _ := start(ADR(j), 1000, ADR(b));
+    expect("detached, no program", status, 127, Buf.bytes(ADR(b)), "");
     if failed then return 1; end;
     return 0;
 end;
