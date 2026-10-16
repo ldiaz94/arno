@@ -929,6 +929,63 @@ begin
     Fmt.write(out, "ok: noted ({} of {})", [Fmt.int(l.len), Fmt.int(MaxNotes)]);
 end;
 
+(* /notes: the notes of the project, numbered from 1, a line each,
+   added to out; nothing outside a project, or for one with none. *)
+proc listNotes*(mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d: Json.Doc; l: Strs.Vec; all: [][]U8; i: INT;
+begin
+    if not Afence.rooted or not Json.init(ADR(d), mem) then return; end;
+    Strs.init(ADR(l), mem);
+    _ := readNotes(ADR(d), mem, ADR(l));
+    all := Strs.all(ADR(l));
+    for i := 0 to LEN(all) - 1 do
+        if i > 0 then Buf.add(out, '\n'); end;
+        if i < 9 then Buf.add(out, ' '); end;
+        Fmt.write(out, "{}  {}", [Fmt.int(i + 1), Fmt.str(all[i])]);
+    end;
+end;
+
+(* Whether s holds word, in any case. *)
+proc holdsFold(s, word: []U8; mem: ^Mem.Allocator): BOOL;
+var a, b: Buf.Buf;
+begin
+    Buf.init(ADR(a), mem);
+    Buf.init(ADR(b), mem);
+    Buf.str(ADR(a), s);
+    Buf.str(ADR(b), word);
+    Str.lower(Buf.bytes(ADR(a)));
+    Str.lower(Buf.bytes(ADR(b)));
+    return Str.find(Buf.bytes(ADR(a)), Buf.bytes(ADR(b))) >= 0;
+end;
+
+(* /notes forget: the note numbered what, if it is a number, or else
+   every note that holds it, in any case, forgotten, a line "forgot:"
+   and the note added to out for each: how many. The human's say over
+   what the model carries from one session to the next, since a file
+   the model read could have asked it to keep a note. *)
+proc forgetNotes*(what: []U8; mem: ^Mem.Allocator; out: ^Buf.Buf): INT;
+var d: Json.Doc; l, kept: Strs.Vec; all: [][]U8; v: Json.Value; n: I64; i: INT; number: BOOL;
+begin
+    if not Afence.rooted or not Json.init(ADR(d), mem) then return 0; end;
+    Strs.init(ADR(l), mem);
+    Strs.init(ADR(kept), mem);
+    n, number := Str.toInt(what);
+    Astore.lock;
+    defer Astore.unlock;
+    v := readNotes(ADR(d), mem, ADR(l));
+    all := Strs.all(ADR(l));
+    for i := 0 to LEN(all) - 1 do
+        if (number and (n = i + 1)) or (not number and holdsFold(all[i], what, mem)) then
+            if out^.len > 0 then Buf.add(out, '\n'); end;
+            Fmt.write(out, "forgot: {}", [Fmt.str(all[i])]);
+        else
+            Strs.push(ADR(kept), all[i]);
+        end;
+    end;
+    if kept.len < l.len then writeNotes(ADR(d), v, Strs.all(ADR(kept)), mem); end;
+    return l.len - kept.len;
+end;
+
 (* The module's test, in build/ahead, which it makes. *)
 
 var failed: BOOL; mem: Arena.Arena; seen: Buf.Buf;

@@ -5,7 +5,8 @@
    the conversation's own system prompt in their place; the workspace,
    where the model is and when; the human's context files; the
    project's map; the project's notes; the facts the human asked arno
-   to remember; and what arno is.
+   to remember; and what arno is, with the commands and modes the human
+   has. The mode's instructions, or a worker's, end it; Agent adds them.
 
    What describes the human or the project rather than the conversation,
    the context files, the map and the remembered facts, is found once,
@@ -28,16 +29,75 @@
    the provider with every request: the list shows what that would be
    before anything is sent.
 
-   Depends on Aahead (the map and the notes), Afence, Astore (arno's
-   directory, for memory.json), Atools (how the human is asked), Awire
-   (the provider) and rjson's Json. Leaves out what comes with later
-   stages: the commands and modes the human has, which the screen
-   brings; the scratch directory and the stage; te. *)
+   The commands and the modes are written down once, here, in Commands
+   and Modes: /help shows the same tables the model reads, so that
+   neither drifts from what arno does.
+
+   Depends on Aahead (the map and the notes), Amemory (the facts),
+   Afence, Astore (the date), Atools (how the human is asked) and Awire
+   (the provider). Leaves out what comes with later stages: the scratch
+   directory and the stage; te. *)
 module Aprompt;
-import Aahead, Afence, Astore, Atools, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
+import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
     Strs := Vec([]U8);
 
+type
+    (* How the model is to work, which the human picks. review and
+       improve only look: they aren't offered the tools that change
+       files, so that a review can't turn into changes nobody asked for. *)
+    Mode* = (chat, review, improve, pair);
+
+    ModeInfo* = record
+        name*: []U8;
+        hint*: []U8;   (* what it is for, as /help shows it *)
+        text*: []U8;   (* what the model is told *)
+    end;
+
+    Command* = record
+        name*: []U8;
+        args*: []U8;   (* its argument, [in brackets] if it may be left out; "" for none *)
+        desc*: []U8;
+    end;
+
 const
+    Modes*: [4]ModeInfo = [
+        {name: "chat", hint: "questions, explanations, small edits",
+            text: "Mode: chat. Answer what is asked: explain, compare, discuss. Do not propose patches, " +
+            "sketches or lists of what could be changed unless the human asks for a change; then keep it small."},
+        {name: "review", hint: "review changes or named code for bugs; no edits",
+            text: "Mode: code review. Review what the human names, or else the uncommitted changes (git status " +
+            "and git diff). Report concrete problems, most severe first: bugs, then risks, then clarity. Cite " +
+            "path:line and say why each matters. If nothing is wrong, say so."},
+        {name: "improve", hint: "propose simplifications and clean-ups; no edits",
+            text: "Mode: suggest improvements. Study the code the human points at and propose a few specific " +
+            "improvements (simpler, faster, clearer), each with a short reason and a small sketch. Prefer " +
+            "removing code to adding it."},
+        {name: "pair", hint: "build a feature together, step by step",
+            text: "Mode: pairing on a feature. Make sure you understand the goal; ask when it is ambiguous. Read " +
+            "the relevant code, propose a short plan, then carry it out in small edits, one step at a time, and " +
+            "stop after each step so the human can check it."}];
+
+    Commands*: []Command = [
+        {name: "/help", args: "", desc: "keys and commands"},
+        {name: "/new", args: "", desc: "start a new conversation"},
+        {name: "/clear", args: "", desc: "trim history to the first exchange"},
+        {name: "/compact", args: "[FOCUS]", desc: "replace history with a summary of it"},
+        {name: "/list", args: "[WORD]", desc: "recent conversations, filtered by title"},
+        {name: "/load", args: "N|ID|WORD", desc: "resume a conversation"},
+        {name: "/export", args: "[N|ID]", desc: "print a conversation as JSON"},
+        {name: "/rename", args: "TITLE", desc: "name this conversation"},
+        {name: "/system", args: "[TEXT|-]", desc: "show or set this conversation's own system prompt, - for arno's"},
+        {name: "/mode", args: "[NAME]", desc: "show or set the mode"},
+        {name: "/model", args: "[NAME]", desc: "show or set the model"},
+        {name: "/provider", args: "[NAME]", desc: "show or set the provider"},
+        {name: "/tools", args: "", desc: "list tools"},
+        {name: "/usage", args: "", desc: "tokens and cost of this session"},
+        {name: "/remember", args: "[#tag,...] FACT", desc: "remember a fact, for every future conversation"},
+        {name: "/forget", args: "TAG|WORD", desc: "forget memories matching a tag or word"},
+        {name: "/my-memory", args: "[TAG]", desc: "list remembered facts"},
+        {name: "/notes", args: "[forget N|WORD]", desc: "list the model's notes on this project, or forget some"},
+        {name: "/quit", args: "", desc: "leave (also ^D)"}];
+
     MaxDepth = 5;   (* files a context file brings, and they bring, and so on *)
     Names: [][]U8 = ["AGENTS.md", "CLAUDE.md"];
 
@@ -224,36 +284,6 @@ begin
     end;
 end;
 
-(* The remembered facts *)
-
-(* memory.json's facts, a line each with their tags, as a section of
-   the prompt, added to out; nothing if there are none. The file is an
-   array of {"fact", "tags", "created"}. *)
-proc memory(mem: ^Mem.Allocator; out: ^Buf.Buf);
-var d: Json.Doc; path, text: Buf.Buf; v, m, tags: Json.Value; i, k: INT;
-begin
-    Buf.init(ADR(path), mem);
-    Buf.init(ADR(text), mem);
-    Buf.str(ADR(path), Astore.dir());
-    Buf.str(ADR(path), "memory.json");
-    if Files.load(Buf.bytes(ADR(path)), ADR(text)) # 0 then return; end;
-    if not Json.init(ADR(d), mem) then return; end;
-    v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
-    if Json.len(ADR(d), v) = 0 then return; end;
-    Buf.str(out, "# Remembered facts\nAbout the human and this project:");
-    for i := 0 to Json.len(ADR(d), v) - 1 do
-        m := Json.item(ADR(d), v, i);
-        Buf.str(out, "\n  - ");
-        Buf.str(out, Json.text(ADR(d), Json.member(ADR(d), m, "fact")));
-        tags := Json.member(ADR(d), m, "tags");
-        for k := 0 to Json.len(ADR(d), tags) - 1 do
-            if k = 0 then Buf.str(out, " ["); else Buf.add(out, ','); end;
-            Buf.str(out, Json.text(ADR(d), Json.item(ADR(d), tags, k)));
-        end;
-        if Json.len(ADR(d), tags) > 0 then Buf.add(out, ']'); end;
-    end;
-end;
-
 (* The prompt *)
 
 (* The context files of home, the home directory, made p's section, as
@@ -300,15 +330,35 @@ begin
     defer Arena.done(ADR(ar));
     readContext(p, Sys.env("HOME"), mode, h, say, ADR(ar.base));
     if map then Aahead.map(ADR(ar.base), ADR(p^.map)); end;
-    memory(ADR(ar.base), ADR(p^.memory));
+    Amemory.section(ADR(ar.base), ADR(p^.memory));
 end;
 
-(* The system prompt of c's next request, added to out: c's own system
-   prompt, or Own, then the sections. mem is for the work, say for a
-   note dropped as stale. *)
-proc write*(p: ^Prompt; c: ^Astore.Conv; prov: ^Awire.Prov; mem: ^Mem.Allocator; say: Aahead.Said; arg: ^U8;
-    out: ^Buf.Buf);
-var dir: []U8; e, at: INT;
+(* p's remembered facts read again, after the human changed them. *)
+proc remembered*(p: ^Prompt);
+var ar: Arena.Arena;
+begin
+    if not Arena.init(ADR(ar), 1 shl 24) then return; end;
+    defer Arena.done(ADR(ar));
+    Buf.reset(ADR(p^.memory));
+    Amemory.section(ADR(ar.base), ADR(p^.memory));
+end;
+
+(* Command c as /help shows it, its argument after its name, added to b. *)
+proc usage*(c: Command; b: ^Buf.Buf);
+begin
+    Buf.str(b, c.name);
+    if LEN(c.args) > 0 then
+        Buf.add(b, ' ');
+        Buf.str(b, c.args);
+    end;
+end;
+
+(* The system prompt of c's next request, in mode, added to out: c's
+   own system prompt, or Own, then the sections. mem is for the work,
+   say for a note dropped as stale. *)
+proc write*(p: ^Prompt; c: ^Astore.Conv; prov: ^Awire.Prov; mode: Mode; mem: ^Mem.Allocator; say: Aahead.Said;
+    arg: ^U8; out: ^Buf.Buf);
+var dir: []U8; e, at, i: INT;
 begin
     if LEN(c^.system) > 0 then Buf.str(out, c^.system); else Buf.str(out, Own); end;
     Buf.str(out, "\n\n# Workspace\nWorking directory: ");
@@ -333,7 +383,16 @@ begin
         Buf.str(out, "\n\n");
         Buf.str(out, Buf.bytes(ADR(p^.memory)));
     end;
-    Fmt.write(out, "\n\n# About Arno\nYou run inside Arno, a small terminal harness. Provider {}, model {}. The " +
+    Buf.str(out, "\n\n# About Arno\nYou run inside Arno, a small terminal harness. The human types messages, or " +
+        "commands that you cannot run yourself:");
+    for i := 0 to LEN(Commands) - 1 do
+        Buf.str(out, "\n  ");
+        usage(Commands[i], out);
+        Fmt.write(out, " - {}", [Fmt.str(Commands[i].desc)]);
+    end;
+    Fmt.write(out, "\nModes (current: {}):", [Fmt.str(Modes[INT(mode)].name)]);
+    for i := 0 to LEN(Modes) - 1 do Fmt.write(out, "\n  {} - {}", [Fmt.str(Modes[i].name), Fmt.str(Modes[i].hint)]); end;
+    Fmt.write(out, "\nProvider {}, model {}. The " +
         "config file is ~/.config/arno/config; arno(1) documents its keys. Your file tools reach {} and below " +
         "without asking; for any other path the human is asked first, and a refusal is final: do not look for " +
         "a way around it. When asked how Arno works, answer from this.",

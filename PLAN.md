@@ -145,6 +145,30 @@ one or more commits that build with `-Werror`.
 3. **The full screen** on rtui: transcript, input, status line, copy
    mode, completion of `/` and `@`, `@path` attachments, `^V` images,
    `^X ^E`.
+   - [x] a. `Asession`, the session: `arno` with no prompt reads a
+     line at a time, each a turn of the same conversation or a
+     command, and the one-shot run is a session of one turn. The
+     commands that need no screen: `/help`, `/new`, `/clear`,
+     `/compact`, `/list`, `/load`, `/export`, `/rename`, `/system`,
+     `/mode`, `/model`, `/provider`, `/tools`, `/usage`, `/remember`,
+     `/forget`, `/my-memory`, `/notes`, `/quit`; `Amemory` keeps the
+     facts. The modes end the system prompt, and review and improve
+     aren't offered edit, move and remove; Aprompt's tables of commands
+     and modes serve `/help` and the model alike. `/clear` keeps the
+     first exchange whole, its calls and results with it, where the
+     Pascal arno kept two messages, which could leave a call without
+     its result. A new id taken in the same second as a saved one
+     gets `-2`, where the Pascal arno wrote over it. A turn's budget
+     counts each request at its own model's price, a worker's too.
+     `/models` waits for completion, `/test` and `/stage` for stage 4,
+     `/clear-cache` for a cache of tool results, if one is wanted.
+   - [ ] b. The screen on rtui: the Board, the transcript, the input,
+     the status line (with the context in use, which `/usage` then
+     shows too), a turn on its own thread waking the loop, questions
+     and their detail, shift-tab for the mode.
+   - [ ] c. The input's extras: history, completion of `/` and `@`
+     (and `/models`), `@path` attachments, `^V` images, `^X ^E`.
+   - [ ] d. Copy mode.
 4. **Stage, jail, shell.** The stage worktree; the jail from
    unprivileged namespaces, with `eval/jailtest`'s 25 escapes kept and
    cases that must fail added; `run` and `shell`.

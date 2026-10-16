@@ -1,13 +1,15 @@
 (* Arno: a harness for language models in the terminal. This is the
-   program; for now it asks one question and leaves:
+   program:
 
+       arno                         a session, a line of input at a time
        arno PROMPT ...              a new conversation of one turn
        arno --resume ID PROMPT ...  one more turn of the saved one, ID
        arno -h | --help             the usage
 
-   The prompt is the arguments, joined by blanks. The turn runs with
-   the tools (Agent). The model's text goes to standard output as it
-   comes; ^C stops it, keeping what came. Each tool call, and what came
+   The prompt is the arguments, joined by blanks. ID may also be a
+   number from /list, or a word of a title, as /load takes. The turn
+   runs with the tools (Agent). The model's text goes to standard
+   output as it comes; ^C stops it, keeping what came. Each tool call, and what came
    of it, goes to standard error, a line each, and so does a question
    for the human, a path outside the project or a change to a file,
    after the change's diff; the answer is a line of standard input: y,
@@ -19,14 +21,21 @@
    request that failed or a conversation not found, 2 for a mistake on
    the command line, 130 for a turn stopped by ^C.
 
-   Depends on Agent, Aconf, Astore, Awire and Amsg. Leaves out, for the
-   stages after this one, what the Pascal arno's one-shot run has
-   besides: the screen, --serve and --attach. *)
+   With no prompt, arno runs a session (Asession): each line of
+   standard input is a message to the model, or a command such as /help
+   or /load; what a command says goes to standard output, an error to
+   standard error. ^C stops a turn, not the session; the end of the
+   input, or /quit, ends it. On a terminal, a "> " asks for each line.
+
+   Depends on Asession and Awire. Leaves out, for the stages after
+   this one, what the Pascal arno has besides: the screen, --serve and
+   --attach. *)
 module Arno;
-import Agent, Atools, Aconf, Astore, Awire, Amsg, Buf, Str, Sys, Files, Out, Heap, Math, Msgs := Vec(Amsg.Msg);
+import Asession, Awire, Buf, Str, Sys, Files, Out, Heap;
 
 const Usage = `
-    usage: arno [prompt ...]
+    usage: arno
+           arno prompt ...
            arno --resume id prompt ...
            arno -h | --help
     `;
@@ -110,16 +119,27 @@ end;
 
 var answer: Buf.Buf;   (* the last line read from standard input *)
 
-(* A line of standard input, without its line feed, into answer. *)
-proc readLine: []U8;
-var c: [1]U8;
+(* A line of standard input, without its line feed, into answer; false
+   at the end of the input, with nothing read. A ^C while waiting for
+   it drops what was typed and waits again. *)
+proc readLine: ([]U8, BOOL);
+var c: [1]U8; n: INT;
 begin
     Buf.reset(ADR(answer));
-    while Sys.read(Sys.stdin, c) = 1 do
-        if c[0] = '\n' then break; end;
-        Buf.add(ADR(answer), c[0]);
+    while true do
+        n := Sys.read(Sys.stdin, c);
+        if n = 1 then
+            if c[0] = '\n' then break; end;
+            Buf.add(ADR(answer), c[0]);
+        elsif (n < 0) and Sys.came(Sys.sigInt) then
+            Buf.reset(ADR(answer));
+            Out.ln;
+            Out.flush;
+        else
+            return Buf.bytes(ADR(answer)), answer.len > 0;
+        end;
     end;
-    return Buf.bytes(ADR(answer));
+    return Buf.bytes(ADR(answer)), true;
 end;
 
 (* The human's answer to question, after detail: one of keys, the first
@@ -129,21 +149,56 @@ var s: []U8;
 begin
     breakLine;
     say(detail, question, " [y/N] ");
-    s := readLine();
+    s, _ := readLine();
     if (LEN(s) > 0) and (Str.find(keys, s[0..1]) >= 0) then return s[0]; end;
     return 'n';
 end;
 
 (* After a no, why: the next line of standard input. *)
 proc why(_arg: ^U8): []U8;
+var s: []U8;
 begin
     say("why not? (Enter skips) ", "", "");
-    return readLine();
+    s, _ := readLine();
+    return s;
+end;
+
+(* What a command says: to standard output; an error to standard
+   error. *)
+proc shown(s: []U8; bad: BOOL; _arg: ^U8);
+begin
+    breakLine;
+    if bad then
+        say("arno: ", s, "\n");
+    else
+        Out.str(s);
+        Out.ln;
+        Out.flush;
+    end;
+end;
+
+(* The session: a line at a time, until the input ends or /quit. *)
+proc session(s: ^Asession.Session): INT;
+var text: []U8; tty, more: BOOL;
+begin
+    tty := Sys.isTerminal(Sys.stdin);
+    Asession.prepare(s);
+    say("arno · ", s^.conf.prov.model, " via ");
+    say(s^.conf.prov.name, " · /help for commands\n", "");
+    while true do
+        if tty then say("> ", "", ""); end;
+        text, more := readLine();
+        if not more then break; end;
+        stopped := false;
+        ended := true;
+        if not Asession.line(s, text) then break; end;
+        breakLine;
+    end;
+    return 0;
 end;
 
 proc main*: INT;
-var conf: Aconf.Conf; c: Astore.Conv; first, i: INT; prompt, failure, id: Buf.Buf; m: ^Amsg.Msg;
-    a: Agent.Agent; n: I64; mode: []U8; ok: BOOL; err: ERROR;
+var s: Asession.Session; first, i: INT; prompt, failure: Buf.Buf; err: ERROR;
 begin
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
         Out.str(Usage);
@@ -162,52 +217,29 @@ begin
     end;
     (* an empty prompt is a mistake of the script that made it, a
        prompt file never written, not a question for a model *)
-    if (ARGC() < 2) or (LEN(Str.trim(Buf.bytes(ADR(prompt)))) = 0) then
+    if (ARGC() >= 2) and (LEN(Str.trim(Buf.bytes(ADR(prompt)))) = 0) then
         say("arno: no prompt\n", "", "");
         _ := Sys.write(Sys.stderr, Usage);
         return 2;
     end;
 
-    Aconf.load(ADR(conf));
-    if conf.warnings.len > 0 then say(Buf.bytes(ADR(conf.warnings)), "", ""); end;
-    Buf.init(ADR(id), Heap.heap);
-    if first = 3 then
-        if Astore.load(ADR(c), Files.arg(2)) # nil then
-            say("arno: no conversation ", Files.arg(2), "\n");
-            return 1;
-        end;
-    else
-        Astore.newId(ADR(id));
-        Astore.init(ADR(c), Buf.bytes(ADR(id)));
-    end;
-    Astore.setModel(ADR(c), conf.prov.model);
-    m := Msgs.add(ADR(c.msgs));
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, Str.trim(Buf.bytes(ADR(prompt))));
-
-    Buf.init(ADR(failure), Heap.heap);
     Buf.init(ADR(answer), Heap.heap);
-    Agent.init(ADR(a), ADR(conf.prov),
-        {text: show, call: called, result: answered, note: told, ask: asked, why: why, stopped: interrupted});
-    n, ok := Str.toInt(Aconf.get(ADR(conf), "max_steps"));
-    if ok and (n > 0) then a.maxSteps := INT(n); end;
-    n, ok := Str.toInt(Aconf.get(ADR(conf), "prune"));
-    if ok and (n >= 0) then a.prune := INT(n); end;
-    a.budget, _ := Math.toReal(Aconf.get(ADR(conf), "turn_budget"));
-    a.prefetch := Aconf.get(ADR(conf), "prefetch") # "no";
-    a.worker := Aconf.get(ADR(conf), "worker");
-    Atools.search(Aconf.get(ADR(conf), "searxng"));
-    mode := Aconf.get(ADR(conf), "context_files");
-    if LEN(mode) = 0 then mode := "ask"; end;
-    Agent.prepare(ADR(a), mode, Aconf.get(ADR(conf), "project_map") # "no");
+    Asession.init(ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
+        stopped: interrupted}, shown, nil);
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    err := Agent.turn(ADR(a), ADR(c), ADR(failure));
+    if ARGC() < 2 then return session(ADR(s)); end;
+    if (first = 3) and not Asession.resume(ADR(s), Files.arg(2)) then
+        say("arno: no conversation ", Files.arg(2), "\n");
+        return 1;
+    end;
+    Asession.prepare(ADR(s));
+    Buf.init(ADR(failure), Heap.heap);
+    err := Asession.turn(ADR(s), Str.trim(Buf.bytes(ADR(prompt))), ADR(failure));
     breakLine;
-    if Astore.save(ADR(c)) # nil then say("arno: the conversation can't be saved in ", Astore.dir(), "\n"); end;
     if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(failure)), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;
-    say("arno --resume ", c.id, " PROMPT goes on from here\n");
+    say("arno --resume ", s.conv.id, " PROMPT goes on from here\n");
     if err = Awire.Failed then return 1; end;
     if err = Awire.Stopped then return 130; end;
     return 0;

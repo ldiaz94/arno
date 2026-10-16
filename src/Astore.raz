@@ -37,7 +37,7 @@
    the agent keeps beside the conversations (memory, notes, tests, the
    tool cache), and each conversation's scratch directory. *)
 module Astore;
-import Amsg, Json, Buf, Str, Sys, Files, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
+import Amsg, Json, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
     Items := Vec(Item), Order := Sort(Item, before);
 
 type
@@ -171,22 +171,6 @@ begin
     Buf.add(b, U8('0' + n mod 10));
 end;
 
-(* A new conversation's id, now in local time, into b. *)
-proc newId*(b: ^Buf.Buf);
-var secs: I64; tm: Tm;
-begin
-    secs := Sys.now() div 1000000000;
-    _ := localtime_r(ADR(secs), ADR(tm));
-    two(b, tm.year div 100 + 19);
-    two(b, tm.year mod 100);
-    two(b, tm.mon + 1);
-    two(b, tm.mday);
-    Buf.add(b, '-');
-    two(b, tm.hour);
-    two(b, tm.min);
-    two(b, tm.sec);
-end;
-
 (* Today's date, in local time, as yyyy-mm-dd, added to b. *)
 proc date*(b: ^Buf.Buf);
 var secs: I64; tm: Tm;
@@ -207,6 +191,45 @@ end;
 proc fit(id: []U8): BOOL;
 begin
     return (LEN(id) > 0) and (id[0] # '.') and (Str.find(id, "/") < 0);
+end;
+
+(* The path of the file of the conversation id, into b, made empty;
+   "" if id can't be one. *)
+proc file*(id: []U8; b: ^Buf.Buf): []U8;
+begin
+    Buf.reset(b);
+    if not fit(id) then return ""; end;
+    Buf.str(b, dir());
+    Buf.str(b, id);
+    Buf.str(b, ".json");
+    return Buf.bytes(b);
+end;
+
+(* A new conversation's id, now in local time, into b: yyyymmdd-hhmmss,
+   and -2, -3 and so on after it while a conversation saved has it, as
+   one begun in the same second may. *)
+proc newId*(b: ^Buf.Buf);
+var secs: I64; tm: Tm; path: Buf.Buf; n, at: INT;
+begin
+    Buf.init(ADR(path), Heap.heap);
+    defer Buf.done(ADR(path));
+    secs := Sys.now() div 1000000000;
+    _ := localtime_r(ADR(secs), ADR(tm));
+    two(b, tm.year div 100 + 19);
+    two(b, tm.year mod 100);
+    two(b, tm.mon + 1);
+    two(b, tm.mday);
+    Buf.add(b, '-');
+    two(b, tm.hour);
+    two(b, tm.min);
+    two(b, tm.sec);
+    at := b^.len;
+    n := 1;
+    while Sys.access(file(Buf.bytes(b), ADR(path)), {}) = 0 do
+        INC(n);
+        b^.len := at;
+        Fmt.write(b, "-{}", [Fmt.int(n)]);
+    end;
 end;
 
 (* conversations *)
@@ -264,7 +287,7 @@ end;
    brought, which follow it after a blank line as <file path="...">
    blocks; on one line; 60 bytes of it at most, cut where a character
    starts. *)
-proc autoTitle(c: ^Conv; b: ^Buf.Buf);
+proc autoTitle*(c: ^Conv; b: ^Buf.Buf);
 var msgs: []Amsg.Msg; i, n: INT; s: []U8;
 begin
     msgs := Msgs.all(ADR(c^.msgs));
@@ -525,8 +548,8 @@ begin
     Out.ln;
 end;
 
-(* The file saved as id, into b. *)
-proc file(id: []U8; b: ^Buf.Buf): []U8;
+(* The text of the file saved as id, into b. *)
+proc saved(id: []U8; b: ^Buf.Buf): []U8;
 var path: Buf.Buf;
 begin
     Buf.init(ADR(path), Heap.heap);
@@ -602,10 +625,10 @@ begin
         use(from);
         err := load(ADR(c), id);
         if err = nil then
-            _ := file(id, ADR(was));
+            _ := saved(id, ADR(was));
             use(Test);
             if save(ADR(c)) # nil then fail("save"); end;
-            if not same(file(id, ADR(now)), Buf.bytes(ADR(was)), LEN(c.title) = 0) then fail(paths[i]); end;
+            if not same(saved(id, ADR(now)), Buf.bytes(ADR(was)), LEN(c.title) = 0) then fail(paths[i]); end;
         elsif err # Unreadable then
             fail(paths[i]);
         end;
@@ -635,7 +658,7 @@ begin
     Amsg.setText(m, "I see.");
     Strs.push(ADR(c.turns), Amsg.keep(`{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}`));
     if save(ADR(c)) # nil then fail("save"); end;
-    expect("an untitled conversation's file", file("20261016-120000", ADR(b)),
+    expect("an untitled conversation's file", saved("20261016-120000", ADR(b)),
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}],"turns":[{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}]}`);
@@ -650,7 +673,7 @@ begin
     setSystem(ADR(c), "Be brief.");
     Strs.reset(ADR(c.turns));
     if save(ADR(c)) # nil then fail("save"); end;
-    expect("a titled conversation's file", file("20261016-120000", ADR(b)),
+    expect("a titled conversation's file", saved("20261016-120000", ADR(b)),
         `{"title":"a look","named":true,"model":"deepseek-v4.1-flash","system":"Be brief.","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}]}`);
@@ -662,7 +685,7 @@ begin
 
     if retitle("20261016-120000", "") # nil then fail("retitle"); end;
     if resystem("20261016-120000", "") # nil then fail("resystem"); end;
-    expect("retitled and its system prompt dropped", file("20261016-120000", ADR(b)),
+    expect("retitled and its system prompt dropped", saved("20261016-120000", ADR(b)),
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}]}`);
@@ -671,7 +694,7 @@ begin
     for i := 1 to 59 do Buf.add(ADR(long), 'a'); end;
     Buf.str(ADR(long), "é and more");
     said("20261016-120001", Buf.bytes(ADR(long)));   (* saved within a tick of 120002, below *)
-    if not Str.hasPrefix(file("20261016-120001", ADR(b)), `{"title":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","named":false`) then
+    if not Str.hasPrefix(saved("20261016-120001", ADR(b)), `{"title":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","named":false`) then
         fail("a title cut inside a character");
         Out.str(Buf.bytes(ADR(b)));
         Out.ln;

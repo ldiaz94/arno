@@ -9,6 +9,11 @@
    a thread of its own and passes on what it is told to the loop that
    draws.
 
+   The mode, which the human picks, ends the system prompt with its
+   instructions, and says whether the tools that change files are
+   offered. What each request costs is counted, at its model's list
+   price, for /usage and for the turn's budget.
+
    A turn ends early, the model asked to say where it got to without
    calling more tools, when it has used its steps (maxSteps, config's
    max_steps), when it has spent what config's turn_budget allows, in
@@ -66,10 +71,14 @@ type
         budget*: F64;         (* dollars a turn may spend, at list price; 0 for no limit *)
         prefetch*: BOOL;      (* definitions attached to the human's message *)
         worker*: []U8;        (* the model a worker runs on; "" for no workers *)
+        mode*: Aprompt.Mode;
         working: BOOL;        (* the turn under way is a worker's *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
-        prompt: Aprompt.Prompt;
+        prompt*: Aprompt.Prompt;
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
+        requests*: INT;       (* how many there were *)
+        spent*: F64;          (* dollars, at list price, of those priced *)
+        unpriced*: INT;       (* those whose model has no known price *)
         human: Atools.Human;  (* the front's ask and why *)
         client: Http.Client;
         mem: Arena.Arena;     (* a call's work *)
@@ -97,7 +106,13 @@ const
     (* what a turn over its budget asks for *)
     BudgetAsk = "This turn has spent what the human allows a turn. Do not call any tools. In a few " +
         "lines, say what is done, what is not, and what you would do next.";
-    (* the end of a worker's system prompt *)
+    (* what /compact asks for, and what stands for the reply to the summary *)
+    CompactAsk* = "Summarize our conversation so far so that it can replace the full history: I will continue " +
+        "working with you from your summary alone. Include the goal, decisions made and why, files touched and " +
+        "their current state, what is done, what is left, and any facts or preferences I stated. Leave out tool " +
+        "output, dead ends and pleasantries. Use plain prose and short lists, no preamble. Do not call any tools.";
+    CompactAck* = "Understood. I have the summary and will continue from it.";
+    (* the end of a worker's system prompt, in place of the mode's *)
     WorkerText = "# Worker\nYou are a worker: the session that leads gave you one task, the message below, " +
         "and sees only your final report. Do that task completely: read what you need, make the changes, " +
         "build, and run check. Earlier workers' reports, when the brief has them, are what is known: use the " +
@@ -141,14 +156,18 @@ begin
     Aprompt.load(ADR(a^.prompt), mode, map, ADR(a^.human), a^.front.note);
 end;
 
-(* The system prompt of c's next request, made again in sys. *)
+(* The system prompt of c's next request, made again in sys: it ends
+   with the mode's instructions, or a worker's. *)
 proc system(a: ^Agent; c: ^Astore.Conv; sys: ^Buf.Buf);
 begin
     Buf.reset(sys);
-    Aprompt.write(ADR(a^.prompt), c, a^.prov, ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
+    Aprompt.write(ADR(a^.prompt), c, a^.prov, a^.mode, ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
+    Buf.str(sys, "\n\n");
     if a^.working then
-        Buf.str(sys, "\n\n");
         Buf.str(sys, WorkerText);
+    else
+        Buf.str(sys, "# Mode\n");
+        Buf.str(sys, Aprompt.Modes[INT(a^.mode)].text);
     end;
     Arena.reset(ADR(a^.mem));
 end;
@@ -226,25 +245,23 @@ begin
     Arena.reset(ADR(a^.mem));
 end;
 
-(* What a request cost, less what it had cost at the start. *)
-proc spent(now, start: Awire.Usage): Awire.Usage;
-begin
-    return {inp: now.inp - start.inp, cached: now.cached - start.cached, written: now.written - start.written,
-        out: now.out - start.out};
-end;
-
 (* The model asked, once, with c's messages; its reply added to them,
-   unless the request failed with nothing said. *)
+   unless the request failed with nothing said. What it cost is
+   counted, at the price of the model asked, a worker's or the lead's. *)
 proc ask(a: ^Agent; c: ^Astore.Conv; sys: []U8; why: ^Buf.Buf): ERROR;
-var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; err: ERROR;
+var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; err: ERROR;
 begin
     r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(ADR(c^.msgs)),
-        tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0)), emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
+        tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0), a^.mode in {Aprompt.chat, Aprompt.pair}),
+        emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
     err := Awire.chat(ADR(r), ADR(reply), ADR(u), why);
     INC(a^.used.inp, u.inp);
     INC(a^.used.cached, u.cached);
     INC(a^.used.written, u.written);
     INC(a^.used.out, u.out);
+    INC(a^.requests);
+    price, priced := Aprice.price(a^.prov);
+    if priced then a^.spent := a^.spent + Aprice.cost(price, u); else INC(a^.unpriced); end;
     if (err = nil) or (LEN(reply.text) > 0) then
         Msgs.push(ADR(c^.msgs), reply);
     else
@@ -422,38 +439,51 @@ begin
     return bad;
 end;
 
+(* The model asked once more, with c's system prompt, by request, a
+   message of the human's that c doesn't keep: what it said, without
+   its calls, into reply. The tools are still offered, so that the
+   cache holds. *)
+proc once*(a: ^Agent; c: ^Astore.Conv; request: []U8; reply, why: ^Buf.Buf): ERROR;
+var sys: Buf.Buf; m: ^Amsg.Msg; n: INT; err: ERROR;
+begin
+    Buf.init(ADR(sys), Heap.heap);
+    defer Buf.done(ADR(sys));
+    system(a, c, ADR(sys));
+    m := Msgs.add(ADR(c^.msgs));
+    Amsg.init(m, Amsg.Role.user);
+    Amsg.setText(m, request);
+    n := c^.msgs.len;
+    err := ask(a, c, Buf.bytes(ADR(sys)), why);
+    (* the request taken out, and with it the reply *)
+    if c^.msgs.len > n then
+        m := ADR(Msgs.all(ADR(c^.msgs))[n]);
+        Buf.str(reply, m^.text);
+        Amsg.free(m);
+    end;
+    Amsg.free(ADR(Msgs.all(ADR(c^.msgs))[n - 1]));
+    Msgs.resize(ADR(c^.msgs), n - 1);
+    return err;
+end;
+
 (* The model asked, by a message of the human's that the conversation
    doesn't keep, to say where it got to, for the reason why: its reply
-   kept without calls. The tools are still offered, so that the
-   request is the turn's last one and one more step, and the cache
-   holds. *)
-proc handBack(a: ^Agent; c: ^Astore.Conv; sys, reason, request: []U8; why: ^Buf.Buf): ERROR;
-var b: Buf.Buf; m: ^Amsg.Msg; reply: Amsg.Msg; n: INT; err: ERROR;
+   kept without calls. The request is the turn's last one and one more
+   step. *)
+proc handBack(a: ^Agent; c: ^Astore.Conv; reason, request: []U8; why: ^Buf.Buf): ERROR;
+var b: Buf.Buf; m: ^Amsg.Msg; err: ERROR;
 begin
     Buf.init(ADR(b), Heap.heap);
     defer Buf.done(ADR(b));
     Buf.str(ADR(b), reason);
     Buf.str(ADR(b), "; asking the model to hand back");
     note(a, Buf.bytes(ADR(b)));
-    m := Msgs.add(ADR(c^.msgs));
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, request);
-    n := c^.msgs.len;
-    err := ask(a, c, sys, why);
-    (* the request taken out, and with it the reply, which comes back
-       without its calls *)
-    if c^.msgs.len > n then
-        reply := Msgs.all(ADR(c^.msgs))[n];
-        Msgs.resize(ADR(c^.msgs), n);
-    end;
-    Amsg.free(ADR(Msgs.all(ADR(c^.msgs))[n - 1]));
-    Msgs.resize(ADR(c^.msgs), n - 1);
-    if LEN(reply.text) > 0 then
+    Buf.reset(ADR(b));
+    err := once(a, c, request, ADR(b), why);
+    if b.len > 0 then
         m := Msgs.add(ADR(c^.msgs));
         Amsg.init(m, Amsg.Role.assistant);
-        Amsg.setText(m, reply.text);
+        Amsg.setText(m, Buf.bytes(ADR(b)));
     end;
-    if reply.role = Amsg.Role.assistant then Amsg.free(ADR(reply)); end;
     return err;
 end;
 
@@ -463,8 +493,7 @@ end;
    model said is in c either way, what it said for this turn alone
    dropped (Amsg.settle). *)
 proc turn*(a: ^Agent; c: ^Astore.Conv; why: ^Buf.Buf): ERROR;
-var sys, b: Buf.Buf; first, step, failing, calls, i, floor: INT; m: []Amsg.Msg; start: Awire.Usage;
-    price: Aprice.Price; priced: BOOL; err: ERROR;
+var sys, b: Buf.Buf; first, step, failing, calls, i, floor: INT; m: []Amsg.Msg; start: F64; err: ERROR;
 begin
     first := c^.msgs.len;
     forget(a);
@@ -477,8 +506,7 @@ begin
         for i := 0 to a^.reports.len - 1 do Str.free(Heap.heap, Strs.all(ADR(a^.reports))[i]); end;
         Strs.reset(ADR(a^.reports));
     end;
-    start := a^.used;
-    price, priced := Aprice.price(a^.prov);
+    start := a^.spent;
     failing := 0;
     floor := 0;
     err := nil;
@@ -498,14 +526,14 @@ begin
         if stopped(a) then err := Awire.Stopped; break; end;
         if step = a^.maxSteps then
             Fmt.write(ADR(b), "{} steps used", [Fmt.int(a^.maxSteps)]);
-            err := handBack(a, c, Buf.bytes(ADR(sys)), Buf.bytes(ADR(b)), StepsAsk, why);
+            err := handBack(a, c, Buf.bytes(ADR(b)), StepsAsk, why);
         elsif failing = FailSteps then
             Fmt.write(ADR(b), "{} steps of failed calls in a row", [Fmt.int(FailSteps)]);
-            err := handBack(a, c, Buf.bytes(ADR(sys)), Buf.bytes(ADR(b)), StuckAsk, why);
+            err := handBack(a, c, Buf.bytes(ADR(b)), StuckAsk, why);
             break;
-        elsif (a^.budget > 0.0) and priced and (Aprice.cost(price, spent(a^.used, start)) > a^.budget) then
+        elsif (a^.budget > 0.0) and (a^.spent - start > a^.budget) then
             Fmt.write(ADR(b), "turn budget of ${} spent", [Fmt.real(a^.budget, 2)]);
-            err := handBack(a, c, Buf.bytes(ADR(sys)), Buf.bytes(ADR(b)), BudgetAsk, why);
+            err := handBack(a, c, Buf.bytes(ADR(b)), BudgetAsk, why);
             break;
         end;
     end;

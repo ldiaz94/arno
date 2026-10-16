@@ -1,8 +1,9 @@
 // oneshot.cn stub arno: arno asked one question from the command
 // line, as a script would ask it, of stub, test/Astub.raz
-// (build/stub), the model's server it stands in for. arno must:
+// (build/stub), the model's server it stands in for, and then a
+// session of them on its standard input. arno must:
 //
-//   - give its usage for -h, and for no prompt, with status 2;
+//   - give its usage for -h, and for an empty prompt, with status 2;
 //   - stream the reply to the standard output, and save the
 //     conversation, saying on the standard error how to go on;
 //   - go on with --resume, the earlier turns sent again;
@@ -18,7 +19,12 @@
 //     refuse a call made twice, and hand back after four steps of
 //     failed calls, or at the step cap; ask about a path outside the
 //     project, and about a change after its diff, a line of the
-//     standard input the answer, and the next the reason for a no.
+//     standard input the answer, and the next the reason for a no;
+//   - in a session, go on with the conversation from line to line,
+//     and run the commands: switch, list, load, rename, clear and
+//     compact conversations; set the mode, which the system prompt
+//     and the tools follow, and the system prompt; remember and forget
+//     facts, and the project's notes; count what the session cost.
 //
 // Run from the top of the tree, by make check; what it makes goes
 // under build/oneshot, its configuration and conversations among it.
@@ -104,9 +110,9 @@ port := started[0]
 server := started[1]
 configure([])
 
-expect(['-h'], 0, 'out', 'usage: arno [prompt ...]')
-expect([], 2, 'err', 'arno: no prompt')
+expect(['-h'], 0, 'out', 'usage: arno')
 expect(['  '], 2, 'err', 'arno: no prompt')
+expect([], 0, 'err', '/help for commands')
 
 // a new conversation: the system prompt and the question
 expect(['hello', 'there'], 0, 'out', '2 messages')
@@ -213,5 +219,64 @@ holds('an edit', 'err', 'create ' + dir + '/made? [y/N]')
 edit := '{"path":"' + dir + '/made","old":"hello","new":"bye"}'
 answering(['call', 'edit', edit], 'n' + #10 + 'not now')
 holds('a declined edit', 'out', 'the tool said: declined by user: not now. Nothing was changed')
+
+// a session: each line a turn of the same conversation, or a command
+configure([])
+answering([], 'hello' + #10 + 'again' + #10 + '/usage' + #10 + '/help' + #10 + '/nope')
+holds('a session', 'out', '2 messages')
+holds('a session', 'out', '4 messages')
+holds('/usage', 'out', 'requests  2')
+holds('/help', 'out', '/remember [#tag,...] FACT')
+holds('/help', 'out', '  review           review changes')
+holds('an unknown command', 'err', 'arno: unknown command')
+
+// conversations switched, listed, loaded, renamed and exported
+answering([], 'first' + #10 + '/rename named one' + #10 + '/new' + #10 + 'second' + #10 + '/list' + #10 +
+  '/load named' + #10 + 'more' + #10 + '/export')
+holds('/rename', 'out', 'renamed: named one')
+holds('/new', 'out', 'a new conversation')
+holds('/list', 'out', '  second')
+holds('/list', 'out', '  named one')
+holds('/load', 'out', ': named one, 2 messages')
+holds('/load', 'out', '4 messages')
+holds('/export', 'out', '{"title":"named one","named":true')
+
+// the history cleared to the first exchange, and compacted
+answering([], 'a' + #10 + 'b' + #10 + 'c' + #10 + '/clear' + #10 + 'd')
+holds('/clear', 'out', 'history cleared to the first exchange')
+if `tail -n 1 "$dir/out"` <> '4 messages' then fail('/clear: ' + `cat "$dir/out"`)
+answering([], 'a' + #10 + 'b' + #10 + '/compact' + #10 + 'c')
+holds('/compact', 'out', 'compacted 4 messages')
+last := split(`ls -t "$dir/data/arno"`)[0]
+grep -qF 'Summary of our conversation so far:\n\n6 messages' "$dir/data/arno/$last"
+if status <> 0 then fail('/compact: ' + `cat "$dir/data/arno/$last"`)
+if `tail -n 1 "$dir/out"` <> '4 messages' then fail('/compact, then a turn: ' + `cat "$dir/out"`)
+
+// the mode, in the system prompt and the tools; the system prompt
+answering([], '/mode review' + #10 + 'system' + #10 + '/tools' + #10 + '/mode nope')
+holds('/mode', 'out', 'mode: review')
+holds('/mode', 'out', 'Mode: code review')
+holds('/mode', 'out', 'Modes (current: review)')
+holds('/mode', 'err', 'arno: modes: chat review improve pair')
+holds('/tools', 'out', 'read  ')
+grep -q '^edit  ' "$dir/out"
+if status = 0 then fail('review mode offers edit')
+answering([], '/system Be brief.' + #10 + 'system' + #10 + '/system')
+holds('/system', 'out', 'Be brief.' + #10 + #10 + '# Workspace')
+holds('/system', 'out', "this conversation's own system prompt")
+
+// facts remembered and forgotten, and the project's notes
+answering([], '/remember #me,drinks likes tea' + #10 + '/my-memory' + #10 + 'system' + #10 + '/forget TEA' + #10 +
+  '/my-memory')
+holds('/remember', 'out', 'remembered: likes tea')
+holds('/my-memory', 'out', 'likes tea [me,drinks]')
+holds('/remember', 'out', '  - likes tea [me,drinks]')
+holds('/forget', 'out', 'forgot 1')
+holds('/forget', 'out', 'nothing remembered')
+answering([], '/notes' + #10 + '/notes forget Astub' + #10 + '/notes' + #10 + '/notes forget 1')
+holds('/notes', 'out', ' 1  the stub is test/Astub.raz')
+holds('/notes forget', 'out', 'forgot: the stub is test/Astub.raz')
+holds('/notes forget', 'out', 'no notes for ')
+holds('/notes forget', 'err', 'arno: no note 1')
 
 if failures > 0 then halt(1)

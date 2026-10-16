@@ -1011,10 +1011,11 @@ begin
     if out^.len = 0 then Buf.str(out, "(empty)"); end;
 end;
 
-(* The tools a request offers: Offered, less those that could only
-   fail: search without a SearXNG, note outside a project, delegate
-   unless lead, a session with a worker model, which a worker isn't. *)
-proc offered*(lead: BOOL): []Awire.Tool;
+(* The tools a request offers: Offered, less those that change files
+   unless edits, a mode's say, and those that could only fail: search
+   without a SearXNG, note outside a project, delegate unless lead, a
+   session with a worker model, which a worker isn't. *)
+proc offered*(lead, edits: BOOL): []Awire.Tool;
 var i: INT;
 begin
     Tools.reset(ADR(offer));
@@ -1023,6 +1024,7 @@ begin
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
+        | "edit", "move", "remove": if not edits then continue; end;
         | else:
         end;
         Tools.push(ADR(offer), Offered[i]);
