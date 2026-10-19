@@ -274,10 +274,10 @@ proc home(a: ^Args; s: []U8): []U8;
 var b: Buf.Buf;
 begin
     if (s # "~") and not Str.hasPrefix(s, "~/") then return s; end;
-    Buf.init(ADR(b), a^.mem);
-    Buf.str(ADR(b), Sys.env("HOME"));
-    Buf.str(ADR(b), s[1..LEN(s)]);
-    return Buf.bytes(ADR(b));
+    Buf.init(b, a^.mem);
+    Buf.str(b, Sys.env("HOME"));
+    Buf.str(b, s[1..LEN(s)]);
+    return Buf.bytes(b);
 end;
 
 (* The argument key as a path: a string, ~ made $HOME. *)
@@ -313,7 +313,7 @@ end;
 proc list*(a: ^Args; key: []U8): [][]U8;
 var l: Strs.Vec; v, w: Json.Value; s, word: []U8; i: INT;
 begin
-    Strs.init(ADR(l), a^.mem);
+    Strs.init(l, a^.mem);
     v := Json.member(a^.d, a^.v, key);
     s := Json.text(a^.d, v);
     if (Json.kind(a^.d, v) = Json.Kind.string) and Str.hasPrefix(Str.trimLeft(s), "[") then
@@ -322,16 +322,16 @@ begin
     end;
     if Json.kind(a^.d, v) = Json.Kind.array then
         for i := 0 to Json.len(a^.d, v) - 1 do
-            Strs.push(ADR(l), home(a, Json.text(a^.d, Json.item(a^.d, v, i))));
+            Strs.push(l, home(a, Json.text(a^.d, Json.item(a^.d, v, i))));
         end;
     else
         word, s := Str.field(s);
         while LEN(word) > 0 do
-            Strs.push(ADR(l), home(a, word));
+            Strs.push(l, home(a, word));
             word, s := Str.field(s);
         end;
     end;
-    return Strs.all(ADR(l));
+    return Strs.all(l);
 end;
 
 (* The argument key as a number, from a number or a string that holds
@@ -369,50 +369,50 @@ proc fence(name, path: []U8; h: ^Human; out: ^Buf.Buf): BOOL;
 var p, room, home, q: Buf.Buf; i: Sys.Info; e: INT;
 begin
     if (LEN(path) = 0) or Afence.inside(path) then return true; end;
-    Buf.init(ADR(p), Heap.heap);
-    defer Buf.done(ADR(p));
-    Buf.init(ADR(room), Heap.heap);
-    defer Buf.done(ADR(room));
-    Buf.init(ADR(home), Heap.heap);
-    defer Buf.done(ADR(home));
-    Buf.init(ADR(q), Heap.heap);
-    defer Buf.done(ADR(q));
+    Buf.init(p, Heap.heap);
+    defer Buf.done(p);
+    Buf.init(room, Heap.heap);
+    defer Buf.done(room);
+    Buf.init(home, Heap.heap);
+    defer Buf.done(home);
+    Buf.init(q, Heap.heap);
+    defer Buf.done(q);
     Afence.resolve(path, ADR(p));
     Afence.resolve(Sys.env("HOME"), ADR(home));
-    Buf.str(ADR(room), Buf.bytes(ADR(p)));
-    i, e := Sys.info(Buf.bytes(ADR(p)));
+    Buf.str(room, Buf.bytes(p));
+    i, e := Sys.info(Buf.bytes(p));
     if (e # 0) or not i.dir then
-        room.len := Str.findLast(Buf.bytes(ADR(room)), "/");
-        if room.len = 0 then Buf.add(ADR(room), '/'); end;
+        room.len := Str.findLast(Buf.bytes(room), "/");
+        if room.len = 0 then Buf.add(room, '/'); end;
     end;
-    if (Buf.bytes(ADR(room)) = "/") or (Buf.bytes(ADR(room)) = Buf.bytes(ADR(home))) then
-        Buf.reset(ADR(room));
-        Buf.str(ADR(room), Buf.bytes(ADR(p)));
+    if (Buf.bytes(room) = "/") or (Buf.bytes(room) = Buf.bytes(home)) then
+        Buf.reset(room);
+        Buf.str(room, Buf.bytes(p));
     end;
-    Buf.str(ADR(q), name);
-    Buf.add(ADR(q), ' ');
-    Buf.str(ADR(q), Buf.bytes(ADR(p)));
-    Buf.str(ADR(q), ", outside ");
-    Buf.str(ADR(q), Afence.zone);
-    Buf.str(ADR(q), "? (a: always, all of ");
-    Buf.str(ADR(q), Buf.bytes(ADR(room)));
-    Buf.add(ADR(q), ')');
+    Buf.str(q, name);
+    Buf.add(q, ' ');
+    Buf.str(q, Buf.bytes(p));
+    Buf.str(q, ", outside ");
+    Buf.str(q, Afence.zone);
+    Buf.str(q, "? (a: always, all of ");
+    Buf.str(q, Buf.bytes(room));
+    Buf.add(q, ')');
     if h^.ask = nil then
-        Buf.str(out, "declined: ");
-        Buf.str(out, Buf.bytes(ADR(p)));
-        Buf.str(out, " is outside ");
-        Buf.str(out, Afence.zone);
-        Buf.str(out, ", and there is nobody to ask");
+        Buf.str(out^, "declined: ");
+        Buf.str(out^, Buf.bytes(p));
+        Buf.str(out^, " is outside ");
+        Buf.str(out^, Afence.zone);
+        Buf.str(out^, ", and there is nobody to ask");
         return false;
     end;
-    match h^.ask(Buf.bytes(ADR(q)), "", "yna", h^.arg) of
+    match h^.ask(Buf.bytes(q), "", "yna", h^.arg) of
     | 'y': return true;
-    | 'a': Afence.grant(Buf.bytes(ADR(room))); return true;
+    | 'a': Afence.grant(Buf.bytes(room)); return true;
     | else:
     end;
-    Buf.str(out, "declined by user: ");
-    Buf.str(out, Buf.bytes(ADR(p)));
-    Buf.str(out, " is outside the project");
+    Buf.str(out^, "declined by user: ");
+    Buf.str(out^, Buf.bytes(p));
+    Buf.str(out^, " is outside the project");
     return false;
 end;
 
@@ -429,37 +429,37 @@ begin
     p := path(a, "path");
     i, e := Sys.info(p);
     if (e = 0) and i.dir then
-        Buf.str(out, "error: ");
-        Buf.str(out, p);
-        Buf.str(out, " is a directory; outline it, or find the files in it");
+        Buf.str(out^, "error: ");
+        Buf.str(out^, p);
+        Buf.str(out^, " is a directory; outline it, or find the files in it");
         return;
     end;
     (* never open a pipe: the read would wait for whoever writes it *)
     if (e # 0) or not i.file then
-        Buf.str(out, "error: cannot read ");
-        Buf.str(out, p);
-        Buf.str(out, " (no such file? use find to locate it)");
+        Buf.str(out^, "error: cannot read ");
+        Buf.str(out^, p);
+        Buf.str(out^, " (no such file? use find to locate it)");
         return;
     end;
     if i.size > MaxFile then
-        Buf.str(out, "error: ");
-        Buf.str(out, p);
-        Buf.str(out, " is too big to read");
+        Buf.str(out^, "error: ");
+        Buf.str(out^, p);
+        Buf.str(out^, " is too big to read");
         return;
     end;
-    Buf.init(ADR(text), mem);
-    if Files.load(p, ADR(text)) # 0 then
-        Buf.str(out, "error: cannot read ");
-        Buf.str(out, p);
+    Buf.init(text, mem);
+    if Files.load(p, text) # 0 then
+        Buf.str(out^, "error: cannot read ");
+        Buf.str(out^, p);
         return;
     end;
-    s := Buf.bytes(ADR(text));
+    s := Buf.bytes(text);
     j := LEN(s);
     if j > 8192 then j := 8192; end;
     if Str.find(s[0..j], "\x00") >= 0 then
-        Buf.str(out, "error: ");
-        Buf.str(out, p);
-        Buf.str(out, " is binary, not text");
+        Buf.str(out^, "error: ");
+        Buf.str(out^, p);
+        Buf.str(out^, " is binary, not text");
         return;
     end;
     first := int(a, "offset", 1);
@@ -473,11 +473,11 @@ begin
             digits, k := Str.fromInt(n);
             (* the note fits, so call's own cut doesn't take it off *)
             if out^.len + 7 + j - at > MaxOut - 64 then
-                Buf.str(out, "[cut before line ");
-                Buf.str(out, digits[0..k]);
-                Buf.str(out, "; read on with offset ");
-                Buf.str(out, digits[0..k]);
-                Buf.add(out, ']');
+                Buf.str(out^, "[cut before line ");
+                Buf.str(out^, digits[0..k]);
+                Buf.str(out^, "; read on with offset ");
+                Buf.str(out^, digits[0..k]);
+                Buf.add(out^, ']');
                 return;
             end;
             Afind.numbered(out, n, s[at..j]);
@@ -485,7 +485,7 @@ begin
         INC(n);
         at := j + 1;
     end;
-    if out^.len = 0 then Buf.str(out, "(empty)"); end;
+    if out^.len = 0 then Buf.str(out^, "(empty)"); end;
 end;
 
 (* find, grep, def or outline, the tool name, run with a. *)
@@ -502,15 +502,15 @@ begin
     elsif name = "outline" then
         Afind.outline(d, MaxOut, mem, out);
     elsif LEN(Str.trim(str(a, "name"))) = 0 then
-        Buf.str(out, "error: give the name to look up");
+        Buf.str(out^, "error: give the name to look up");
     elsif Afind.defs(d, str(a, "name"), mem, out) >= Afind.MaxDefs then
-        Buf.str(out, "[stopped at 10 definitions; give a path]");
+        Buf.str(out^, "[stopped at 10 definitions; give a path]");
     elsif out^.len = 0 then
-        Buf.str(out, "no definition of ");
-        Buf.str(out, Str.trim(str(a, "name")));
-        Buf.str(out, " found in ");
-        Buf.str(out, d);
-        Buf.str(out, "; def knows common declaration shapes, not every one: grep for the name with some context instead.");
+        Buf.str(out^, "no definition of ");
+        Buf.str(out^, Str.trim(str(a, "name")));
+        Buf.str(out^, " found in ");
+        Buf.str(out^, d);
+        Buf.str(out^, "; def knows common declaration shapes, not every one: grep for the name with some context instead.");
     end;
 end;
 
@@ -527,51 +527,51 @@ var args: [][]U8; argv: Strs.Vec; sub, x, o: []U8; i: INT; limited: BOOL;
 begin
     args := list(a, "args");
     if LEN(args) = 0 then
-        Buf.str(out, "error: args must be an array of strings, the subcommand first");
+        Buf.str(out^, "error: args must be an array of strings, the subcommand first");
         return;
     end;
     sub := args[0];
     if not Afind.listed(sub, GitVerbs) then
-        Buf.str(out, "error: ");
-        Buf.str(out, sub);
-        Buf.str(out, " is not allowed; only status, diff, log, show, blame, branch, merge-base, " +
+        Buf.str(out^, "error: ");
+        Buf.str(out^, sub);
+        Buf.str(out^, " is not allowed; only status, diff, log, show, blame, branch, merge-base, " +
             "ls-tree and rev-list, subcommand first, without \"git\"");
         return;
     end;
-    Strs.init(ADR(argv), a^.mem);
-    Strs.push(ADR(argv), "git");
-    Strs.push(ADR(argv), "--no-pager");
-    Strs.push(ADR(argv), sub);
+    Strs.init(argv, a^.mem);
+    Strs.push(argv, "git");
+    Strs.push(argv, "--no-pager");
+    Strs.push(argv, sub);
     if (sub = "diff") or (sub = "log") or (sub = "show") then
-        Strs.push(ADR(argv), "--no-ext-diff");
-        Strs.push(ADR(argv), "--no-textconv");
+        Strs.push(argv, "--no-ext-diff");
+        Strs.push(argv, "--no-textconv");
     end;
-    if sub = "branch" then Strs.push(ADR(argv), "--list"); end;
+    if sub = "branch" then Strs.push(argv, "--list"); end;
     limited := false;
     for i := 1 to LEN(args) - 1 do
         x := args[i];
         o, _, _ := Str.cut(x, "=");
         if Str.hasPrefix(x, "--output") or Str.hasPrefix(x, "--ext") or Str.hasPrefix(x, "--textconv") or
             Str.hasPrefix(x, "--no-in") or (sub = "branch") and Str.hasPrefix(x, "-") and not Afind.listed(o, BranchOptions) then
-            Buf.str(out, "error: option not allowed: ");
-            Buf.str(out, x);
+            Buf.str(out^, "error: option not allowed: ");
+            Buf.str(out^, x);
             return;
         end;
         if Str.hasPrefix(x, "-n") or Str.hasPrefix(x, "--max-count") or
             (LEN(x) > 1) and (x[0] = '-') and (x[1] >= '0') and (x[1] <= '9') then
             limited := true;
         end;
-        Strs.push(ADR(argv), x);
+        Strs.push(argv, x);
     end;
     if (sub = "log") and not limited then
-        Strs.push(ADR(argv), "-n");
-        Strs.push(ADR(argv), "50");
+        Strs.push(argv, "-n");
+        Strs.push(argv, "50");
     end;
-    i := Arun.run(Strs.all(ADR(argv)), MaxOut + 1, out);
+    i := Arun.run(Strs.all(argv), MaxOut + 1, out);
     if (i = 127) and (out^.len = 0) or (i < 0) then
-        Buf.str(out, "error: git can't be run");
+        Buf.str(out^, "error: git can't be run");
     elsif out^.len = 0 then
-        Buf.str(out, "(no output)");
+        Buf.str(out^, "(no output)");
     end;
 end;
 
@@ -588,10 +588,10 @@ var
 (* list, words parted by blanks, into b with a blank at either end. *)
 proc words(b: ^Buf.Buf; list: []U8);
 begin
-    Buf.init(b, Heap.heap);
-    Buf.add(b, ' ');
-    Buf.str(b, list);
-    Buf.add(b, ' ');
+    Buf.init(b^, Heap.heap);
+    Buf.add(b^, ' ');
+    Buf.str(b^, list);
+    Buf.add(b^, ' ');
 end;
 
 (* run and check as config says: run's programs, those that only read,
@@ -617,7 +617,7 @@ var s: []U8;
 begin
     s := Astore.keyed("tests.json", Afence.zone, b);
     if LEN(s) = 0 then
-        Buf.str(b, testCmd);
+        Buf.str(b^, testCmd);
         s := testCmd;
     end;
     return s;
@@ -653,11 +653,11 @@ proc refusedArg(prog, x: []U8; out: ^Buf.Buf): BOOL;
 begin
     if not Str.hasPrefix(x, "-") then return false; end;
     if prog = "man" then
-        Buf.str(out, "error: man takes no options here; give a section and a page");
+        Buf.str(out^, "error: man takes no options here; give a section and a page");
     elsif (prog = "fd") and fdRuns(x) then
-        Buf.str(out, "error: fd may not run commands here (-x, -X, --exec, --exec-batch)");
+        Buf.str(out^, "error: fd may not run commands here (-x, -X, --exec, --exec-batch)");
     elsif (Str.find(x, "/") >= 0) and (Str.find(x, "=") < 0) then
-        Fmt.write(out, "error: give the path in {} as an argument of its own", [Fmt.str(x)]);
+        Fmt.write(out^, "error: give the path in {} as an argument of its own", [Fmt.str(x)]);
     else
         return false;
     end;
@@ -670,10 +670,10 @@ end;
 proc scratchVar(mem: ^Mem.Allocator): []U8;
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), mem);
-    Buf.str(ADR(b), "ARNO_SCRATCH=");
-    Buf.str(ADR(b), Afence.scratch);
-    return Buf.bytes(ADR(b));
+    Buf.init(b, mem);
+    Buf.str(b, "ARNO_SCRATCH=");
+    Buf.str(b, Afence.scratch);
+    return Buf.bytes(b);
 end;
 
 (* The 'run' tool: one of the programs config's run names, with the
@@ -693,115 +693,115 @@ proc runTool(a: ^Args; h: ^Human; out: ^Buf.Buf);
 var args: [][]U8; cmds: Cmds.Vec; c: []Cmd; env: Strs.Vec; ask, lines, line, q: Buf.Buf; e, v: Json.Value;
     x, why: []U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
 begin
-    Strs.init(ADR(env), a^.mem);
+    Strs.init(env, a^.mem);
     e := Json.member(a^.d, a^.v, "env");
     for i := 0 to Json.len(a^.d, e) - 1 do
         x := Json.key(a^.d, e, i);
         v := Json.item(a^.d, e, i);
-        if LEN(Str.trim(Buf.bytes(ADR(runsEnv)))) = 0 then
-            Buf.str(out, "error: no environment variables may be set here");
+        if LEN(Str.trim(Buf.bytes(runsEnv))) = 0 then
+            Buf.str(out^, "error: no environment variables may be set here");
             return;
         end;
-        if not Afind.listed(x, Buf.bytes(ADR(runsEnv))) then
-            Fmt.write(out, "error: {} may not be set; these may:{}", [Fmt.str(x), Fmt.str(Buf.bytes(ADR(runsEnv)))]);
+        if not Afind.listed(x, Buf.bytes(runsEnv)) then
+            Fmt.write(out^, "error: {} may not be set; these may:{}", [Fmt.str(x), Fmt.str(Buf.bytes(runsEnv))]);
             return;
         end;
         if (Json.kind(a^.d, v) # Json.Kind.string) or (Str.find(x, "=") >= 0) then
-            Fmt.write(out, "error: {} must be set to a string", [Fmt.str(x)]);
+            Fmt.write(out^, "error: {} must be set to a string", [Fmt.str(x)]);
             return;
         end;
-        Buf.init(ADR(line), a^.mem);
-        Fmt.write(ADR(line), "{}={}", [Fmt.str(x), Fmt.str(Json.text(a^.d, v))]);
-        Strs.push(ADR(env), Buf.bytes(ADR(line)));
+        Buf.init(line, a^.mem);
+        Fmt.write(line, "{}={}", [Fmt.str(x), Fmt.str(Json.text(a^.d, v))]);
+        Strs.push(env, Buf.bytes(line));
     end;
 
     (* the commands, each a slice of args *)
     args := list(a, "args");
-    Cmds.init(ADR(cmds), a^.mem);
+    Cmds.init(cmds, a^.mem);
     start := 0;
     for i := 0 to LEN(args) do
         if (i < LEN(args)) and (args[i] # ";") then continue; end;
         if i = start then
-            if i < LEN(args) then Buf.str(out, "error: an empty command before \";\""); return; end;
+            if i < LEN(args) then Buf.str(out^, "error: an empty command before \";\""); return; end;
             break;
         end;
-        if not Afind.listed(args[start], Buf.bytes(ADR(runs))) then
-            Fmt.write(out, "error: {} is not allowed; the programs are:{}", [Fmt.str(args[start]), Fmt.str(Buf.bytes(ADR(runs)))]);
+        if not Afind.listed(args[start], Buf.bytes(runs)) then
+            Fmt.write(out^, "error: {} is not allowed; the programs are:{}", [Fmt.str(args[start]), Fmt.str(Buf.bytes(runs))]);
             return;
         end;
         for k := start + 1 to i - 1 do
             if refusedArg(args[start], args[k], out) then return; end;
         end;
-        Cmds.push(ADR(cmds), {args: args[start..i]});
+        Cmds.push(cmds, {args: args[start..i]});
         start := i + 1;
     end;
-    c := Cmds.all(ADR(cmds));
+    c := Cmds.all(cmds);
     if LEN(c) = 0 then
-        Buf.str(out, "error: args must be an array of strings, the program first");
+        Buf.str(out^, "error: args must be an array of strings, the program first");
         return;
     end;
 
     (* one question for them all, naming the programs not yet trusted *)
-    Buf.init(ADR(ask), a^.mem);
-    Buf.init(ADR(lines), a^.mem);
-    Buf.add(ADR(ask), ' ');
+    Buf.init(ask, a^.mem);
+    Buf.init(lines, a^.mem);
+    Buf.add(ask, ' ');
     for k := 0 to LEN(c) - 1 do
         x := c[k].args[0];
-        if not Afind.listed(x, Buf.bytes(ADR(trust))) and not Afind.listed(x, Buf.bytes(ADR(ask))) then
-            Buf.str(ADR(ask), x);
-            Buf.add(ADR(ask), ' ');
+        if not Afind.listed(x, Buf.bytes(trust)) and not Afind.listed(x, Buf.bytes(ask)) then
+            Buf.str(ask, x);
+            Buf.add(ask, ' ');
         end;
-        Str.join(ADR(lines), Strs.all(ADR(env)), " ");
-        if LEN(Strs.all(ADR(env))) > 0 then Buf.add(ADR(lines), ' '); end;
-        Str.join(ADR(lines), c[k].args, " ");
-        Buf.add(ADR(lines), '\n');
+        Str.join(lines, Strs.all(env), " ");
+        if LEN(Strs.all(env)) > 0 then Buf.add(lines, ' '); end;
+        Str.join(lines, c[k].args, " ");
+        Buf.add(lines, '\n');
     end;
     if ask.len > 1 then
-        if h^.ask = nil then Buf.str(out, "declined: there is nobody to ask. Nothing was run."); return; end;
-        Buf.init(ADR(q), a^.mem);
-        x := Str.trim(Buf.bytes(ADR(ask)));
+        if h^.ask = nil then Buf.str(out^, "declined: there is nobody to ask. Nothing was run."); return; end;
+        Buf.init(q, a^.mem);
+        x := Str.trim(Buf.bytes(ask));
         if LEN(c) = 1 then
-            Buf.str(ADR(q), "run ");
-            Str.join(ADR(q), c[0].args, " ");
-            Fmt.write(ADR(q), "? (a: always {})", [Fmt.str(x)]);
+            Buf.str(q, "run ");
+            Str.join(q, c[0].args, " ");
+            Fmt.write(q, "? (a: always {})", [Fmt.str(x)]);
         else
-            Fmt.write(ADR(q), "run these {} commands? (a: always {})", [Fmt.int(LEN(c)), Fmt.str(x)]);
+            Fmt.write(q, "run these {} commands? (a: always {})", [Fmt.int(LEN(c)), Fmt.str(x)]);
         end;
-        answer := h^.ask(Buf.bytes(ADR(q)), Buf.bytes(ADR(lines)), "yna", h^.arg);
+        answer := h^.ask(Buf.bytes(q), Buf.bytes(lines), "yna", h^.arg);
         if answer = 'a' then
-            Buf.str(ADR(trust), x);
-            Buf.add(ADR(trust), ' ');
+            Buf.str(trust, x);
+            Buf.add(trust, ' ');
         elsif answer # 'y' then
-            Buf.str(out, "declined by user");
+            Buf.str(out^, "declined by user");
             why := "";
             if h^.why # nil then why := Str.trim(h^.why(h^.arg)); end;
             if LEN(why) > 0 then
-                Buf.str(out, ": ");
-                Buf.str(out, why);
+                Buf.str(out^, ": ");
+                Buf.str(out^, why);
             end;
-            Buf.str(out, ". Nothing was run.");
+            Buf.str(out^, ". Nothing was run.");
             return;
         end;
     end;
 
-    Strs.push(ADR(env), scratchVar(a^.mem));
+    Strs.push(env, scratchVar(a^.mem));
     for k := 0 to LEN(c) - 1 do
-        if k > 0 then Buf.str(out, "\n\n"); end;
+        if k > 0 then Buf.str(out^, "\n\n"); end;
         start := out^.len;
-        Buf.str(out, "exit ");
-        j := {args: c[k].args, env: Strs.all(ADR(env)), detach: true};
-        Buf.init(ADR(line), a^.mem);
+        Buf.str(out^, "exit ");
+        j := {args: c[k].args, env: Strs.all(env), detach: true};
+        Buf.init(line, a^.mem);
         status, _ := Arun.start(ADR(j), MaxOut + 1, ADR(line));
         if (status = 127) and (line.len = 0) or (status < 0) then
             out^.len := start;
-            Fmt.write(out, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
+            Fmt.write(out^, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
             continue;
         end;
-        Fmt.write(out, "{}: ", [Fmt.int(status)]);
-        Str.join(out, c[k].args, " ");
+        Fmt.write(out^, "{}: ", [Fmt.int(status)]);
+        Str.join(out^, c[k].args, " ");
         if line.len > 0 then
-            Buf.add(out, '\n');
-            Buf.str(out, Str.trimRight(Buf.bytes(ADR(line))));
+            Buf.add(out^, '\n');
+            Buf.str(out^, Str.trimRight(Buf.bytes(line)));
         end;
     end;
 end;
@@ -817,24 +817,24 @@ end;
 proc check(mem: ^Mem.Allocator; out: ^Buf.Buf);
 var b, got: Buf.Buf; cmd: []U8; j: Arun.Job; status: INT; cut: BOOL;
 begin
-    Buf.init(ADR(b), mem);
-    Buf.init(ADR(got), mem);
+    Buf.init(b, mem);
+    Buf.init(got, mem);
     cmd := testFor(ADR(b));
     if LEN(cmd) = 0 then
-        Buf.str(out, "error: no test command for this project; ask the human to run /test COMMAND once");
+        Buf.str(out^, "error: no test command for this project; ask the human to run /test COMMAND once");
         return;
     end;
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
     status, cut := Arun.start(ADR(j), MaxOut - 1000, ADR(got));
     if status = 0 then
-        Fmt.write(out, "passed: {}", [Fmt.str(cmd)]);
+        Fmt.write(out^, "passed: {}", [Fmt.str(cmd)]);
     else
-        Fmt.write(out, "FAILED, exit {}: {}", [Fmt.int(status), Fmt.str(cmd)]);
+        Fmt.write(out^, "FAILED, exit {}: {}", [Fmt.int(status), Fmt.str(cmd)]);
     end;
     if got.len > 0 then
-        Buf.str(out, "\n\n");
-        if cut then Buf.str(out, "[...]\n"); end;
-        Buf.str(out, Buf.bytes(ADR(got)));
+        Buf.str(out^, "\n\n");
+        if cut then Buf.str(out^, "[...]\n"); end;
+        Buf.str(out^, Buf.bytes(got));
     end;
 end;
 
@@ -847,18 +847,18 @@ proc approve(h: ^Human; question, detail: []U8; out: ^Buf.Buf): BOOL;
 var why: []U8;
 begin
     if h^.ask = nil then
-        Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
+        Buf.str(out^, "declined: there is nobody to approve the change. Nothing was changed.");
         return false;
     end;
     if h^.ask(question, detail, "yn", h^.arg) = 'y' then return true; end;
-    Buf.str(out, "declined by user");
+    Buf.str(out^, "declined by user");
     why := "";
     if h^.why # nil then why := Str.trim(h^.why(h^.arg)); end;
     if LEN(why) > 0 then
-        Buf.str(out, ": ");
-        Buf.str(out, why);
+        Buf.str(out^, ": ");
+        Buf.str(out^, why);
     end;
-    Buf.str(out, ". Nothing was changed: the file is as it was before.");
+    Buf.str(out^, ". Nothing was changed: the file is as it was before.");
     return false;
 end;
 
@@ -883,13 +883,13 @@ begin
     n := 0;
     while LEN(rest) > 0 do
         if n = max then
-            Fmt.write(b, "{}[{} more lines]\n", [Fmt.char(mark), Fmt.int(lines(rest))]);
+            Fmt.write(b^, "{}[{} more lines]\n", [Fmt.char(mark), Fmt.int(lines(rest))]);
             return;
         end;
         line, rest, _ := Str.cut(rest, "\n");
-        Buf.add(b, mark);
-        Buf.str(b, line);
-        Buf.add(b, '\n');
+        Buf.add(b^, mark);
+        Buf.str(b^, line);
+        Buf.add(b^, '\n');
         INC(n);
     end;
 end;
@@ -929,7 +929,7 @@ var line: []U8;
 begin
     while LEN(s) > 0 do
         line, s, _ := Str.cut(s, "\n");
-        Strs.push(l, line);
+        Strs.push(l^, line);
     end;
 end;
 
@@ -951,12 +951,12 @@ end;
 proc nearMiss(old, path, s: []U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
 var o, f: Strs.Vec; ol, fl: [][]U8; n, i, k, at, hits, first: INT;
 begin
-    Strs.init(ADR(o), mem);
-    Strs.init(ADR(f), mem);
+    Strs.init(o, mem);
+    Strs.init(f, mem);
     split(old, ADR(o));
     split(s, ADR(f));
-    ol := Strs.all(ADR(o));
-    fl := Strs.all(ADR(f));
+    ol := Strs.all(o);
+    fl := Strs.all(f);
     n := LEN(ol);
     first := 0;
     while (first < n) and (LEN(Str.trim(ol[first])) = 0) do INC(first); end;
@@ -973,22 +973,22 @@ begin
     end;
     if hits = 0 then return; end;
     if n = 1 then
-        Fmt.write(out, "error: old text not found in {}, but line {} holds it", [Fmt.str(path), Fmt.int(at + 1)]);
+        Fmt.write(out^, "error: old text not found in {}, but line {} holds it", [Fmt.str(path), Fmt.int(at + 1)]);
     else
-        Fmt.write(out, "error: old text not found in {}, but lines {}-{} hold it",
+        Fmt.write(out^, "error: old text not found in {}, but lines {}-{} hold it",
             [Fmt.str(path), Fmt.int(at + 1), Fmt.int(at + n)]);
     end;
-    Buf.str(out, " with other blanks at the starts or ends of lines");
+    Buf.str(out^, " with other blanks at the starts or ends of lines");
     k := first;
     while (k < n) and (blanks(fl[at + k]) = blanks(ol[k])) do INC(k); end;
     if k < n then
-        Fmt.write(out, ": line {} starts with {} blanks, and old's line {} with {}",
+        Fmt.write(out^, ": line {} starts with {} blanks, and old's line {} with {}",
             [Fmt.int(at + k + 1), Fmt.int(blanks(fl[at + k])), Fmt.int(k + 1), Fmt.int(blanks(ol[k]))]);
     end;
-    Buf.str(out, ". read shows each line after its number and a tab, which are not part of the line: " +
+    Buf.str(out^, ". read shows each line after its number and a tab, which are not part of the line: " +
         "copy old again from those lines");
     if hits > 1 then
-        Fmt.write(out, " (they occur {} times; give more lines to choose one)", [Fmt.int(hits)]);
+        Fmt.write(out^, " (they occur {} times; give more lines to choose one)", [Fmt.int(hits)]);
     end;
 end;
 
@@ -1002,75 +1002,75 @@ begin
     old := str(a, "old");
     new := str(a, "new");
     all := flag(a, "all");
-    Buf.init(ADR(text), mem);
-    Buf.init(ADR(diff), mem);
-    Buf.init(ADR(q), mem);
-    Buf.init(ADR(b), mem);
+    Buf.init(text, mem);
+    Buf.init(diff, mem);
+    Buf.init(q, mem);
+    Buf.init(b, mem);
     if LEN(p) = 0 then
-        Buf.str(out, "error: give the path of the file");
+        Buf.str(out^, "error: give the path of the file");
         return;
     end;
     i, e := Sys.info(p);
     if LEN(old) = 0 then
         if e = 0 then
-            Fmt.write(out, "error: {} exists; to change it, read it and give old text to replace", [Fmt.str(p)]);
+            Fmt.write(out^, "error: {} exists; to change it, read it and give old text to replace", [Fmt.str(p)]);
             return;
         end;
         n := 1;
-        Fmt.write(ADR(q), "create {}?", [Fmt.str(p)]);
+        Fmt.write(q, "create {}?", [Fmt.str(p)]);
     else
         if (e = 0) and i.dir then
-            Fmt.write(out, "error: {} is a directory", [Fmt.str(p)]);
+            Fmt.write(out^, "error: {} is a directory", [Fmt.str(p)]);
             return;
         end;
-        if (e # 0) or not i.file or (i.size > MaxFile) or (Files.load(p, ADR(text)) # 0) then
-            Fmt.write(out, "error: cannot read {} (no such file? use find to locate it)", [Fmt.str(p)]);
+        if (e # 0) or not i.file or (i.size > MaxFile) or (Files.load(p, text) # 0) then
+            Fmt.write(out^, "error: cannot read {} (no such file? use find to locate it)", [Fmt.str(p)]);
             return;
         end;
-        s := Buf.bytes(ADR(text));
+        s := Buf.bytes(text);
         n := count(s, old);
         if n = 0 then
             nearMiss(old, p, s, mem, out);
             if out^.len = 0 then
-                Fmt.write(out, "error: old text not found in {}. It must match the file exactly, whitespace " +
+                Fmt.write(out^, "error: old text not found in {}. It must match the file exactly, whitespace " +
                     "included: read the file again and copy old from it", [Fmt.str(p)]);
             end;
             return;
         end;
         if (n > 1) and not all then
-            Fmt.write(out, "error: old text occurs {} times in {}; add surrounding lines to old to make it " +
+            Fmt.write(out^, "error: old text occurs {} times in {}; add surrounding lines to old to make it " +
                 "unique, or set all to replace every one", [Fmt.int(n), Fmt.str(p)]);
             return;
         end;
         at := Str.find(s, old);
         if n = 1 then
-            Fmt.write(ADR(q), "apply edit to {} at line {}?", [Fmt.str(p), Fmt.int(count(s[0..at], "\n") + 1)]);
+            Fmt.write(q, "apply edit to {} at line {}?", [Fmt.str(p), Fmt.int(count(s[0..at], "\n") + 1)]);
         else
-            Fmt.write(ADR(q), "apply edit to {}, in {} places?", [Fmt.str(p), Fmt.int(n)]);
+            Fmt.write(q, "apply edit to {}, in {} places?", [Fmt.str(p), Fmt.int(n)]);
         end;
         marked(ADR(diff), '-', old, MaxFile);
     end;
     marked(ADR(diff), '+', new, MaxFile);
-    if not Afence.ours(p) and not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    if not Afence.ours(p) and not approve(h, Buf.bytes(q), Buf.bytes(diff), out) then return; end;
     if LEN(old) = 0 then
-        Buf.str(ADR(b), new);
+        Buf.str(b, new);
         if not makeDirs(p) then
-            Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(p)]);
+            Fmt.write(out^, "error: cannot make the directory of {}", [Fmt.str(p)]);
             return;
         end;
     elsif all then
-        Str.replace(ADR(b), s, old, new);
+        Str.replace(b, s, old, new);
     else
-        Buf.str(ADR(b), s[0..at]);
-        Buf.str(ADR(b), new);
-        Buf.str(ADR(b), s[at + LEN(old)..LEN(s)]);
+        Buf.str(b, s[0..at]);
+        Buf.str(b, new);
+        Buf.str(b, s[at + LEN(old)..LEN(s)]);
     end;
-    if not Files.write(p, Buf.bytes(ADR(b))) then
-        Fmt.write(out, "error: cannot write {}", [Fmt.str(p)]);
+    if not Files.write(p, Buf.bytes(b)) then
+        Fmt.write(out^, "error: cannot write {}", [Fmt.str(p)]);
     elsif LEN(old) = 0 then
-        Fmt.write(out, "ok: created {}", [Fmt.str(p)]);
+        Fmt.write(out^, "ok: created {}", [Fmt.str(p)]);
     else
-        Fmt.write(out, "ok: {} replaced", [Fmt.int(n)]);
+        Fmt.write(out^, "ok: {} replaced", [Fmt.int(n)]);
     end;
 end;
 
@@ -1082,11 +1082,11 @@ var i: Sys.Info; e: INT;
 begin
     i, e := Sys.info(p);
     if (e = 0) and i.dir then
-        Fmt.write(out, "error: {} is a directory; only single files can be moved or removed", [Fmt.str(p)]);
+        Fmt.write(out^, "error: {} is a directory; only single files can be moved or removed", [Fmt.str(p)]);
         return false;
     end;
     if e # 0 then
-        Fmt.write(out, "error: no file {} (use find to locate it)", [Fmt.str(p)]);
+        Fmt.write(out^, "error: no file {} (use find to locate it)", [Fmt.str(p)]);
         return false;
     end;
     return true;
@@ -1103,27 +1103,27 @@ begin
     dest := path(a, "to");
     if not movable(p, out) then return; end;
     if LEN(dest) = 0 then
-        Buf.str(out, "error: to, the new path, is required");
+        Buf.str(out^, "error: to, the new path, is required");
         return;
     end;
     _, e := Sys.linkInfo(dest);
     if e = 0 then
-        Fmt.write(out, "error: {} exists; give a path that does not, the whole path including the name", [Fmt.str(dest)]);
+        Fmt.write(out^, "error: {} exists; give a path that does not, the whole path including the name", [Fmt.str(dest)]);
         return;
     end;
-    Buf.init(ADR(q), mem);
-    Fmt.write(ADR(q), "move {} to {}?", [Fmt.str(p), Fmt.str(dest)]);
-    if not (Afence.ours(p) and Afence.ours(dest)) and not approve(h, Buf.bytes(ADR(q)), "", out) then return; end;
+    Buf.init(q, mem);
+    Fmt.write(q, "move {} to {}?", [Fmt.str(p), Fmt.str(dest)]);
+    if not (Afence.ours(p) and Afence.ours(dest)) and not approve(h, Buf.bytes(q), "", out) then return; end;
     if not makeDirs(dest) then
-        Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(dest)]);
+        Fmt.write(out^, "error: cannot make the directory of {}", [Fmt.str(dest)]);
         return;
     end;
     e := Sys.rename(p, dest);
     if e # 0 then
-        Fmt.write(out, "error: cannot move {} to {} (errno {})", [Fmt.str(p), Fmt.str(dest), Fmt.int(-e)]);
+        Fmt.write(out^, "error: cannot move {} to {} (errno {})", [Fmt.str(p), Fmt.str(dest), Fmt.int(-e)]);
         return;
     end;
-    Fmt.write(out, "ok: moved {} to {}", [Fmt.str(p), Fmt.str(dest)]);
+    Fmt.write(out^, "ok: moved {} to {}", [Fmt.str(p), Fmt.str(dest)]);
 end;
 
 (* remove: the file path deleted, once the human has seen what it
@@ -1134,26 +1134,26 @@ var p, s: []U8; text, diff, q: Buf.Buf; e: INT;
 begin
     p := path(a, "path");
     if not movable(p, out) then return; end;
-    Buf.init(ADR(text), mem);
-    Buf.init(ADR(diff), mem);
-    Buf.init(ADR(q), mem);
-    if Files.load(p, ADR(text)) = 0 then
-        s := Buf.bytes(ADR(text));
+    Buf.init(text, mem);
+    Buf.init(diff, mem);
+    Buf.init(q, mem);
+    if Files.load(p, text) = 0 then
+        s := Buf.bytes(text);
         if LEN(s) > 8192 then s := s[0..8192]; end;
         if Str.find(s, "\x00") >= 0 then
-            Buf.str(ADR(diff), "(binary)\n");
+            Buf.str(diff, "(binary)\n");
         else
-            marked(ADR(diff), '-', Buf.bytes(ADR(text)), MaxShown);
+            marked(ADR(diff), '-', Buf.bytes(text), MaxShown);
         end;
     end;
-    Fmt.write(ADR(q), "remove {}?", [Fmt.str(p)]);
-    if not Afence.ours(p) and not approve(h, Buf.bytes(ADR(q)), Buf.bytes(ADR(diff)), out) then return; end;
+    Fmt.write(q, "remove {}?", [Fmt.str(p)]);
+    if not Afence.ours(p) and not approve(h, Buf.bytes(q), Buf.bytes(diff), out) then return; end;
     e := Sys.remove(p);
     if e # 0 then
-        Fmt.write(out, "error: cannot remove {} (errno {})", [Fmt.str(p), Fmt.int(-e)]);
+        Fmt.write(out^, "error: cannot remove {} (errno {})", [Fmt.str(p), Fmt.int(-e)]);
         return;
     end;
-    Fmt.write(out, "ok: removed {}", [Fmt.str(p)]);
+    Fmt.write(out^, "ok: removed {}", [Fmt.str(p)]);
 end;
 
 proc keep(s: []U8): []U8;
@@ -1188,8 +1188,8 @@ var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
         match s[i] of
-        | 'a' .. 'z', 'A' .. 'Z', '0' .. '9', '-', '.', '_', '~': Buf.add(b, s[i]);
-        | else: Fmt.write(b, "%{}{}", [Fmt.char(Hex[s[i] shr 4]), Fmt.char(Hex[s[i] & 15])]);
+        | 'a' .. 'z', 'A' .. 'Z', '0' .. '9', '-', '.', '_', '~': Buf.add(b^, s[i]);
+        | else: Fmt.write(b^, "%{}{}", [Fmt.char(Hex[s[i] shr 4]), Fmt.char(Hex[s[i] & 15])]);
         end;
     end;
 end;
@@ -1205,27 +1205,27 @@ begin
         webbed := true;
     end;
     web.deadline := Sys.clock() + I64(WebWait) * 1000000000;
-    Http.init(ADR(res), mem);
+    Http.init(res, mem);
     req := {method: "GET", minor: 1};
-    _ := Http.add(ADR(req), "User-Agent", "arno");
-    _ := Http.add(ADR(req), "Accept", "text/html, text/plain;q=0.9, */*;q=0.8");
-    r := try Http.open(ADR(web), ADR(req), url, ADR(res));
+    _ := Http.add(req, "User-Agent", "arno");
+    _ := Http.add(req, "Accept", "text/html, text/plain;q=0.9, */*;q=0.8");
+    r := try Http.open(web, req, url, res);
     while body^.len < MaxPage do
-        n, err := Http.read(r, Buf.spare(body, MaxPage - body^.len));
+        n, err := Http.read(r^, Buf.spare(body^, MaxPage - body^.len));
         if err # nil then
-            Http.doneClient(ADR(web));
+            Http.doneClient(web);
             return "", err;
         end;
         if n = 0 then break; end;
         INC(body^.len, n);
     end;
-    if body^.len >= MaxPage then Http.doneClient(ADR(web)); end;   (* the rest isn't read *)
+    if body^.len >= MaxPage then Http.doneClient(web); end;   (* the rest isn't read *)
     if res.status >= 400 then
-        Buf.reset(body);
-        Fmt.write(body, "the server answered {} {}", [Fmt.int(res.status), Fmt.str(res.reason)]);
+        Buf.reset(body^);
+        Fmt.write(body^, "the server answered {} {}", [Fmt.int(res.status), Fmt.str(res.reason)]);
         return "", Failed;
     end;
-    return Http.header(ADR(res), "Content-Type"), nil;
+    return Http.header(res, "Content-Type"), nil;
 end;
 
 (* search: the first MaxResults of what SearXNG finds for the query,
@@ -1233,36 +1233,36 @@ end;
 proc searchWeb(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
 var url, body: Buf.Buf; d: Json.Doc; v, r, x: Json.Value; i: INT; err: ERROR;
 begin
-    Buf.init(ADR(url), mem);
-    Buf.init(ADR(body), mem);
-    Buf.str(ADR(url), searx);
-    Buf.str(ADR(url), "/search?format=json&q=");
+    Buf.init(url, mem);
+    Buf.init(body, mem);
+    Buf.str(url, searx);
+    Buf.str(url, "/search?format=json&q=");
     escape(ADR(url), str(a, "query"));
-    _, err := page(Buf.bytes(ADR(url)), mem, ADR(body));
+    _, err := page(Buf.bytes(url), mem, ADR(body));
     if err = Failed then
-        Fmt.write(out, "error: search failed: {}", [Fmt.str(Buf.bytes(ADR(body)))]);
+        Fmt.write(out^, "error: search failed: {}", [Fmt.str(Buf.bytes(body))]);
         return;
     elsif err # nil then
-        Fmt.write(out, "error: search failed: {}", [Fmt.str(MSG(err))]);
+        Fmt.write(out^, "error: search failed: {}", [Fmt.str(MSG(err))]);
         return;
     end;
     if not Json.init(ADR(d), mem) then return; end;
-    v := Json.parse(ADR(d), Buf.bytes(ADR(body)));
+    v := Json.parse(ADR(d), Buf.bytes(body));
     r := Json.member(ADR(d), v, "results");
     if Json.kind(ADR(d), r) # Json.Kind.array then
         i := body.len;
         if i > 200 then i := 200; end;
-        Fmt.write(out, "error: a bad reply from SearXNG: {}", [Fmt.str(Buf.bytes(ADR(body))[0..i])]);
+        Fmt.write(out^, "error: a bad reply from SearXNG: {}", [Fmt.str(Buf.bytes(body)[0..i])]);
         return;
     end;
     for i := 0 to Json.len(ADR(d), r) - 1 do
         if i = MaxResults then break; end;
         x := Json.item(ADR(d), r, i);
-        Fmt.write(out, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "title"))),
+        Fmt.write(out^, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "title"))),
             Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "url"))),
             Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "content")))]);
     end;
-    if out^.len = 0 then Buf.str(out, "no results"); end;
+    if out^.len = 0 then Buf.str(out^, "no results"); end;
 end;
 
 (* fetch: the page at the URL, as text: an HTML page's laid out by
@@ -1274,30 +1274,30 @@ var body: Buf.Buf; url, kind, s: []U8; err: ERROR;
 begin
     url := str(a, "url");
     if not Str.hasPrefix(url, "http://") and not Str.hasPrefix(url, "https://") then
-        Buf.str(out, "error: the url must begin with http:// or https://");
+        Buf.str(out^, "error: the url must begin with http:// or https://");
         return;
     end;
-    Buf.init(ADR(body), mem);
+    Buf.init(body, mem);
     kind, err := page(url, mem, ADR(body));
     if err = Failed then
-        Fmt.write(out, "error: {}", [Fmt.str(Buf.bytes(ADR(body)))]);
+        Fmt.write(out^, "error: {}", [Fmt.str(Buf.bytes(body))]);
         return;
     elsif err # nil then
-        Fmt.write(out, "error: {}", [Fmt.str(MSG(err))]);
+        Fmt.write(out^, "error: {}", [Fmt.str(MSG(err))]);
         return;
     end;
-    s := Buf.bytes(ADR(body));
+    s := Buf.bytes(body);
     if (Str.find(kind, "text/html") >= 0) or (Str.find(kind, "application/xhtml") >= 0) then
         Ahtml.text(s, kind, out);
         return;
     end;
     if LEN(s) > 8192 then s := s[0..8192]; end;
     if Str.find(s, "\x00") >= 0 then
-        Fmt.write(out, "error: not text ({})", [Fmt.str(kind)]);
+        Fmt.write(out^, "error: not text ({})", [Fmt.str(kind)]);
         return;
     end;
-    Buf.str(out, Buf.bytes(ADR(body)));
-    if out^.len = 0 then Buf.str(out, "(empty)"); end;
+    Buf.str(out^, Buf.bytes(body));
+    if out^.len = 0 then Buf.str(out^, "(empty)"); end;
 end;
 
 (* The tools a request offers: Offered, less those that change files
@@ -1307,22 +1307,22 @@ end;
 proc offered*(lead, edits: BOOL): []Awire.Tool;
 var b: Buf.Buf; i: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Tools.reset(ADR(offer));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Tools.reset(offer);
     for i := 0 to LEN(Offered) - 1 do
         match Offered[i].name of
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
-        | "run": if LEN(Str.trim(Buf.bytes(ADR(runs)))) = 0 then continue; end;
+        | "run": if LEN(Str.trim(Buf.bytes(runs))) = 0 then continue; end;
         | "check": if LEN(testFor(ADR(b))) = 0 then continue; end;
         | else:
         end;
-        Tools.push(ADR(offer), Offered[i]);
+        Tools.push(offer, Offered[i]);
     end;
-    return Tools.all(ADR(offer));
+    return Tools.all(offer);
 end;
 
 (* A call *)
@@ -1336,8 +1336,8 @@ var refused: Refusals.Vec;   (* the changes the human declined this run, from He
    come back unchanged unless the file is as it was. *)
 proc key(name: []U8; a: ^Args; b: ^Buf.Buf);
 begin
-    Buf.str(b, name);
-    Buf.add(b, 1);
+    Buf.str(b^, name);
+    Buf.add(b^, 1);
     Json.write(a^.d, b, a^.v, {});
 end;
 
@@ -1346,7 +1346,7 @@ end;
 proc said(key: []U8): []U8;
 var r: []Refusal; i: INT;
 begin
-    r := Refusals.all(ADR(refused));
+    r := Refusals.all(refused);
     for i := 0 to LEN(r) - 1 do
         if r[i].key = key then return r[i].said; end;
     end;
@@ -1360,12 +1360,12 @@ proc forgive*;
 var r: []Refusal; i: INT;
 begin
     trust.len := trustRun;
-    r := Refusals.all(ADR(refused));
+    r := Refusals.all(refused);
     for i := 0 to LEN(r) - 1 do
         Str.free(Heap.heap, r[i].key);
         Str.free(Heap.heap, r[i].said);
     end;
-    Refusals.reset(ADR(refused));
+    Refusals.reset(refused);
 end;
 
 (* Whether every path the call of name would reach may be reached, the
@@ -1401,9 +1401,9 @@ begin
             x := args[i];
             if x = ";" then first := true; continue; end;
             if first then prog := x; first := false; continue; end;
-            if not Afind.listed(prog, Buf.bytes(ADR(runs))) then continue; end;
+            if not Afind.listed(prog, Buf.bytes(runs)) then continue; end;
             if Str.hasPrefix(x, "-") then _, x, _ := Str.cut(x, "="); end;
-            if (LEN(x) = 0) or Afind.listed(prog, Buf.bytes(ADR(runsRO))) and (Sys.access(x, {}) # 0) then continue; end;
+            if (LEN(x) = 0) or Afind.listed(prog, Buf.bytes(runsRO)) and (Sys.access(x, {}) # 0) then continue; end;
             if not fence(name, x, h, out) then return false; end;
         end;
     | else:
@@ -1416,11 +1416,11 @@ end;
 proc clean*(b: ^Buf.Buf; s: []U8);
 var i, n: INT; c: I32;
 begin
-    if Str.valid(s) then Buf.str(b, s); return; end;
+    if Str.valid(s) then Buf.str(b^, s); return; end;
     i := 0;
     while i < LEN(s) do
         c, n := Str.decode(s[i..LEN(s)]);
-        if (c = 0FFFDH) and (n = 1) then Buf.str(b, "\xEF\xBF\xBD"); else Buf.str(b, s[i..i + n]); end;
+        if (c = 0FFFDH) and (n = 1) then Buf.str(b^, "\xEF\xBF\xBD"); else Buf.str(b^, s[i..i + n]); end;
         INC(i, n);
     end;
 end;
@@ -1434,20 +1434,20 @@ var d: Json.Doc; a: Args; res, k: Buf.Buf; s: []U8; i, cut: INT; change, ok: BOO
 begin
     if not Json.init(ADR(d), mem) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
-    Buf.init(ADR(res), mem);
-    Buf.init(ADR(k), mem);
+    Buf.init(res, mem);
+    Buf.init(k, mem);
     change := (name = "edit") or (name = "move") or (name = "remove");
     ok := parse(ADR(d), mem, args, ADR(a));
     if ok and change then key(name, ADR(a), ADR(k)); end;
     if not ok then
-        Buf.str(ADR(res), "error: the arguments must be one JSON object, as the tool's schema says; got: ");
+        Buf.str(res, "error: the arguments must be one JSON object, as the tool's schema says; got: ");
         cut := LEN(args);
         if cut > 200 then cut := 200; end;
-        Buf.str(ADR(res), args[0..cut]);
-    elsif change and (LEN(said(Buf.bytes(ADR(k)))) > 0) then
-        Buf.str(ADR(res), "not run: the human already declined this very change (");
-        Buf.str(ADR(res), said(Buf.bytes(ADR(k))));
-        Buf.str(ADR(res), "). Change it as they said, or ask them.");
+        Buf.str(res, args[0..cut]);
+    elsif change and (LEN(said(Buf.bytes(k))) > 0) then
+        Buf.str(res, "not run: the human already declined this very change (");
+        Buf.str(res, said(Buf.bytes(k)));
+        Buf.str(res, "). Change it as they said, or ask them.");
     elsif not fenced(name, ADR(a), h, ADR(res)) then
         (* res says why *)
     elsif name = "read" then
@@ -1473,28 +1473,28 @@ begin
     elsif name = "fetch" then
         fetch(ADR(a), mem, ADR(res));
     elsif name = "delegate" then
-        Buf.str(ADR(res), "error: there are no workers here");
+        Buf.str(res, "error: there are no workers here");
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
-        Buf.str(ADR(res), "error: there is no tool named \"");
-        Buf.str(ADR(res), name);
-        Buf.str(ADR(res), "\". The tools are:");
+        Buf.str(res, "error: there is no tool named \"");
+        Buf.str(res, name);
+        Buf.str(res, "\". The tools are:");
         for i := 0 to LEN(Offered) - 1 do
-            Buf.add(ADR(res), ' ');
-            Buf.str(ADR(res), Offered[i].name);
+            Buf.add(res, ' ');
+            Buf.str(res, Offered[i].name);
         end;
     end;
-    s := Buf.bytes(ADR(res));
-    if change and Str.hasPrefix(s, "declined by user") and (LEN(said(Buf.bytes(ADR(k)))) = 0) then
+    s := Buf.bytes(res);
+    if change and Str.hasPrefix(s, "declined by user") and (LEN(said(Buf.bytes(k))) = 0) then
         i := Str.find(s, ". Nothing was changed");
         if i < 0 then i := LEN(s); end;
-        Refusals.push(ADR(refused), {key: keep(Buf.bytes(ADR(k))), said: keep(s[0..i])});
+        Refusals.push(refused, {key: keep(Buf.bytes(k)), said: keep(s[0..i])});
     end;
     if LEN(s) > MaxOut then
         cut := MaxOut;
         while (cut > 0) and (s[cut] & 0C0H = 80H) do DEC(cut); end;   (* where a character starts *)
         clean(out, s[0..cut]);
-        Buf.str(out, "\n[truncated]");
+        Buf.str(out^, "\n[truncated]");
     else
         clean(out, s);
     end;
@@ -1534,26 +1534,26 @@ var mem: Arena.Arena;
 proc run(name, args: []U8; ask: Ask): []U8;
 var b: Buf.Buf; h: Human;
 begin
-    Buf.init(ADR(b), Heap.heap);
+    Buf.init(b, Heap.heap);
     h := {ask: ask, why: reason};
     call(name, args, ADR(h), ADR(mem.base), ADR(b));
-    Arena.reset(ADR(mem));
-    return Buf.bytes(ADR(b));
+    Arena.reset(mem);
+    return Buf.bytes(b);
 end;
 
 proc holds(path, want: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    _ := Files.load(path, ADR(b));
-    expect(path, Buf.bytes(ADR(b)), want);
+    Buf.init(b, Heap.heap);
+    _ := Files.load(path, b);
+    expect(path, Buf.bytes(b), want);
 end;
 
 proc main*: INT;
 var dir, s: []U8; long, store: Buf.Buf; i: INT;
 begin
     Arun.child();
-    if not Arena.init(ADR(mem), 1 shl 26) then return 1; end;
+    if not Arena.init(mem, 1 shl 26) then return 1; end;
     _ := Sys.makeDir("build");
     _ := Sys.makeDir("build/tools");
     _ := Sys.makeDir("build/tools/proj");
@@ -1563,9 +1563,9 @@ begin
     _ := Files.write("build/tools/proj/bin", "a\x00b");
     _ := Files.write("build/tools/proj/bad", "caf\xE9\n");
     _ := Files.write("build/tools/out/g", "far\n");
-    Buf.init(ADR(long), Heap.heap);
-    for i := 1 to 5000 do Buf.str(ADR(long), "a line of the long file\n"); end;
-    _ := Files.write("build/tools/proj/long", Buf.bytes(ADR(long)));
+    Buf.init(long, Heap.heap);
+    for i := 1 to 5000 do Buf.str(long, "a line of the long file\n"); end;
+    _ := Files.write("build/tools/proj/long", Buf.bytes(long));
     dir, _ := Sys.workDir();
     dir, _ := Str.copy(Heap.heap, dir);
     if Sys.setWorkDir("build/tools/proj") # 0 then Out.str("Atools: no build/tools\n"); return 1; end;
@@ -1697,12 +1697,12 @@ begin
     if asked # 1 then Out.str("Atools: run's trust outlived the conversation\n"); failed := true; end;
 
     (* check: config's command, or the project's own in tests.json *)
-    Buf.init(ADR(store), Heap.heap);
-    Buf.str(ADR(store), dir);
-    Buf.str(ADR(store), "/build/tools/store/");
-    _ := Sys.makeDir(Buf.bytes(ADR(store)));
+    Buf.init(store, Heap.heap);
+    Buf.str(store, dir);
+    Buf.str(store, "/build/tools/store/");
+    _ := Sys.makeDir(Buf.bytes(store));
     _ := Sys.remove("../store/tests.json");
-    Astore.use(Buf.bytes(ADR(store)));
+    Astore.use(Buf.bytes(store));
     expect("check, none", run("check", `{}`, nil),
         "error: no test command for this project; ask the human to run /test COMMAND once");
     commands("", "", "", "", "echo testing; exit 1");
@@ -1715,6 +1715,6 @@ begin
 end;
 
 begin
-    Refusals.init(ADR(refused), Heap.heap);
-    Tools.init(ADR(offer), Heap.heap);
+    Refusals.init(refused, Heap.heap);
+    Tools.init(offer, Heap.heap);
 end Atools.

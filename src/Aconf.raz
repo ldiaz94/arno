@@ -54,30 +54,30 @@ const
 proc init*(c: ^Conf);
 begin
     c^ := {};
-    Buf.init(ADR(c^.warnings), Heap.heap);
-    Buf.init(ADR(c^.text), Heap.heap);
-    Strs.init(ADR(c^.keys), Heap.heap);
-    Strs.init(ADR(c^.values), Heap.heap);
-    Strs.init(ADR(c^.params), Heap.heap);
+    Buf.init(c^.warnings, Heap.heap);
+    Buf.init(c^.text, Heap.heap);
+    Strs.init(c^.keys, Heap.heap);
+    Strs.init(c^.values, Heap.heap);
+    Strs.init(c^.params, Heap.heap);
     _ := Awire.preset("ollama", ADR(c^.prov));
 end;
 
 proc dropParams(c: ^Conf);
 var i: INT; p: [][]U8;
 begin
-    p := Strs.all(ADR(c^.params));
+    p := Strs.all(c^.params);
     for i := 0 to LEN(p) - 1 do Str.free(Heap.heap, p[i]); end;
-    Strs.reset(ADR(c^.params));
+    Strs.reset(c^.params);
 end;
 
 proc done*(c: ^Conf);
 begin
     dropParams(c);
-    Strs.done(ADR(c^.params));
-    Strs.done(ADR(c^.keys));
-    Strs.done(ADR(c^.values));
-    Buf.done(ADR(c^.text));
-    Buf.done(ADR(c^.warnings));
+    Strs.done(c^.params);
+    Strs.done(c^.keys);
+    Strs.done(c^.values);
+    Buf.done(c^.text);
+    Buf.done(c^.warnings);
     c^ := {};
 end;
 
@@ -85,42 +85,42 @@ end;
 proc get*(c: ^Conf; key: []U8): []U8;
 var i: INT; keys: [][]U8;
 begin
-    keys := Strs.all(ADR(c^.keys));
+    keys := Strs.all(c^.keys);
     for i := LEN(keys) - 1 to 0 by -1 do
-        if keys[i] = key then return Strs.all(ADR(c^.values))[i]; end;
+        if keys[i] = key then return Strs.all(c^.values)[i]; end;
     end;
     return "";
 end;
 
 proc warn(c: ^Conf; a, b: []U8);
 begin
-    Buf.str(ADR(c^.warnings), "config: ");
-    Buf.str(ADR(c^.warnings), a);
-    Buf.str(ADR(c^.warnings), b);
-    Buf.add(ADR(c^.warnings), '\n');
+    Buf.str(c^.warnings, "config: ");
+    Buf.str(c^.warnings, a);
+    Buf.str(c^.warnings, b);
+    Buf.add(c^.warnings, '\n');
 end;
 
 (* A param of the provider, its key and value joined by =. *)
 proc param(c: ^Conf; key, value: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.str(ADR(b), key);
-    Buf.add(ADR(b), '=');
-    Buf.str(ADR(b), value);
-    Strs.push(ADR(c^.params), Amsg.keep(Buf.bytes(ADR(b))));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, key);
+    Buf.add(b, '=');
+    Buf.str(b, value);
+    Strs.push(c^.params, Amsg.keep(Buf.bytes(b)));
 end;
 
 (* model's effort, as the param reasoning_effort@MODEL=level. *)
 proc effort(c: ^Conf; model, level: []U8);
 var key: Buf.Buf;
 begin
-    Buf.init(ADR(key), Heap.heap);
-    defer Buf.done(ADR(key));
-    Buf.str(ADR(key), "reasoning_effort@");
-    Buf.str(ADR(key), model);
-    param(c, Buf.bytes(ADR(key)), level);
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.str(key, "reasoning_effort@");
+    Buf.str(key, model);
+    param(c, Buf.bytes(key), level);
 end;
 
 (* value, a whole number of 0 or more, into n; or a warning, and n as
@@ -184,8 +184,8 @@ end;
 proc read*(c: ^Conf; text: []U8);
 var line, rest, key, value: []U8; more, eq: BOOL;
 begin
-    Buf.str(ADR(c^.text), text);
-    rest := Buf.bytes(ADR(c^.text));
+    Buf.str(c^.text, text);
+    rest := Buf.bytes(c^.text);
     more := LEN(rest) > 0;
     while more do
         line, rest, more := Str.cut(rest, "\n");
@@ -195,11 +195,11 @@ begin
         if not eq then continue; end;
         key := Str.trim(key);
         value := Str.trim(value);
-        Strs.push(ADR(c^.keys), key);
-        Strs.push(ADR(c^.values), value);
+        Strs.push(c^.keys, key);
+        Strs.push(c^.values, value);
         setting(c, key, value);
     end;
-    c^.prov.params := Strs.all(ADR(c^.params));
+    c^.prov.params := Strs.all(c^.params);
 end;
 
 (* c made the configuration in arno's file, or the ollama preset if
@@ -208,19 +208,19 @@ proc load*(c: ^Conf);
 var path, text: Buf.Buf; base: []U8;
 begin
     init(c);
-    Buf.init(ADR(path), Heap.heap);
-    Buf.init(ADR(text), Heap.heap);
-    defer Buf.done(ADR(path));
-    defer Buf.done(ADR(text));
+    Buf.init(path, Heap.heap);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(path);
+    defer Buf.done(text);
     base := Sys.env("XDG_CONFIG_HOME");
     if LEN(base) > 0 then
-        Buf.str(ADR(path), base);
+        Buf.str(path, base);
     else
-        Buf.str(ADR(path), Sys.env("HOME"));
-        Buf.str(ADR(path), "/.config");
+        Buf.str(path, Sys.env("HOME"));
+        Buf.str(path, "/.config");
     end;
-    Buf.str(ADR(path), "/arno/config");
-    if Files.load(Buf.bytes(ADR(path)), ADR(text)) = 0 then read(c, Buf.bytes(ADR(text))); end;
+    Buf.str(path, "/arno/config");
+    if Files.load(Buf.bytes(path), text) = 0 then read(c, Buf.bytes(text)); end;
 end;
 
 (* The test: a file of every kind of line. *)
@@ -265,14 +265,14 @@ begin
     if c.prov.dialect # Awire.Dialect.anthropic then expect("its dialect", "openai", "anthropic"); end;
     if c.prov.limit # 600 then expect("its timeout", "not 600", "600"); end;
     if c.prov.retries # 0 then expect("its retries, never set", "set", "0"); end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Str.join(ADR(b), c.prov.params, " ");
-    expect("its params, temperature dropped by the provider after it", Buf.bytes(ADR(b)),
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Str.join(b, c.prov.params, " ");
+    expect("its params, temperature dropped by the provider after it", Buf.bytes(b),
         "reasoning_effort@kimi-k3=high reasoning_effort@deepseek-v4.1-flash:cloud=low anthropic_version=2023-06-01");
     expect("a key kept for the rest of arno", get(ADR(c), "run"), "tiza man fd");
     expect("a key not set", get(ADR(c), "worker"), "");
-    expect("the warnings", Buf.bytes(ADR(c.warnings)),
+    expect("the warnings", Buf.bytes(c.warnings),
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
     expect("the effort for a model", Awire.param(ADR(c.prov), "reasoning_effort@kimi-k3"), "high");
     done(ADR(c));

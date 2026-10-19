@@ -69,11 +69,11 @@ end;
 proc add(text, desc: []U8);
 var all: []Item; i: INT;
 begin
-    all := Items.all(ADR(items));
+    all := Items.all(items);
     for i := 0 to LEN(all) - 1 do
         if all[i].text = text then return; end;
     end;
-    Items.push(ADR(items), {text: keep(text), desc: keep(desc)});
+    Items.push(items, {text: keep(text), desc: keep(desc)});
 end;
 
 (* Whether s begins with p, ASCII letters' case aside. *)
@@ -98,16 +98,16 @@ end;
 proc path(p: []U8; dir: BOOL);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     if Str.find(p, " ") >= 0 then
-        if dir then Fmt.write(ADR(b), "@\"{}/", [Fmt.str(p)]); else Fmt.write(ADR(b), "@\"{}\" ", [Fmt.str(p)]); end;
+        if dir then Fmt.write(b, "@\"{}/", [Fmt.str(p)]); else Fmt.write(b, "@\"{}\" ", [Fmt.str(p)]); end;
     elsif dir then
-        Fmt.write(ADR(b), "@{}/", [Fmt.str(p)]);
+        Fmt.write(b, "@{}/", [Fmt.str(p)]);
     else
-        Fmt.write(ADR(b), "@{} ", [Fmt.str(p)]);
+        Fmt.write(b, "@{} ", [Fmt.str(p)]);
     end;
-    if dir then add(Buf.bytes(ADR(b)), "dir"); else add(Buf.bytes(ADR(b)), ""); end;
+    if dir then add(Buf.bytes(b), "dir"); else add(Buf.bytes(b), ""); end;
 end;
 
 (* The items for word, an @path being typed. *)
@@ -120,26 +120,26 @@ begin
     i := Str.findLast(p, "/");
     dir := p[0..i + 1];
     base := p[i + 1..LEN(p)];
-    Buf.init(ADR(list), Heap.heap);
-    defer Buf.done(ADR(list));
-    Buf.init(ADR(full), Heap.heap);
-    defer Buf.done(ADR(full));
+    Buf.init(list, Heap.heap);
+    defer Buf.done(list);
+    Buf.init(full, Heap.heap);
+    defer Buf.done(full);
     name := dir;
     if LEN(name) = 0 then name := "."; end;
     if Aattach.listing(Str.trimRight(name), ADR(list)) then
-        rest := Buf.bytes(ADR(list));
+        rest := Buf.bytes(list);
         ok := LEN(rest) > 0;
         while ok do
             name, rest, ok := Str.cut(rest, "\n");
             if (LEN(name) = 0) or not begins(name, base) then continue; end;
             if Str.hasPrefix(name, ".") and not Str.hasPrefix(base, ".") then continue; end;
-            Buf.reset(ADR(full));
-            Buf.str(ADR(full), dir);
-            Buf.str(ADR(full), name);
+            Buf.reset(full);
+            Buf.str(full, dir);
+            Buf.str(full, name);
             if Str.hasSuffix(name, "/") then
-                path(Buf.bytes(ADR(full))[0..full.len - 1], true);
+                path(Buf.bytes(full)[0..full.len - 1], true);
             else
-                path(Buf.bytes(ADR(full)), false);
+                path(Buf.bytes(full), false);
             end;
         end;
     end;
@@ -162,8 +162,8 @@ end;
 proc command(word, models: []U8);
 var cmd, arg, s, m: []U8; b: Buf.Buf; i, n: INT; list: Listed.Vec; l: []Astore.Item; c: Aprompt.Command;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     if Str.find(word, " ") < 0 then
         for i := 0 to LEN(Aprompt.Commands) - 1 do
             c := Aprompt.Commands[i];
@@ -173,12 +173,12 @@ begin
                 continue;
             end;
             (* a blank after one that must take its argument *)
-            Buf.reset(ADR(b));
-            Buf.str(ADR(b), c.name);
-            if not Str.hasPrefix(c.args, "[") then Buf.add(ADR(b), ' '); end;
+            Buf.reset(b);
+            Buf.str(b, c.name);
+            if not Str.hasPrefix(c.args, "[") then Buf.add(b, ' '); end;
             n := b.len;
-            Fmt.write(ADR(b), "{} \u{B7} {}", [Fmt.str(c.args), Fmt.str(c.desc)]);
-            add(Buf.bytes(ADR(b))[0..n], Buf.bytes(ADR(b))[n..b.len]);
+            Fmt.write(b, "{} \u{B7} {}", [Fmt.str(c.args), Fmt.str(c.desc)]);
+            add(Buf.bytes(b)[0..n], Buf.bytes(b)[n..b.len]);
         end;
         return;
     end;
@@ -188,9 +188,9 @@ begin
     | "/mode":
         for i := 0 to LEN(Aprompt.Modes) - 1 do
             if not begins(Aprompt.Modes[i].name, arg) then continue; end;
-            Buf.reset(ADR(b));
-            Fmt.write(ADR(b), "/mode {}", [Fmt.str(Aprompt.Modes[i].name)]);
-            add(Buf.bytes(ADR(b)), Aprompt.Modes[i].hint);
+            Buf.reset(b);
+            Fmt.write(b, "/mode {}", [Fmt.str(Aprompt.Modes[i].name)]);
+            add(Buf.bytes(b), Aprompt.Modes[i].hint);
         end;
     | "/provider", "/model":
         s := models;
@@ -198,17 +198,17 @@ begin
         while LEN(s) > 0 do
             m, s := Str.field(s);
             if (LEN(m) = 0) or not begins(m, arg) then continue; end;
-            Buf.reset(ADR(b));
-            Fmt.write(ADR(b), "{} {}", [Fmt.str(cmd), Fmt.str(m)]);
-            add(Buf.bytes(ADR(b)), "");
+            Buf.reset(b);
+            Fmt.write(b, "{} {}", [Fmt.str(cmd), Fmt.str(m)]);
+            add(Buf.bytes(b), "");
         end;
     | "/load":
         Astore.recent(8, arg, ADR(list));
-        l := Listed.all(ADR(list));
+        l := Listed.all(list);
         for i := 0 to LEN(l) - 1 do
-            Buf.reset(ADR(b));
-            Fmt.write(ADR(b), "/load {}", [Fmt.str(l[i].id)]);
-            add(Buf.bytes(ADR(b)), l[i].title);
+            Buf.reset(b);
+            Fmt.write(b, "/load {}", [Fmt.str(l[i].id)]);
+            add(Buf.bytes(b), l[i].title);
         end;
         Astore.drop(ADR(list));
     | else:
@@ -221,11 +221,11 @@ end;
 proc complete*(word, models: []U8): []Item;
 var all: []Item;
 begin
-    Arena.reset(ADR(mem));
-    Items.reset(ADR(items));
+    Arena.reset(mem);
+    Items.reset(items);
     if LEN(word) = 0 then return []; end;
     if word[0] = '@' then files(word); else command(word, models); end;
-    all := Items.all(ADR(items));
+    all := Items.all(items);
     if (LEN(all) = 1) and (Str.trimRight(all[0].text) = Str.trimRight(word)) then return []; end;
     return all;
 end;
@@ -237,14 +237,14 @@ var failed: BOOL;
 proc expect(what: []U8; word: []U8; want: []U8);
 var all: []Item; b: Buf.Buf; i: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     all := complete(word, "m-one\nm-two\n");
     for i := 0 to LEN(all) - 1 do
-        Fmt.write(ADR(b), "{}|{};", [Fmt.str(all[i].text), Fmt.str(all[i].desc)]);
+        Fmt.write(b, "{}|{};", [Fmt.str(all[i].text), Fmt.str(all[i].desc)]);
     end;
-    if Buf.bytes(ADR(b)) = want then return; end;
-    Fmt.print("Acomplete: {}: got {}\nwant {}\n", [Fmt.str(what), Fmt.str(Buf.bytes(ADR(b))), Fmt.str(want)]);
+    if Buf.bytes(b) = want then return; end;
+    Fmt.print("Acomplete: {}: got {}\nwant {}\n", [Fmt.str(what), Fmt.str(Buf.bytes(b)), Fmt.str(want)]);
     failed := true;
 end;
 
@@ -278,23 +278,23 @@ begin
     _ := Files.write("build/complete/Apple.txt", "");
     _ := Files.write("build/complete/.hidden", "");
     _ := Files.write("build/complete/sub/deep-apple.raz", "");
-    Buf.init(ADR(here), Heap.heap);
+    Buf.init(here, Heap.heap);
     d, _ := Sys.workDir();
-    Buf.str(ADR(here), d);
+    Buf.str(here, d);
     _ := Sys.setWorkDir("build/complete");
     expect("a path, and below", "@a", "@Apple.txt |;@\"a dir/|dir;@sub/deep-apple.raz |;");
     expect("found below", "@apple", "@Apple.txt |;@sub/deep-apple.raz |;");
     expect("into a directory", "@sub/", "@sub/deep-apple.raz |;");
     expect("hidden", "@.h", "@.hidden |;");
-    _ := Sys.setWorkDir(Buf.bytes(ADR(here)));
+    _ := Sys.setWorkDir(Buf.bytes(here));
     if failed then return 1; end;
     return 0;
 end;
 
 proc init;
 begin
-    if not Arena.init(ADR(mem), 1 shl 20) then Out.str("Acomplete: out of memory\n"); end;
-    Items.init(ADR(items), Heap.heap);
+    if not Arena.init(mem, 1 shl 20) then Out.str("Acomplete: out of memory\n"); end;
+    Items.init(items, Heap.heap);
 end;
 
 begin

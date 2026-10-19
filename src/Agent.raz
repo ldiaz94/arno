@@ -133,10 +133,10 @@ proc init*(a: ^Agent; prov: ^Awire.Prov; front: Front);
 begin
     a^ := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true,
         human: {ask: front.ask, why: front.why, arg: front.arg}};
-    Strs.init(ADR(a^.reports), Heap.heap);
+    Strs.init(a^.reports, Heap.heap);
     Awire.initClient(ADR(a^.client));
-    if not Arena.init(ADR(a^.mem), CallMemory) then Rt.stop("arno: out of memory"); end;
-    Buf.init(ADR(a^.seen), Heap.heap);
+    if not Arena.init(a^.mem, CallMemory) then Rt.stop("arno: out of memory"); end;
+    Buf.init(a^.seen, Heap.heap);
     Afence.init;
 end;
 
@@ -162,16 +162,16 @@ end;
    with the mode's instructions, or a worker's. *)
 proc system(a: ^Agent; c: ^Astore.Conv; sys: ^Buf.Buf);
 begin
-    Buf.reset(sys);
+    Buf.reset(sys^);
     Aprompt.write(ADR(a^.prompt), c, a^.prov, a^.mode, ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
-    Buf.str(sys, "\n\n");
+    Buf.str(sys^, "\n\n");
     if a^.working then
-        Buf.str(sys, WorkerText);
+        Buf.str(sys^, WorkerText);
     else
-        Buf.str(sys, "# Mode\n");
-        Buf.str(sys, Aprompt.Modes[INT(a^.mode)].text);
+        Buf.str(sys^, "# Mode\n");
+        Buf.str(sys^, Aprompt.Modes[INT(a^.mode)].text);
     end;
-    Arena.reset(ADR(a^.mem));
+    Arena.reset(a^.mem);
 end;
 
 (* A lookup prefetch made, shown as the def call it stands in for. *)
@@ -188,20 +188,20 @@ end;
 proc attach(a: ^Agent; c: ^Astore.Conv);
 var m: ^Amsg.Msg; b: Buf.Buf; n: INT;
 begin
-    m := ADR(Msgs.all(ADR(c^.msgs))[c^.msgs.len - 1]);
-    Buf.init(ADR(b), ADR(a^.mem.base));
-    Buf.str(ADR(b), m^.text);
+    m := ADR(Msgs.all(c^.msgs)[c^.msgs.len - 1]);
+    Buf.init(b, ADR(a^.mem.base));
+    Buf.str(b, m^.text);
     n := b.len;
     Aahead.prefetch(m^.text, ADR(a^.mem.base), prefetched, ^U8(a), ADR(b));
-    if b.len > n then Amsg.setText(m, Buf.bytes(ADR(b))); end;
-    Arena.reset(ADR(a^.mem));
+    if b.len > n then Amsg.setText(m, Buf.bytes(b)); end;
+    Arena.reset(a^.mem);
 end;
 
 (* The bytes of c's messages' text, the measure prune goes by. *)
 proc size(c: ^Astore.Conv): INT;
 var m: []Amsg.Msg; i, n: INT;
 begin
-    m := Msgs.all(ADR(c^.msgs));
+    m := Msgs.all(c^.msgs);
     n := 0;
     for i := 0 to LEN(m) - 1 do INC(n, LEN(m[i].text)); end;
     return n;
@@ -219,32 +219,32 @@ end;
 proc prune(a: ^Agent; c: ^Astore.Conv);
 var m: []Amsg.Msg; b: Buf.Buf; t, line, rest: []U8; i, k, steps, n: INT;
 begin
-    m := Msgs.all(ADR(c^.msgs));
+    m := Msgs.all(c^.msgs);
     steps := 0;
     i := LEN(m) - 1;
     while (i >= 0) and (steps < KeepSteps) do
         if (m[i].role = Amsg.Role.assistant) and (m[i].calls.len > 0) then INC(steps); end;
         DEC(i);
     end;
-    Buf.init(ADR(b), ADR(a^.mem.base));
+    Buf.init(b, ADR(a^.mem.base));
     for k := 0 to i do
         t := m[k].text;
         if (m[k].role # Amsg.Role.tool) or (LEN(t) < 2000) or (Str.find(t, CutMark) >= 0) then continue; end;
-        Buf.reset(ADR(b));
+        Buf.reset(b);
         rest := t;
         n := 0;
         while (LEN(rest) > 0) and (n < KeepHead) and (b.len < KeepBytes) do
             line, rest, _ := Str.cut(rest, "\n");
-            Buf.str(ADR(b), line);
-            if LEN(rest) > 0 then Buf.add(ADR(b), '\n'); end;
+            Buf.str(b, line);
+            if LEN(rest) > 0 then Buf.add(b, '\n'); end;
             INC(n);
         end;
         if LEN(rest) = 0 then continue; end;
-        Fmt.write(ADR(b), "{}{} more bytes, cut from the history as old; make the call again to see them]",
+        Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
             [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
-        Amsg.setText(ADR(m[k]), Buf.bytes(ADR(b)));
+        Amsg.setText(ADR(m[k]), Buf.bytes(b));
     end;
-    Arena.reset(ADR(a^.mem));
+    Arena.reset(a^.mem);
 end;
 
 (* The model asked, once, with c's messages; its reply added to them,
@@ -253,7 +253,7 @@ end;
 proc ask(a: ^Agent; c: ^Astore.Conv; sys: []U8; why: ^Buf.Buf): ERROR;
 var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; err: ERROR;
 begin
-    r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(ADR(c^.msgs)),
+    r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(c^.msgs),
         tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0), a^.mode in {Aprompt.chat, Aprompt.pair}),
         emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
     err := Awire.chat(ADR(r), ADR(reply), ADR(u), why);
@@ -268,7 +268,7 @@ begin
     if not a^.working and (u.inp + u.out > 0) then a^.held := u.inp + u.out; end;
     if a^.front.counted # nil then a^.front.counted(a^.front.arg); end;
     if (err = nil) or (LEN(reply.text) > 0) then
-        Msgs.push(ADR(c^.msgs), reply);
+        Msgs.push(c^.msgs, reply);
     else
         Amsg.free(ADR(reply));
     end;
@@ -279,8 +279,8 @@ end;
    starts with, so that a key is never found inside another. *)
 proc forget(a: ^Agent);
 begin
-    Buf.reset(ADR(a^.seen));
-    Buf.add(ADR(a^.seen), 0);
+    Buf.reset(a^.seen);
+    Buf.add(a^.seen, 0);
 end;
 
 (* Whether the call was made already this turn, by a tool that only
@@ -292,15 +292,15 @@ begin
         forget(a);
         return false;
     end;
-    Buf.init(ADR(key), Heap.heap);
-    defer Buf.done(ADR(key));
-    Buf.add(ADR(key), 0);
-    Buf.str(ADR(key), name);
-    Buf.add(ADR(key), 1);
-    Buf.str(ADR(key), args);
-    Buf.add(ADR(key), 0);
-    seen := Str.find(Buf.bytes(ADR(a^.seen)), Buf.bytes(ADR(key))) >= 0;
-    if not seen then Buf.str(ADR(a^.seen), Buf.bytes(ADR(key))[1..key.len]); end;
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.add(key, 0);
+    Buf.str(key, name);
+    Buf.add(key, 1);
+    Buf.str(key, args);
+    Buf.add(key, 0);
+    seen := Str.find(Buf.bytes(a^.seen), Buf.bytes(key)) >= 0;
+    if not seen then Buf.str(a^.seen, Buf.bytes(key)[1..key.len]); end;
     return seen;
 end;
 
@@ -328,67 +328,67 @@ var d: Json.Doc; p: Atools.Args; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.
     err: ERROR;
 begin
     if a^.working then
-        Buf.str(out, "error: a worker cannot delegate");
+        Buf.str(out^, "error: a worker cannot delegate");
         return;
     end;
     if LEN(a^.worker) = 0 then
-        Buf.str(out, "error: there is no worker model; the human sets one with worker = MODEL in the config");
+        Buf.str(out^, "error: there is no worker model; the human sets one with worker = MODEL in the config");
         return;
     end;
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
-    Buf.init(ADR(brief), Heap.heap);
-    defer Buf.done(ADR(brief));
-    Buf.init(ADR(why), Heap.heap);
-    defer Buf.done(ADR(why));
+    Buf.init(brief, Heap.heap);
+    defer Buf.done(brief);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
     if not Atools.parse(ADR(d), Heap.heap, args, ADR(p)) then
-        Buf.str(out, "error: the arguments must be one JSON object, as the tool's schema says");
+        Buf.str(out^, "error: the arguments must be one JSON object, as the tool's schema says");
         return;
     end;
     task := Str.trim(Atools.str(ADR(p), "task"));
     if LEN(task) = 0 then
-        Buf.str(out, "error: task is required: what the worker is to do, in full");
+        Buf.str(out^, "error: task is required: what the worker is to do, in full");
         return;
     end;
-    Fmt.write(ADR(brief), "Task: {}", [Fmt.str(task)]);
+    Fmt.write(brief, "Task: {}", [Fmt.str(task)]);
     files := Atools.list(ADR(p), "files");
-    if LEN(files) > 0 then Buf.str(ADR(brief), "\n\nFiles:"); end;
-    for i := 0 to LEN(files) - 1 do Fmt.write(ADR(brief), "\n- {}", [Fmt.str(files[i])]); end;
+    if LEN(files) > 0 then Buf.str(brief, "\n\nFiles:"); end;
+    for i := 0 to LEN(files) - 1 do Fmt.write(brief, "\n- {}", [Fmt.str(files[i])]); end;
     if LEN(Str.trim(Atools.str(ADR(p), "done_when"))) > 0 then
-        Fmt.write(ADR(brief), "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(ADR(p), "done_when")))]);
+        Fmt.write(brief, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(ADR(p), "done_when")))]);
     end;
     (* what earlier workers of this turn found goes along, so that the
        next one needn't find it again: a worker blind to a survey's
        findings wrote its own rule for what a unit already did *)
-    reports := Strs.all(ADR(a^.reports));
-    if LEN(reports) > 0 then Buf.str(ADR(brief), "\n\nWhat earlier workers on this task reported:"); end;
+    reports := Strs.all(a^.reports);
+    if LEN(reports) > 0 then Buf.str(brief, "\n\nWhat earlier workers on this task reported:"); end;
     for i := LEN(reports) - MaxReports to LEN(reports) - 1 do
         if i >= 0 then
-            Buf.str(ADR(brief), "\n\n---\n");
-            Buf.str(ADR(brief), reports[i][0..min(LEN(reports[i]), MaxReport)]);
+            Buf.str(brief, "\n\n---\n");
+            Buf.str(brief, reports[i][0..min(LEN(reports[i]), MaxReport)]);
         end;
     end;
-    Buf.reset(ADR(why));
-    Fmt.write(ADR(why), "worker {}: {}", [Fmt.str(a^.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
-    note(a, Buf.bytes(ADR(why)));
+    Buf.reset(why);
+    Fmt.write(why, "worker {}: {}", [Fmt.str(a^.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
+    note(a, Buf.bytes(why));
 
     Astore.init(ADR(w), "worker");
     defer Astore.done(ADR(w));
-    m := Msgs.add(ADR(w.msgs));
+    m := Msgs.add(w.msgs);
     Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, Buf.bytes(ADR(brief)));
+    Amsg.setText(m, Buf.bytes(brief));
     prov := a^.prov^;
     prov.model := a^.worker;
     lead := a^.prov;
     a^.prov := ADR(prov);
     a^.working := true;
-    Buf.reset(ADR(why));
+    Buf.reset(why);
     err := turn(a, ADR(w), ADR(why));
     a^.working := false;
     a^.prov := lead;
     forget(a);   (* what the worker saw is no call of the lead's *)
 
-    msgs := Msgs.all(ADR(w.msgs));
+    msgs := Msgs.all(w.msgs);
     steps := 0;
     for i := 0 to LEN(msgs) - 1 do
         if msgs[i].role = Amsg.Role.assistant then INC(steps); end;
@@ -396,14 +396,14 @@ begin
     report := "";
     if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
     if LEN(report) = 0 then
-        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps)]);
-        if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(ADR(why)))]); end;
+        Fmt.write(out^, "error: the worker ended without a report, after {} steps", [Fmt.int(steps)]);
+        if err = Awire.Failed then Fmt.write(out^, ": {}", [Fmt.str(Buf.bytes(why))]); end;
         return;
     end;
-    Buf.reset(ADR(why));
-    Fmt.write(ADR(why), "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
-    Strs.push(ADR(a^.reports), Amsg.keep(Buf.bytes(ADR(why))));
-    Fmt.write(out, "worker report ({} steps):\n{}", [Fmt.int(steps), Fmt.str(report)]);
+    Buf.reset(why);
+    Fmt.write(why, "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
+    Strs.push(a^.reports, Amsg.keep(Buf.bytes(why)));
+    Fmt.write(out^, "worker report ({} steps):\n{}", [Fmt.int(steps), Fmt.str(report)]);
 end;
 
 
@@ -414,32 +414,32 @@ end;
 proc run(a: ^Agent; c: ^Astore.Conv): INT;
 var calls: []Amsg.Call; res: Buf.Buf; m: ^Amsg.Msg; i, bad: INT;
 begin
-    Buf.init(ADR(res), Heap.heap);
-    defer Buf.done(ADR(res));
+    Buf.init(res, Heap.heap);
+    defer Buf.done(res);
     (* the calls stay where they are as messages are added: a message
        keeps its calls in memory of their own *)
-    calls := Calls.all(ADR(Msgs.all(ADR(c^.msgs))[c^.msgs.len - 1].calls));
+    calls := Calls.all(Msgs.all(c^.msgs)[c^.msgs.len - 1].calls);
     bad := 0;
     for i := 0 to LEN(calls) - 1 do
-        Buf.reset(ADR(res));
+        Buf.reset(res);
         if a^.front.call # nil then a^.front.call(calls[i].name, calls[i].args, a^.front.arg); end;
         if stopped(a) then
-            Buf.str(ADR(res), Interrupted);
+            Buf.str(res, Interrupted);
         elsif again(a, calls[i].name, calls[i].args) then
-            Buf.str(ADR(res), Repeated);
+            Buf.str(res, Repeated);
         elsif calls[i].name = "delegate" then
             delegate(a, calls[i].args, ADR(res));
         else
             Atools.call(calls[i].name, calls[i].args, ADR(a^.human), ADR(a^.mem.base), ADR(res));
-            Arena.reset(ADR(a^.mem));
+            Arena.reset(a^.mem);
         end;
-        if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(ADR(res)), a^.front.arg); end;
-        if failed(Buf.bytes(ADR(res))) then INC(bad); end;
-        m := Msgs.add(ADR(c^.msgs));
+        if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(res), a^.front.arg); end;
+        if failed(Buf.bytes(res)) then INC(bad); end;
+        m := Msgs.add(c^.msgs);
         Amsg.init(m, Amsg.Role.tool);
         m^.callId := Amsg.keep(calls[i].id);
         m^.tool := Amsg.keep(calls[i].name);
-        Amsg.setText(m, Buf.bytes(ADR(res)));
+        Amsg.setText(m, Buf.bytes(res));
     end;
     return bad;
 end;
@@ -451,22 +451,22 @@ end;
 proc once*(a: ^Agent; c: ^Astore.Conv; request: []U8; reply, why: ^Buf.Buf): ERROR;
 var sys: Buf.Buf; m: ^Amsg.Msg; n: INT; err: ERROR;
 begin
-    Buf.init(ADR(sys), Heap.heap);
-    defer Buf.done(ADR(sys));
+    Buf.init(sys, Heap.heap);
+    defer Buf.done(sys);
     system(a, c, ADR(sys));
-    m := Msgs.add(ADR(c^.msgs));
+    m := Msgs.add(c^.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, request);
     n := c^.msgs.len;
-    err := ask(a, c, Buf.bytes(ADR(sys)), why);
+    err := ask(a, c, Buf.bytes(sys), why);
     (* the request taken out, and with it the reply *)
     if c^.msgs.len > n then
-        m := ADR(Msgs.all(ADR(c^.msgs))[n]);
-        Buf.str(reply, m^.text);
+        m := ADR(Msgs.all(c^.msgs)[n]);
+        Buf.str(reply^, m^.text);
         Amsg.free(m);
     end;
-    Amsg.free(ADR(Msgs.all(ADR(c^.msgs))[n - 1]));
-    Msgs.resize(ADR(c^.msgs), n - 1);
+    Amsg.free(ADR(Msgs.all(c^.msgs)[n - 1]));
+    Msgs.resize(c^.msgs, n - 1);
     return err;
 end;
 
@@ -477,17 +477,17 @@ end;
 proc handBack(a: ^Agent; c: ^Astore.Conv; reason, request: []U8; why: ^Buf.Buf): ERROR;
 var b: Buf.Buf; m: ^Amsg.Msg; err: ERROR;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.str(ADR(b), reason);
-    Buf.str(ADR(b), "; asking the model to hand back");
-    note(a, Buf.bytes(ADR(b)));
-    Buf.reset(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, reason);
+    Buf.str(b, "; asking the model to hand back");
+    note(a, Buf.bytes(b));
+    Buf.reset(b);
     err := once(a, c, request, ADR(b), why);
     if b.len > 0 then
-        m := Msgs.add(ADR(c^.msgs));
+        m := Msgs.add(c^.msgs);
         Amsg.init(m, Amsg.Role.assistant);
-        Amsg.setText(m, Buf.bytes(ADR(b)));
+        Amsg.setText(m, Buf.bytes(b));
     end;
     return err;
 end;
@@ -502,14 +502,14 @@ var sys, b: Buf.Buf; first, step, failing, calls, i, floor: INT; m: []Amsg.Msg; 
 begin
     first := c^.msgs.len;
     forget(a);
-    Buf.init(ADR(sys), Heap.heap);
-    defer Buf.done(ADR(sys));
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(sys, Heap.heap);
+    defer Buf.done(sys);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     if not a^.working then
         if a^.prefetch then attach(a, c); end;
-        for i := 0 to a^.reports.len - 1 do Str.free(Heap.heap, Strs.all(ADR(a^.reports))[i]); end;
-        Strs.reset(ADR(a^.reports));
+        for i := 0 to a^.reports.len - 1 do Str.free(Heap.heap, Strs.all(a^.reports)[i]); end;
+        Strs.reset(a^.reports);
     end;
     start := a^.spent;
     failing := 0;
@@ -523,26 +523,26 @@ begin
             floor := size(c);
         end;
         system(a, c, ADR(sys));
-        err := ask(a, c, Buf.bytes(ADR(sys)), why);
+        err := ask(a, c, Buf.bytes(sys), why);
         if err # nil then break; end;
-        calls := Msgs.all(ADR(c^.msgs))[c^.msgs.len - 1].calls.len;
+        calls := Msgs.all(c^.msgs)[c^.msgs.len - 1].calls.len;
         if calls = 0 then break; end;
         if run(a, c) = calls then INC(failing); else failing := 0; end;
         if stopped(a) then err := Awire.Stopped; break; end;
         if step = a^.maxSteps then
-            Fmt.write(ADR(b), "{} steps used", [Fmt.int(a^.maxSteps)]);
-            err := handBack(a, c, Buf.bytes(ADR(b)), StepsAsk, why);
+            Fmt.write(b, "{} steps used", [Fmt.int(a^.maxSteps)]);
+            err := handBack(a, c, Buf.bytes(b), StepsAsk, why);
         elsif failing = FailSteps then
-            Fmt.write(ADR(b), "{} steps of failed calls in a row", [Fmt.int(FailSteps)]);
-            err := handBack(a, c, Buf.bytes(ADR(b)), StuckAsk, why);
+            Fmt.write(b, "{} steps of failed calls in a row", [Fmt.int(FailSteps)]);
+            err := handBack(a, c, Buf.bytes(b), StuckAsk, why);
             break;
         elsif (a^.budget > 0.0) and (a^.spent - start > a^.budget) then
-            Fmt.write(ADR(b), "turn budget of ${} spent", [Fmt.real(a^.budget, 2)]);
-            err := handBack(a, c, Buf.bytes(ADR(b)), BudgetAsk, why);
+            Fmt.write(b, "turn budget of ${} spent", [Fmt.real(a^.budget, 2)]);
+            err := handBack(a, c, Buf.bytes(b), BudgetAsk, why);
             break;
         end;
     end;
-    m := Msgs.all(ADR(c^.msgs));
+    m := Msgs.all(c^.msgs);
     for i := first to LEN(m) - 1 do Amsg.settle(ADR(m[i])); end;
     return err;
 end;
@@ -554,25 +554,25 @@ var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT
 begin
     init(ADR(a), ADR(p), {});
     Astore.init(ADR(c), "test");
-    Buf.init(ADR(long), Heap.heap);
-    for i := 1 to 100 do Buf.str(ADR(long), "a line of a long result, 38 bytes....\n"); end;
+    Buf.init(long, Heap.heap);
+    for i := 1 to 100 do Buf.str(long, "a line of a long result, 38 bytes....\n"); end;
     for i := 0 to 5 do
-        m := Msgs.add(ADR(c.msgs));
+        m := Msgs.add(c.msgs);
         Amsg.init(m, Amsg.Role.assistant);
         Amsg.addCall(m, "c", "read", "{}", "");
-        m := Msgs.add(ADR(c.msgs));
+        m := Msgs.add(c.msgs);
         Amsg.init(m, Amsg.Role.tool);
-        Amsg.setText(m, Buf.bytes(ADR(long)));
+        Amsg.setText(m, Buf.bytes(long));
     end;
     prune(ADR(a), ADR(c));
     for i := 0 to 5 do
-        t := Msgs.all(ADR(c.msgs))[2 * i + 1].text;
+        t := Msgs.all(c.msgs)[2 * i + 1].text;
         if (i < 2) # Str.hasSuffix(t, "\n[... 2660 more bytes, cut from the history as old; make the call again to see them]") then
             Out.str("Agent: prune\n");
             return 1;
         end;
     end;
-    if not Str.hasPrefix(Msgs.all(ADR(c.msgs))[1].text, Buf.bytes(ADR(long))[0..1140]) then
+    if not Str.hasPrefix(Msgs.all(c.msgs)[1].text, Buf.bytes(long)[0..1140]) then
         Out.str("Agent: prune keeps the head\n");
         return 1;
     end;

@@ -86,28 +86,28 @@ var
 proc dir*: []U8;
 var base: []U8;
 begin
-    if where.len > 0 then return Buf.bytes(ADR(where)); end;
-    Buf.init(ADR(where), Heap.heap);
+    if where.len > 0 then return Buf.bytes(where); end;
+    Buf.init(where, Heap.heap);
     base := Sys.env("XDG_DATA_HOME");
     if LEN(base) > 0 then
-        Buf.str(ADR(where), base);
+        Buf.str(where, base);
     else
-        Buf.str(ADR(where), Sys.env("HOME"));
-        Buf.str(ADR(where), "/.local/share");
+        Buf.str(where, Sys.env("HOME"));
+        Buf.str(where, "/.local/share");
     end;
-    _ := Sys.makeDir(Buf.bytes(ADR(where)));
-    Buf.str(ADR(where), "/arno/");
-    _ := Sys.makeDir(Buf.bytes(ADR(where)));
-    return Buf.bytes(ADR(where));
+    _ := Sys.makeDir(Buf.bytes(where));
+    Buf.str(where, "/arno/");
+    _ := Sys.makeDir(Buf.bytes(where));
+    return Buf.bytes(where);
 end;
 
 (* path made arno's directory in place of the usual one, as a test
    wants; it must end in a slash, and be there. *)
 proc use*(path: []U8);
 begin
-    if where.len = 0 then Buf.init(ADR(where), Heap.heap); end;
-    Buf.reset(ADR(where));
-    Buf.str(ADR(where), path);
+    if where.len = 0 then Buf.init(where, Heap.heap); end;
+    Buf.reset(where);
+    Buf.str(where, path);
 end;
 
 (* arno's cache directory, with a slash after it: $XDG_CACHE_HOME/arno,
@@ -115,28 +115,28 @@ end;
 proc cache*: []U8;
 var base: []U8;
 begin
-    if cached.len > 0 then return Buf.bytes(ADR(cached)); end;
-    Buf.init(ADR(cached), Heap.heap);
+    if cached.len > 0 then return Buf.bytes(cached); end;
+    Buf.init(cached, Heap.heap);
     base := Sys.env("XDG_CACHE_HOME");
     if LEN(base) > 0 then
-        Buf.str(ADR(cached), base);
+        Buf.str(cached, base);
     else
-        Buf.str(ADR(cached), Sys.env("HOME"));
-        Buf.str(ADR(cached), "/.cache");
+        Buf.str(cached, Sys.env("HOME"));
+        Buf.str(cached, "/.cache");
     end;
-    _ := Sys.makeDir(Buf.bytes(ADR(cached)));
-    Buf.str(ADR(cached), "/arno/");
-    _ := Sys.makeDir(Buf.bytes(ADR(cached)));
-    return Buf.bytes(ADR(cached));
+    _ := Sys.makeDir(Buf.bytes(cached));
+    Buf.str(cached, "/arno/");
+    _ := Sys.makeDir(Buf.bytes(cached));
+    return Buf.bytes(cached);
 end;
 
 (* The path of name in arno's directory, into b. *)
 proc pathOf(name: []U8; b: ^Buf.Buf): []U8;
 begin
-    Buf.reset(b);
-    Buf.str(b, dir());
-    Buf.str(b, name);
-    return Buf.bytes(b);
+    Buf.reset(b^);
+    Buf.str(b^, dir());
+    Buf.str(b^, name);
+    return Buf.bytes(b^);
 end;
 
 (* the lock *)
@@ -151,8 +151,8 @@ var b: Buf.Buf;
 begin
     INC(lockDepth);
     if lockDepth > 1 then return; end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     lockFd := Sys.openMode(pathOf("lock", ADR(b)), {Sys.reading, Sys.writing, Sys.creating}, 180H);
     if lockFd < 0 then return; end;
     _ := Sys.keepOnExec(lockFd, false);
@@ -176,15 +176,15 @@ end;
 proc replace*(path, data: []U8): ERROR;
 var tmp: Buf.Buf; digits: [20]U8; n: INT;
 begin
-    Buf.init(ADR(tmp), Heap.heap);
-    defer Buf.done(ADR(tmp));
-    Buf.str(ADR(tmp), path);
-    Buf.add(ADR(tmp), '.');
+    Buf.init(tmp, Heap.heap);
+    defer Buf.done(tmp);
+    Buf.str(tmp, path);
+    Buf.add(tmp, '.');
     digits, n := Str.fromInt(Sys.pid());
-    Buf.str(ADR(tmp), digits[0..n]);
-    Buf.str(ADR(tmp), ".tmp");
-    if not Files.write(Buf.bytes(ADR(tmp)), data) or (Sys.rename(Buf.bytes(ADR(tmp)), path) # 0) then
-        _ := Sys.remove(Buf.bytes(ADR(tmp)));
+    Buf.str(tmp, digits[0..n]);
+    Buf.str(tmp, ".tmp");
+    if not Files.write(Buf.bytes(tmp), data) or (Sys.rename(Buf.bytes(tmp), path) # 0) then
+        _ := Sys.remove(Buf.bytes(tmp));
         return NotSaved;
     end;
     return nil;
@@ -200,18 +200,18 @@ end;
 proc keyed*(name, root: []U8; b: ^Buf.Buf): []U8;
 var path, text: Buf.Buf; d: Json.Doc; v: Json.Value; start: INT;
 begin
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
-    Buf.init(ADR(text), Heap.heap);
-    defer Buf.done(ADR(text));
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
     start := b^.len;
-    if Files.load(pathOf(name, ADR(path)), ADR(text)) # 0 then return ""; end;
+    if Files.load(pathOf(name, ADR(path)), text) # 0 then return ""; end;
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
-    v := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(ADR(text))), root);
+    v := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(text)), root);
     if Json.kind(ADR(d), v) # Json.Kind.string then return ""; end;
-    Buf.str(b, Json.text(ADR(d), v));
-    return Buf.bytes(b)[start..b^.len];
+    Buf.str(b^, Json.text(ADR(d), v));
+    return Buf.bytes(b^)[start..b^.len];
 end;
 
 (* name made to keep value for root, the other roots' as they were; an
@@ -219,45 +219,45 @@ end;
 proc setKeyed*(name, root, value: []U8): ERROR;
 var path, text, out: Buf.Buf; d: Json.Doc; v: Json.Value; i, n: INT;
 begin
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
-    Buf.init(ADR(text), Heap.heap);
-    defer Buf.done(ADR(text));
-    Buf.init(ADR(out), Heap.heap);
-    defer Buf.done(ADR(out));
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
     lock();
     defer unlock();
     v := Json.None;
-    if Files.load(pathOf(name, ADR(path)), ADR(text)) = 0 then v := Json.parse(ADR(d), Buf.bytes(ADR(text))); end;
-    Buf.add(ADR(out), '{');
+    if Files.load(pathOf(name, ADR(path)), text) = 0 then v := Json.parse(ADR(d), Buf.bytes(text)); end;
+    Buf.add(out, '{');
     n := 0;
     if Json.kind(ADR(d), v) = Json.Kind.object then
         for i := 0 to Json.len(ADR(d), v) - 1 do
             if Json.key(ADR(d), v, i) = root then continue; end;
-            if n > 0 then Buf.add(ADR(out), ','); end;
+            if n > 0 then Buf.add(out, ','); end;
             Json.quote(ADR(out), Json.key(ADR(d), v, i));
-            Buf.add(ADR(out), ':');
+            Buf.add(out, ':');
             Json.write(ADR(d), ADR(out), Json.item(ADR(d), v, i), {});
             INC(n);
         end;
     end;
     if LEN(value) > 0 then
-        if n > 0 then Buf.add(ADR(out), ','); end;
+        if n > 0 then Buf.add(out, ','); end;
         Json.quote(ADR(out), root);
-        Buf.add(ADR(out), ':');
+        Buf.add(out, ':');
         Json.quote(ADR(out), value);
     end;
-    Buf.add(ADR(out), '}');
-    return replace(Buf.bytes(ADR(path)), Buf.bytes(ADR(out)));
+    Buf.add(out, '}');
+    return replace(Buf.bytes(path), Buf.bytes(out));
 end;
 
 (* n, from 0 to 99, as two digits. *)
 proc two(b: ^Buf.Buf; n: I32);
 begin
-    Buf.add(b, U8('0' + n div 10));
-    Buf.add(b, U8('0' + n mod 10));
+    Buf.add(b^, U8('0' + n div 10));
+    Buf.add(b^, U8('0' + n mod 10));
 end;
 
 (* Today's date, in local time, as yyyy-mm-dd, added to b. *)
@@ -268,9 +268,9 @@ begin
     _ := localtime_r(ADR(secs), ADR(tm));
     two(b, tm.year div 100 + 19);
     two(b, tm.year mod 100);
-    Buf.add(b, '-');
+    Buf.add(b^, '-');
     two(b, tm.mon + 1);
-    Buf.add(b, '-');
+    Buf.add(b^, '-');
     two(b, tm.mday);
 end;
 
@@ -286,12 +286,12 @@ end;
    "" if id can't be one. *)
 proc file*(id: []U8; b: ^Buf.Buf): []U8;
 begin
-    Buf.reset(b);
+    Buf.reset(b^);
     if not fit(id) then return ""; end;
-    Buf.str(b, dir());
-    Buf.str(b, id);
-    Buf.str(b, ".json");
-    return Buf.bytes(b);
+    Buf.str(b^, dir());
+    Buf.str(b^, id);
+    Buf.str(b^, ".json");
+    return Buf.bytes(b^);
 end;
 
 (* the scratch *)
@@ -301,13 +301,13 @@ end;
 proc namesIn(path: []U8; names: ^Strs.Vec);
 var d: Sys.Dir; name: []U8; more: BOOL;
 begin
-    if Sys.openDir(ADR(d), path) < 0 then return; end;
-    name, more := Sys.nextEntry(ADR(d));
+    if Sys.openDir(d, path) < 0 then return; end;
+    name, more := Sys.nextEntry(d);
     while more do
-        Strs.push(names, Amsg.keep(name));
-        name, more := Sys.nextEntry(ADR(d));
+        Strs.push(names^, Amsg.keep(name));
+        name, more := Sys.nextEntry(d);
     end;
-    Sys.closeDir(ADR(d));
+    Sys.closeDir(d);
 end;
 
 (* Removes path and all below it. A link is removed as a link, never
@@ -322,20 +322,20 @@ begin
         _ := Sys.remove(path);
         return;
     end;
-    Strs.init(ADR(names), Heap.heap);
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Strs.init(names, Heap.heap);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     namesIn(path, ADR(names));
-    all := Strs.all(ADR(names));
+    all := Strs.all(names);
     for i := 0 to LEN(all) - 1 do
-        Buf.reset(ADR(b));
-        Buf.str(ADR(b), path);
-        Buf.add(ADR(b), '/');
-        Buf.str(ADR(b), all[i]);
-        wipe(Buf.bytes(ADR(b)));
+        Buf.reset(b);
+        Buf.str(b, path);
+        Buf.add(b, '/');
+        Buf.str(b, all[i]);
+        wipe(Buf.bytes(b));
         Str.free(Heap.heap, all[i]);
     end;
-    Strs.done(ADR(names));
+    Strs.done(names);
     _ := Sys.removeDir(path);
 end;
 
@@ -343,11 +343,11 @@ end;
    not made. *)
 proc scratchPath(id: []U8; b: ^Buf.Buf): []U8;
 begin
-    Buf.reset(b);
-    Buf.str(b, cache());
-    Buf.str(b, "scratch/");
-    Buf.str(b, id);
-    return Buf.bytes(b);
+    Buf.reset(b^);
+    Buf.str(b^, cache());
+    Buf.str(b^, "scratch/");
+    Buf.str(b^, id);
+    return Buf.bytes(b^);
 end;
 
 (* The scratch directory of the conversation id, into b, made if it
@@ -357,15 +357,15 @@ proc scratch*(id: []U8; b: ^Buf.Buf): []U8;
 begin
     _ := Sys.makeDir(scratchPath("", b));
     _ := Sys.makeDir(scratchPath(id, b));
-    return Buf.bytes(b);
+    return Buf.bytes(b^);
 end;
 
 (* The scratch directory of id emptied. *)
 proc clearScratch*(id: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     wipe(scratch(id, ADR(b)));
     _ := scratch(id, ADR(b));
 end;
@@ -375,10 +375,10 @@ end;
 proc moveScratch*(old, new: []U8);
 var a, b: Buf.Buf;
 begin
-    Buf.init(ADR(a), Heap.heap);
-    defer Buf.done(ADR(a));
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(a, Heap.heap);
+    defer Buf.done(a);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     _ := Sys.rename(scratch(old, ADR(a)), scratchPath(new, ADR(b)));
 end;
 
@@ -389,24 +389,24 @@ end;
 proc sweep*;
 var names: Strs.Vec; all: [][]U8; i, e: INT; info: Sys.Info; b, f: Buf.Buf;
 begin
-    Strs.init(ADR(names), Heap.heap);
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.init(ADR(f), Heap.heap);
-    defer Buf.done(ADR(f));
-    Buf.str(ADR(b), cache());
-    Buf.str(ADR(b), "scratch/");
-    namesIn(Buf.bytes(ADR(b)), ADR(names));
-    all := Strs.all(ADR(names));
+    Strs.init(names, Heap.heap);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(f, Heap.heap);
+    defer Buf.done(f);
+    Buf.str(b, cache());
+    Buf.str(b, "scratch/");
+    namesIn(Buf.bytes(b), ADR(names));
+    all := Strs.all(names);
     for i := 0 to LEN(all) - 1 do
         info, e := Sys.linkInfo(scratchPath(all[i], ADR(b)));
         if (e = 0) and (Sys.now() - info.mtime > DayNs) and (LEN(file(all[i], ADR(f))) > 0)
-                and (Sys.access(Buf.bytes(ADR(f)), {}) # 0) then
-            wipe(Buf.bytes(ADR(b)));
+                and (Sys.access(Buf.bytes(f), {}) # 0) then
+            wipe(Buf.bytes(b));
         end;
         Str.free(Heap.heap, all[i]);
     end;
-    Strs.done(ADR(names));
+    Strs.done(names);
 end;
 
 (* A new conversation's id, now in local time, into b: yyyymmdd-hhmmss,
@@ -415,24 +415,24 @@ end;
 proc newId*(b: ^Buf.Buf);
 var secs: I64; tm: Tm; path: Buf.Buf; n, at: INT;
 begin
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
     secs := Sys.now() div 1000000000;
     _ := localtime_r(ADR(secs), ADR(tm));
     two(b, tm.year div 100 + 19);
     two(b, tm.year mod 100);
     two(b, tm.mon + 1);
     two(b, tm.mday);
-    Buf.add(b, '-');
+    Buf.add(b^, '-');
     two(b, tm.hour);
     two(b, tm.min);
     two(b, tm.sec);
     at := b^.len;
     n := 1;
-    while Sys.access(file(Buf.bytes(b), ADR(path)), {}) = 0 do
+    while Sys.access(file(Buf.bytes(b^), ADR(path)), {}) = 0 do
         INC(n);
         b^.len := at;
-        Fmt.write(b, "-{}", [Fmt.int(n)]);
+        Fmt.write(b^, "-{}", [Fmt.int(n)]);
     end;
 end;
 
@@ -443,8 +443,8 @@ proc init*(c: ^Conv; id: []U8);
 begin
     c^ := {};
     c^.id := Amsg.keep(id);
-    Msgs.init(ADR(c^.msgs), Heap.heap);
-    Strs.init(ADR(c^.turns), Heap.heap);
+    Msgs.init(c^.msgs, Heap.heap);
+    Strs.init(c^.turns, Heap.heap);
 end;
 
 (* What c holds given back. *)
@@ -455,12 +455,12 @@ begin
     Str.free(Heap.heap, c^.title);
     Str.free(Heap.heap, c^.model);
     Str.free(Heap.heap, c^.system);
-    msgs := Msgs.all(ADR(c^.msgs));
+    msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do Amsg.free(ADR(msgs[i])); end;
-    Msgs.done(ADR(c^.msgs));
-    turns := Strs.all(ADR(c^.turns));
+    Msgs.done(c^.msgs);
+    turns := Strs.all(c^.turns);
     for i := 0 to LEN(turns) - 1 do Str.free(Heap.heap, turns[i]); end;
-    Strs.done(ADR(c^.turns));
+    Strs.done(c^.turns);
     c^ := {};
 end;
 
@@ -494,7 +494,7 @@ end;
 proc autoTitle*(c: ^Conv; b: ^Buf.Buf);
 var msgs: []Amsg.Msg; i, n: INT; s: []U8;
 begin
-    msgs := Msgs.all(ADR(c^.msgs));
+    msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do
         if msgs[i].role = Amsg.Role.user then
             s := msgs[i].text;
@@ -505,7 +505,7 @@ begin
                 while (n > 0) and (s[n] & 0C0H = 80H) do DEC(n); end;   (* inside a character *)
                 s := s[0..n];
             end;
-            Str.replace(b, s, "\n", " ");
+            Str.replace(b^, s, "\n", " ");
             return;
         end;
     end;
@@ -516,43 +516,43 @@ proc save*(c: ^Conv): ERROR;
 var b, path: Buf.Buf; i: INT; msgs: []Amsg.Msg; turns: [][]U8;
 begin
     if not fit(c^.id) then return BadId; end;
-    Buf.init(ADR(b), Heap.heap);
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(b));
-    defer Buf.done(ADR(path));
-    Buf.str(ADR(b), `{"title":`);
-    Buf.str(ADR(path), c^.title);
+    Buf.init(b, Heap.heap);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(b);
+    defer Buf.done(path);
+    Buf.str(b, `{"title":`);
+    Buf.str(path, c^.title);
     if path.len = 0 then autoTitle(c, ADR(path)); end;
-    Amsg.quote(ADR(b), Buf.bytes(ADR(path)));
+    Amsg.quote(ADR(b), Buf.bytes(path));
     if LEN(c^.title) > 0 then
-        Buf.str(ADR(b), `,"named":true,"model":`);
+        Buf.str(b, `,"named":true,"model":`);
     else
-        Buf.str(ADR(b), `,"named":false,"model":`);
+        Buf.str(b, `,"named":false,"model":`);
     end;
     Amsg.quote(ADR(b), c^.model);
     if LEN(c^.system) > 0 then
-        Buf.str(ADR(b), `,"system":`);
+        Buf.str(b, `,"system":`);
         Amsg.quote(ADR(b), c^.system);
     end;
-    Buf.str(ADR(b), `,"messages":[`);
-    msgs := Msgs.all(ADR(c^.msgs));
+    Buf.str(b, `,"messages":[`);
+    msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do
-        if i > 0 then Buf.add(ADR(b), ','); end;
+        if i > 0 then Buf.add(b, ','); end;
         Amsg.write(ADR(msgs[i]), ADR(b));
     end;
-    Buf.add(ADR(b), ']');
-    turns := Strs.all(ADR(c^.turns));
+    Buf.add(b, ']');
+    turns := Strs.all(c^.turns);
     if LEN(turns) > 0 then
-        Buf.str(ADR(b), `,"turns":[`);
-        Str.join(ADR(b), turns, ",");
-        Buf.add(ADR(b), ']');
+        Buf.str(b, `,"turns":[`);
+        Str.join(b, turns, ",");
+        Buf.add(b, ']');
     end;
-    Buf.add(ADR(b), '}');
-    Buf.reset(ADR(path));
-    Buf.str(ADR(path), dir());
-    Buf.str(ADR(path), c^.id);
-    Buf.str(ADR(path), ".json");
-    return replace(Buf.bytes(ADR(path)), Buf.bytes(ADR(b)));
+    Buf.add(b, '}');
+    Buf.reset(path);
+    Buf.str(path, dir());
+    Buf.str(path, c^.id);
+    Buf.str(path, ".json");
+    return replace(Buf.bytes(path), Buf.bytes(b));
 end;
 
 (* c made the conversation saved as id: BadId if there is none,
@@ -563,29 +563,29 @@ var path, text: Buf.Buf; d: Json.Doc; v, msgs, turns: Json.Value; i: INT; t: Buf
 begin
     init(c, id);
     if not fit(id) then return BadId; end;
-    Buf.init(ADR(path), Heap.heap);
-    Buf.init(ADR(text), Heap.heap);
-    Buf.init(ADR(t), Heap.heap);
-    defer Buf.done(ADR(path));
-    defer Buf.done(ADR(text));
-    defer Buf.done(ADR(t));
-    Buf.str(ADR(path), dir());
-    Buf.str(ADR(path), id);
-    Buf.str(ADR(path), ".json");
-    if Files.load(Buf.bytes(ADR(path)), ADR(text)) # 0 then return BadId; end;
+    Buf.init(path, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Buf.init(t, Heap.heap);
+    defer Buf.done(path);
+    defer Buf.done(text);
+    defer Buf.done(t);
+    Buf.str(path, dir());
+    Buf.str(path, id);
+    Buf.str(path, ".json");
+    if Files.load(Buf.bytes(path), text) # 0 then return BadId; end;
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
     defer Json.done(ADR(d));
-    v := Json.parse(ADR(d), Buf.bytes(ADR(text)));
+    v := Json.parse(ADR(d), Buf.bytes(text));
     msgs := Json.member(ADR(d), v, "messages");
     if Json.kind(ADR(d), msgs) # Json.Kind.array then return Unreadable; end;
     for i := 0 to Json.len(ADR(d), msgs) - 1 do
-        try Amsg.read(ADR(d), Json.item(ADR(d), msgs, i), Msgs.add(ADR(c^.msgs)));
+        try Amsg.read(ADR(d), Json.item(ADR(d), msgs, i), Msgs.add(c^.msgs));
     end;
     turns := Json.member(ADR(d), v, "turns");
     for i := 0 to Json.len(ADR(d), turns) - 1 do
-        Buf.reset(ADR(t));
+        Buf.reset(t);
         Amsg.compact(ADR(d), Json.item(ADR(d), turns, i), ADR(t));
-        Strs.push(ADR(c^.turns), Amsg.keep(Buf.bytes(ADR(t))));
+        Strs.push(c^.turns, Amsg.keep(Buf.bytes(t)));
     end;
     if Json.member(ADR(d), v, "named") = Json.True then
         c^.title := Amsg.keep(Json.text(ADR(d), Json.member(ADR(d), v, "title")));
@@ -640,7 +640,7 @@ begin
     defer Json.done(ADR(d));
     v := Json.parse(ADR(d), text[9..end_]);
     if Json.kind(ADR(d), v) # Json.Kind.string then return false; end;
-    Buf.str(b, Json.text(ADR(d), v));
+    Buf.str(b^, Json.text(ADR(d), v));
     return true;
 end;
 
@@ -648,15 +648,15 @@ end;
 proc holds(s, t: []U8): BOOL;
 var a, b: Buf.Buf;
 begin
-    Buf.init(ADR(a), Heap.heap);
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(a));
-    defer Buf.done(ADR(b));
-    Buf.str(ADR(a), s);
-    Buf.str(ADR(b), t);
-    Str.lower(Buf.bytes(ADR(a)));
-    Str.lower(Buf.bytes(ADR(b)));
-    return Str.find(Buf.bytes(ADR(a)), Buf.bytes(ADR(b))) >= 0;
+    Buf.init(a, Heap.heap);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(a);
+    defer Buf.done(b);
+    Buf.str(a, s);
+    Buf.str(b, t);
+    Str.lower(Buf.bytes(a));
+    Str.lower(Buf.bytes(b));
+    return Str.find(Buf.bytes(a), Buf.bytes(b)) >= 0;
 end;
 
 (* The conversations saved, into list, made empty: the one changed last
@@ -668,44 +668,44 @@ proc recent*(max: INT; filter: []U8; list: ^Items.Vec);
 var d: Sys.Dir; name: []U8; more: BOOL; all: Items.Vec; items: []Item; info: Sys.Info; e, i: INT;
     path, text, title, both: Buf.Buf;
 begin
-    Items.init(list, Heap.heap);
-    Items.init(ADR(all), Heap.heap);
-    defer Items.done(ADR(all));
-    Buf.init(ADR(path), Heap.heap);
-    Buf.init(ADR(text), Heap.heap);
-    Buf.init(ADR(title), Heap.heap);
-    Buf.init(ADR(both), Heap.heap);
-    defer Buf.done(ADR(path));
-    defer Buf.done(ADR(text));
-    defer Buf.done(ADR(title));
-    defer Buf.done(ADR(both));
-    if Sys.openDir(ADR(d), dir()) < 0 then return; end;
-    name, more := Sys.nextEntry(ADR(d));
+    Items.init(list^, Heap.heap);
+    Items.init(all, Heap.heap);
+    defer Items.done(all);
+    Buf.init(path, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Buf.init(title, Heap.heap);
+    Buf.init(both, Heap.heap);
+    defer Buf.done(path);
+    defer Buf.done(text);
+    defer Buf.done(title);
+    defer Buf.done(both);
+    if Sys.openDir(d, dir()) < 0 then return; end;
+    name, more := Sys.nextEntry(d);
     while more do
         if Str.hasSuffix(name, ".json") then
             info, e := Sys.info(pathOf(name, ADR(path)));
-            if e = 0 then Items.push(ADR(all), {id: Amsg.keep(name[0..LEN(name) - 5]), updated: info.mtime}); end;
+            if e = 0 then Items.push(all, {id: Amsg.keep(name[0..LEN(name) - 5]), updated: info.mtime}); end;
         end;
-        name, more := Sys.nextEntry(ADR(d));
+        name, more := Sys.nextEntry(d);
     end;
-    Sys.closeDir(ADR(d));
-    items := Items.all(ADR(all));
+    Sys.closeDir(d);
+    items := Items.all(all);
     Order.sort(items);
     for i := 0 to LEN(items) - 1 do
-        Buf.reset(ADR(text));
-        Buf.reset(ADR(title));
-        Buf.reset(ADR(both));
-        Buf.str(ADR(both), items[i].id);
-        Buf.str(ADR(both), ".json");
-        if (list^.len < max) and (Files.load(pathOf(Buf.bytes(ADR(both)), ADR(path)), ADR(text)) = 0)
-                and titleOf(Buf.bytes(ADR(text)), ADR(title)) then
-            Buf.reset(ADR(both));
-            Buf.str(ADR(both), Buf.bytes(ADR(title)));
-            Buf.add(ADR(both), ' ');
-            Buf.str(ADR(both), items[i].id);
-            if (LEN(filter) = 0) or holds(Buf.bytes(ADR(both)), filter) then
-                items[i].title := Amsg.keep(Buf.bytes(ADR(title)));
-                Items.push(list, items[i]);
+        Buf.reset(text);
+        Buf.reset(title);
+        Buf.reset(both);
+        Buf.str(both, items[i].id);
+        Buf.str(both, ".json");
+        if (list^.len < max) and (Files.load(pathOf(Buf.bytes(both), ADR(path)), text) = 0)
+                and titleOf(Buf.bytes(text), ADR(title)) then
+            Buf.reset(both);
+            Buf.str(both, Buf.bytes(title));
+            Buf.add(both, ' ');
+            Buf.str(both, items[i].id);
+            if (LEN(filter) = 0) or holds(Buf.bytes(both), filter) then
+                items[i].title := Amsg.keep(Buf.bytes(title));
+                Items.push(list^, items[i]);
                 continue;
             end;
         end;
@@ -717,12 +717,12 @@ end;
 proc drop*(list: ^Items.Vec);
 var i: INT; items: []Item;
 begin
-    items := Items.all(list);
+    items := Items.all(list^);
     for i := 0 to LEN(items) - 1 do
         Str.free(Heap.heap, items[i].id);
         Str.free(Heap.heap, items[i].title);
     end;
-    Items.done(list);
+    Items.done(list^);
 end;
 
 (* The test, in build/store, made empty: conversations saved, read
@@ -756,14 +756,14 @@ end;
 proc saved(id: []U8; b: ^Buf.Buf): []U8;
 var path: Buf.Buf;
 begin
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
-    Buf.str(ADR(path), dir());
-    Buf.str(ADR(path), id);
-    Buf.str(ADR(path), ".json");
-    Buf.reset(b);
-    if Files.load(Buf.bytes(ADR(path)), b) # 0 then fail(id); end;
-    return Buf.bytes(b);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.str(path, dir());
+    Buf.str(path, id);
+    Buf.str(path, ".json");
+    Buf.reset(b^);
+    if Files.load(Buf.bytes(path), b^) # 0 then fail(id); end;
+    return Buf.bytes(b^);
 end;
 
 (* Test made, and emptied of what an earlier run left. *)
@@ -773,15 +773,15 @@ begin
     _ := Sys.makeDir("build");
     _ := Sys.makeDir(Test);
     use(Test);
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
-    if Sys.openDir(ADR(d), Test) < 0 then fail("the test's directory"); return; end;
-    name, more := Sys.nextEntry(ADR(d));
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    if Sys.openDir(d, Test) < 0 then fail("the test's directory"); return; end;
+    name, more := Sys.nextEntry(d);
     while more do
         _ := Sys.remove(pathOf(name, ADR(path)));
-        name, more := Sys.nextEntry(ADR(d));
+        name, more := Sys.nextEntry(d);
     end;
-    Sys.closeDir(ADR(d));
+    Sys.closeDir(d);
 end;
 
 (* A conversation of one user message, text, saved as id. *)
@@ -791,7 +791,7 @@ begin
     init(ADR(c), id);
     defer done(ADR(c));
     setModel(ADR(c), "m");
-    m := Msgs.add(ADR(c.msgs));
+    m := Msgs.add(c.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, text);
     if save(ADR(c)) # nil then fail("save"); end;
@@ -818,10 +818,10 @@ end;
 proc compat(paths: [][]U8);
 var i, slash: INT; c: Conv; err: ERROR; from, id: []U8; was, now: Buf.Buf;
 begin
-    Buf.init(ADR(was), Heap.heap);
-    Buf.init(ADR(now), Heap.heap);
-    defer Buf.done(ADR(was));
-    defer Buf.done(ADR(now));
+    Buf.init(was, Heap.heap);
+    Buf.init(now, Heap.heap);
+    defer Buf.done(was);
+    defer Buf.done(now);
     for i := 0 to LEN(paths) - 1 do
         slash := Str.findLast(paths[i], "/");
         from := paths[i][0..slash + 1];
@@ -832,7 +832,7 @@ begin
             _ := saved(id, ADR(was));
             use(Test);
             if save(ADR(c)) # nil then fail("save"); end;
-            if not same(saved(id, ADR(now)), Buf.bytes(ADR(was)), LEN(c.title) = 0) then fail(paths[i]); end;
+            if not same(saved(id, ADR(now)), Buf.bytes(was), LEN(c.title) = 0) then fail(paths[i]); end;
         elsif err # Unreadable then
             fail(paths[i]);
         end;
@@ -846,21 +846,21 @@ var c, back: Conv; b: Buf.Buf; m: ^Amsg.Msg; list: Items.Vec; items: []Item; arg
     long: Buf.Buf;
 begin
     fresh;
-    Buf.init(ADR(b), Heap.heap);
-    Buf.init(ADR(long), Heap.heap);
-    defer Buf.done(ADR(b));
-    defer Buf.done(ADR(long));
+    Buf.init(b, Heap.heap);
+    Buf.init(long, Heap.heap);
+    defer Buf.done(b);
+    defer Buf.done(long);
 
     (* an untitled conversation: its title from its first message, as typed *)
     init(ADR(c), "20261016-120000");
     setModel(ADR(c), "deepseek-v4.1-flash");
-    m := Msgs.add(ADR(c.msgs));
+    m := Msgs.add(c.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, "look at\nthis\n\n<file path=\"a.txt\">...</file>");
-    m := Msgs.add(ADR(c.msgs));
+    m := Msgs.add(c.msgs);
     Amsg.init(m, Amsg.Role.assistant);
     Amsg.setText(m, "I see.");
-    Strs.push(ADR(c.turns), Amsg.keep(`{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}`));
+    Strs.push(c.turns, Amsg.keep(`{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}`));
     if save(ADR(c)) # nil then fail("save"); end;
     expect("an untitled conversation's file", saved("20261016-120000", ADR(b)),
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
@@ -875,7 +875,7 @@ begin
     (* titled, with a system prompt of its own *)
     setTitle(ADR(c), "a look");
     setSystem(ADR(c), "Be brief.");
-    Strs.reset(ADR(c.turns));
+    Strs.reset(c.turns);
     if save(ADR(c)) # nil then fail("save"); end;
     expect("a titled conversation's file", saved("20261016-120000", ADR(b)),
         `{"title":"a look","named":true,"model":"deepseek-v4.1-flash","system":"Be brief.","messages":[` +
@@ -895,12 +895,12 @@ begin
         `{"role":"assistant","content":"I see."}]}`);
 
     (* a title cut at 60 bytes, back to where a character starts *)
-    for i := 1 to 59 do Buf.add(ADR(long), 'a'); end;
-    Buf.str(ADR(long), "é and more");
-    said("20261016-120001", Buf.bytes(ADR(long)));   (* saved within a tick of 120002, below *)
+    for i := 1 to 59 do Buf.add(long, 'a'); end;
+    Buf.str(long, "é and more");
+    said("20261016-120001", Buf.bytes(long));   (* saved within a tick of 120002, below *)
     if not Str.hasPrefix(saved("20261016-120001", ADR(b)), `{"title":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","named":false`) then
         fail("a title cut inside a character");
-        Out.str(Buf.bytes(ADR(b)));
+        Out.str(Buf.bytes(b));
         Out.ln;
     end;
 
@@ -910,7 +910,7 @@ begin
     if retitle("20261016-120000", "") # nil then fail("retitle"); end;
     _ := Files.write(Test + "notes.json", `{"/home/luis/r":["a note"]}`);
     recent(10, "", ADR(list));
-    items := Items.all(ADR(list));
+    items := Items.all(list);
     if LEN(items) # 3 then fail("the list's length"); end;
     if LEN(items) = 3 then
         expect("the list's first, the one changed last", items[0].id, "20261016-120000");
@@ -939,22 +939,22 @@ begin
     unlock;
     if lockFd >= 0 then fail("the lock, kept"); end;
 
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     newId(ADR(b));
-    if (b.len # 15) or (Buf.bytes(ADR(b))[8] # '-') or not Str.hasPrefix(Buf.bytes(ADR(b)), "20") then
+    if (b.len # 15) or (Buf.bytes(b)[8] # '-') or not Str.hasPrefix(Buf.bytes(b), "20") then
         fail("a new id");
     end;
 
-    Strs.init(ADR(args), Heap.heap);
-    for i := 1 to ARGC() - 1 do Strs.push(ADR(args), Files.arg(i)); end;
-    compat(Strs.all(ADR(args)));
+    Strs.init(args, Heap.heap);
+    for i := 1 to ARGC() - 1 do Strs.push(args, Files.arg(i)); end;
+    compat(Strs.all(args));
     (* a text kept for each project, the others' left as they were *)
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     if (setKeyed("tests.json", "/a", "make check") # nil) or (setKeyed("tests.json", "/b", "x") # nil) or
         (setKeyed("tests.json", "/a", "make test") # nil) or (keyed("tests.json", "/a", ADR(b)) # "make test") then
         fail("a keyed text set again");
     end;
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     if (setKeyed("tests.json", "/b", "") # nil) or (keyed("tests.json", "/b", ADR(b)) # "") or
         (keyed("tests.json", "/a", ADR(b)) # "make test") or (keyed("nothing.json", "/a", ADR(b)) # "") then
         fail("a keyed text dropped");

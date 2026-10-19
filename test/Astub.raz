@@ -33,27 +33,27 @@ var reply, text: Buf.Buf;
 (* data: lines of a reply, as OpenAI streams them *)
 proc event(json: []U8);
 begin
-    Buf.str(ADR(reply), "data: ");
-    Buf.str(ADR(reply), json);
-    Buf.add(ADR(reply), '\n');
+    Buf.str(reply, "data: ");
+    Buf.str(reply, json);
+    Buf.add(reply, '\n');
 end;
 
 proc said(text: []U8);
 begin
-    Buf.str(ADR(reply), `data: {"choices":[{"delta":{"content":`);
+    Buf.str(reply, `data: {"choices":[{"delta":{"content":`);
     Json.quote(ADR(reply), text);
-    Buf.str(ADR(reply), "}}]}\n");
+    Buf.str(reply, "}}]}\n");
 end;
 
 (* A call of the tool name with args, args JSON text. *)
 proc call(name, args: []U8);
 begin
-    Buf.str(ADR(reply), `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function",`);
-    Buf.str(ADR(reply), `"function":{"name":`);
+    Buf.str(reply, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function",`);
+    Buf.str(reply, `"function":{"name":`);
     Json.quote(ADR(reply), name);
-    Buf.str(ADR(reply), `,"arguments":`);
+    Buf.str(reply, `,"arguments":`);
     Json.quote(ADR(reply), args);
-    Buf.str(ADR(reply), "}}]}}]}\n");
+    Buf.str(reply, "}}]}}]}\n");
 end;
 
 (* The reply to a request whose human's last message was asked, with
@@ -66,51 +66,51 @@ begin
     if not ok or (verb # "call") and (verb # "always") then return false; end;
     name, args, _ := Str.cut(rest, " ");
     if (role = "tool") and (verb = "call") then
-        Buf.reset(ADR(text));
-        Buf.str(ADR(text), "the tool said: ");
-        Buf.str(ADR(text), last);
-        said(Buf.bytes(ADR(text)));
+        Buf.reset(text);
+        Buf.str(text, "the tool said: ");
+        Buf.str(text, last);
+        said(Buf.bytes(text));
     else
         call(name, args);
     end;
     return true;
 end;
 
-proc answer(req, res: ^Http.Message; _arg: ^U8);
+proc answer(const req: Http.Message; var res: Http.Message; _arg: ^U8);
 var d: Json.Doc; v, msgs, m: Json.Value; n, k, i: INT; last, role, asked: []U8; digits: [20]U8;
 begin
-    Buf.reset(ADR(reply));
-    if not Json.init(ADR(d), Heap.heap) then res^.status := 500; return; end;
+    Buf.reset(reply);
+    if not Json.init(ADR(d), Heap.heap) then res.status := 500; return; end;
     defer Json.done(ADR(d));
-    if req^.target = "/page" then
+    if req.target = "/page" then
         _ := Http.add(res, "Content-Type", "text/html; charset=utf-8");
-        res^.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
+        res.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
         return;
     end;
-    if req^.target = "/v1/models" then
-        res^.body := `{"object":"list","data":[{"id":"stub-one"},{"id":"models/stub-two"}]}`;
+    if req.target = "/v1/models" then
+        res.body := `{"object":"list","data":[{"id":"stub-one"},{"id":"models/stub-two"}]}`;
         return;
     end;
-    if Str.hasPrefix(req^.target, "/search?format=json&q=") then
-        Buf.str(ADR(reply), `{"results":[{"title":"Found","url":"http://x/","content":"`);
-        Buf.str(ADR(reply), req^.target[22..LEN(req^.target)]);
-        Buf.str(ADR(reply), `"}]}`);
-        res^.body := Buf.bytes(ADR(reply));
+    if Str.hasPrefix(req.target, "/search?format=json&q=") then
+        Buf.str(reply, `{"results":[{"title":"Found","url":"http://x/","content":"`);
+        Buf.str(reply, req.target[22..LEN(req.target)]);
+        Buf.str(reply, `"}]}`);
+        res.body := Buf.bytes(reply);
         return;
     end;
-    v := Json.parse(ADR(d), req^.body);
+    v := Json.parse(ADR(d), req.body);
     msgs := Json.member(ADR(d), v, "messages");
     n := Json.len(ADR(d), msgs);
-    if (req^.target # "/v1/chat/completions") or (Json.kind(ADR(d), msgs) # Json.Kind.array) then
-        res^.status := 404;
+    if (req.target # "/v1/chat/completions") or (Json.kind(ADR(d), msgs) # Json.Kind.array) then
+        res.status := 404;
         return;
     end;
     m := Json.item(ADR(d), msgs, n - 1);
     last := Json.text(ADR(d), Json.member(ADR(d), m, "content"));
     role := Json.text(ADR(d), Json.member(ADR(d), m, "role"));
     if last = "fail" then
-        res^.status := 500;
-        res^.body := `{"error":{"message":"the stub fails, as asked"}}`;
+        res.status := 500;
+        res.body := `{"error":{"message":"the stub fails, as asked"}}`;
         return;
     end;
     asked := "";
@@ -129,9 +129,9 @@ begin
         said(" messages");
     end;
     event(`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}`);
-    Buf.str(ADR(reply), "data: [DONE]\n");
+    Buf.str(reply, "data: [DONE]\n");
     _ := Http.add(res, "Content-Type", "text/event-stream");
-    res^.body := Buf.bytes(ADR(reply));
+    res.body := Buf.bytes(reply);
 end;
 
 proc main*: INT;
@@ -161,14 +161,14 @@ begin
     Sys.close(0);
     Sys.close(1);
     Sys.close(2);
-    Buf.init(ADR(reply), Heap.heap);
-    Buf.init(ADR(text), Heap.heap);
-    Http.initServer(ADR(s), answer, nil);
+    Buf.init(reply, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Http.initServer(s, answer, nil);
     while Sys.ready(l, INT(idle) * 1000) do
         fd := Sys.accept(l);
         if fd >= 0 then
-            Conn.socket(ADR(c), fd);
-            Http.serveConn(ADR(s), ADR(c));
+            Conn.socket(c, fd);
+            Http.serveConn(s, c);
         end;
     end;
     Sys.exit(0);

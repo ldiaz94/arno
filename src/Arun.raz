@@ -49,9 +49,9 @@ var args: Strs.Vec; i: INT;
 begin
     if (ARGC() < 3) or (Files.arg(1) # Child) then return; end;
     _ := setsid();
-    Strs.init(ADR(args), Heap.heap);
-    for i := 2 to ARGC() - 1 do Strs.push(ADR(args), Files.arg(i)); end;
-    i := Sys.exec({path: Files.arg(2), args: Strs.all(ADR(args))});
+    Strs.init(args, Heap.heap);
+    for i := 2 to ARGC() - 1 do Strs.push(args, Files.arg(i)); end;
+    i := Sys.exec({path: Files.arg(2), args: Strs.all(args)});
     if (i = -2) or (i = -13) then Sys.exit(127); end;
     Sys.exit(126);
 end;
@@ -75,19 +75,19 @@ begin
     start := out^.len;
     dropped := false;
     while true do
-        n := Sys.read(fd, Buf.spare(out, 4096));
+        n := Sys.read(fd, Buf.spare(out^, 4096));
         if n = -4 then continue; end;
         if n <= 0 then break; end;
         INC(out^.len, n);
         if out^.len - start > 2 * max then
-            s := Buf.bytes(out);
+            s := Buf.bytes(out^);
             COPY(s[start..start + max], s[out^.len - max..out^.len]);
             out^.len := start + max;
             dropped := true;
         end;
     end;
     if out^.len - start > max then
-        s := Buf.bytes(out);
+        s := Buf.bytes(out^);
         COPY(s[start..start + max], s[out^.len - max..out^.len]);
         out^.len := start + max;
         dropped := true;
@@ -126,27 +126,27 @@ begin
            arno's, less the display, and j's; j's in place of arno's
            of the same name, since a program reading its environment
            takes the first it finds *)
-        Strs.init(ADR(args), Heap.heap);
-        defer Strs.done(ADR(args));
-        Strs.init(ADR(env), Heap.heap);
-        defer Strs.done(ADR(env));
-        Strs.push(ADR(args), "arno");
-        Strs.push(ADR(args), Child);
-        for i := 0 to LEN(j^.args) - 1 do Strs.push(ADR(args), j^.args[i]); end;
+        Strs.init(args, Heap.heap);
+        defer Strs.done(args);
+        Strs.init(env, Heap.heap);
+        defer Strs.done(env);
+        Strs.push(args, "arno");
+        Strs.push(args, Child);
+        for i := 0 to LEN(j^.args) - 1 do Strs.push(args, j^.args[i]); end;
         i := 0;
         e, more := Sys.envAt(0);
         while more do
             if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=")
                     and not named(e, j^.env) then
-                Strs.push(ADR(env), e);
+                Strs.push(env, e);
             end;
             INC(i);
             e, more := Sys.envAt(i);
         end;
-        for i := 0 to LEN(j^.env) - 1 do Strs.push(ADR(env), j^.env[i]); end;
+        for i := 0 to LEN(j^.env) - 1 do Strs.push(env, j^.env[i]); end;
         p.path := "/proc/self/exe";
-        p.args := Strs.all(ADR(args));
-        p.env := Strs.all(ADR(env));
+        p.args := Strs.all(args);
+        p.env := Strs.all(env);
         p.onlyEnv := true;
     end;
     pid := Sys.spawn(p);
@@ -157,7 +157,7 @@ begin
     else
         kept := 0;
         while kept < max do
-            n := Sys.read(rd, Buf.spare(out, max - kept));
+            n := Sys.read(rd, Buf.spare(out^, max - kept));
             if n = -4 then continue; end;   (* ^C: the caller sees it *)
             if n <= 0 then break; end;
             INC(out^.len, n);
@@ -205,39 +205,39 @@ proc main*: INT;
 var b: Buf.Buf; j: Job; status: INT; cut: BOOL;
 begin
     child();
-    Buf.init(ADR(b), Heap.heap);
+    Buf.init(b, Heap.heap);
     status := run(["sh", "-c", "echo out; echo err >&2; exit 3"], 100, ADR(b));
-    expect("output and status", status, 3, Buf.bytes(ADR(b)), "out\nerr\n");
-    Buf.reset(ADR(b));
+    expect("output and status", status, 3, Buf.bytes(b), "out\nerr\n");
+    Buf.reset(b);
     status := run(["sh", "-c", "yes"], 10, ADR(b));
-    expect("output cut", status, 128 + Sys.sigPipe, Buf.bytes(ADR(b)), "y\ny\ny\ny\ny\n");
-    Buf.reset(ADR(b));
+    expect("output cut", status, 128 + Sys.sigPipe, Buf.bytes(b), "y\ny\ny\ny\ny\n");
+    Buf.reset(b);
     status := run(["no-such-program-of-arno"], 10, ADR(b));
-    expect("no program", status, 127, Buf.bytes(ADR(b)), "");
+    expect("no program", status, 127, Buf.bytes(b), "");
 
     (* the end kept, past twice max, which moves it down as it reads *)
-    Buf.reset(ADR(b));
-    Buf.str(ADR(b), "before:");
+    Buf.reset(b);
+    Buf.str(b, "before:");
     j := {args: ["sh", "-c", "seq 1 10000"], tail: true};
     status, cut := start(ADR(j), 11, ADR(b));
-    expect("the tail", status, 0, Buf.bytes(ADR(b)), "before:9999\n10000\n");
+    expect("the tail", status, 0, Buf.bytes(b), "before:9999\n10000\n");
     if not cut then Out.str("Arun: the tail isn't said to be cut\n"); failed := true; end;
 
     (* detached: a session of its own, which it leads, so no terminal; an
        environment added, the display gone *)
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     _ := Sys.setEnv("DISPLAY", ":9");
     j := {args: ["sh", "-c", "test \"$(cut -d' ' -f6 /proc/$$/stat)\" = $$ || exit 5"],
         env: ["ARUN_TEST=set"], detach: true};
     status, _ := start(ADR(j), 1000, ADR(b));
-    expect("detached: its own session", status, 0, Buf.bytes(ADR(b)), "");
+    expect("detached: its own session", status, 0, Buf.bytes(b), "");
     j.args := ["sh", "-c", "echo $ARUN_TEST.$DISPLAY."];
     status, _ := start(ADR(j), 1000, ADR(b));
-    expect("detached's environment", status, 0, Buf.bytes(ADR(b)), "set..\n");
-    Buf.reset(ADR(b));
+    expect("detached's environment", status, 0, Buf.bytes(b), "set..\n");
+    Buf.reset(b);
     j.args := ["no-such-program-of-arno"];
     status, _ := start(ADR(j), 1000, ADR(b));
-    expect("detached, no program", status, 127, Buf.bytes(ADR(b)), "");
+    expect("detached, no program", status, 127, Buf.bytes(b), "");
     if failed then return 1; end;
     return 0;
 end;

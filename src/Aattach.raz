@@ -74,10 +74,10 @@ begin
         w := U32(s[i]) shl 16;
         if n > 1 then w := w | U32(s[i + 1]) shl 8; end;
         if n > 2 then w := w | U32(s[i + 2]); end;
-        Buf.add(b, Base64[INT(w shr 18) & 63]);
-        Buf.add(b, Base64[INT(w shr 12) & 63]);
-        if n > 1 then Buf.add(b, Base64[INT(w shr 6) & 63]); else Buf.add(b, '='); end;
-        if n > 2 then Buf.add(b, Base64[INT(w) & 63]); else Buf.add(b, '='); end;
+        Buf.add(b^, Base64[INT(w shr 18) & 63]);
+        Buf.add(b^, Base64[INT(w shr 12) & 63]);
+        if n > 1 then Buf.add(b^, Base64[INT(w shr 6) & 63]); else Buf.add(b^, '='); end;
+        if n > 2 then Buf.add(b^, Base64[INT(w) & 63]); else Buf.add(b^, '='); end;
         i := i + 3;
     end;
 end;
@@ -89,26 +89,26 @@ proc listing*(dir: []U8; out: ^Buf.Buf): BOOL;
 var d: Sys.Dir; names: Strs.Vec; all: [][]U8; name: []U8; more: BOOL; i: INT; path: Buf.Buf; info: Sys.Info;
     err: INT;
 begin
-    if Sys.openDir(ADR(d), dir) < 0 then return false; end;
-    Strs.init(ADR(names), Heap.heap);
-    defer Strs.done(ADR(names));
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
+    if Sys.openDir(d, dir) < 0 then return false; end;
+    Strs.init(names, Heap.heap);
+    defer Strs.done(names);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
     while true do
-        name, more := Sys.nextEntry(ADR(d));
+        name, more := Sys.nextEntry(d);
         if not more then break; end;
-        Buf.reset(ADR(path));
-        Fmt.write(ADR(path), "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
-        info, err := Sys.info(Buf.bytes(ADR(path)));
-        if (err = 0) and info.dir then Buf.add(ADR(path), '/'); end;
-        Strs.push(ADR(names), Amsg.keep(Buf.bytes(ADR(path))[LEN(dir) + 1..path.len]));
+        Buf.reset(path);
+        Fmt.write(path, "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
+        info, err := Sys.info(Buf.bytes(path));
+        if (err = 0) and info.dir then Buf.add(path, '/'); end;
+        Strs.push(names, Amsg.keep(Buf.bytes(path)[LEN(dir) + 1..path.len]));
     end;
-    Sys.closeDir(ADR(d));
-    all := Strs.all(ADR(names));
+    Sys.closeDir(d);
+    all := Strs.all(names);
     Names.sort(all);
     for i := 0 to LEN(all) - 1 do
-        Buf.str(out, all[i]);
-        Buf.add(out, '\n');
+        Buf.str(out^, all[i]);
+        Buf.add(out^, '\n');
         Str.free(Heap.heap, all[i]);
     end;
     return true;
@@ -156,24 +156,24 @@ var text: Buf.Buf; info: Sys.Info; err, a, b: INT; s: []U8;
 begin
     info, err := Sys.info(path);
     if err # 0 then return false; end;
-    Buf.init(ADR(text), Heap.heap);
-    defer Buf.done(ADR(text));
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
     if info.dir then
         if (LEN(lines) > 0) or not listing(path, ADR(text)) then return false; end;
-        Buf.str(out, "\n\n");
-        Aahead.block(out, path, "", Buf.bytes(ADR(text)));
+        Buf.str(out^, "\n\n");
+        Aahead.block(out, path, "", Buf.bytes(text));
         return true;
     end;
-    if not info.file or (Files.load(path, ADR(text)) # 0) then return false; end;
-    s := Buf.bytes(ADR(text));
+    if not info.file or (Files.load(path, text) # 0) then return false; end;
+    s := Buf.bytes(text);
     if LEN(s) > 8192 then s := s[0..8192]; end;
     if Str.find(s, "\x00") >= 0 then return false; end;
-    s := Buf.bytes(ADR(text));
+    s := Buf.bytes(text);
     if LEN(lines) > 0 then
         a, b := range(lines);
         s := slice(s, a, b);
     end;
-    Buf.str(out, "\n\n");
+    Buf.str(out^, "\n\n");
     Aahead.block(out, path, lines, s);
     return true;
 end;
@@ -185,11 +185,11 @@ var raw: Buf.Buf; m: []U8;
 begin
     m := mime(path);
     if LEN(m) = 0 then return false; end;
-    Buf.init(ADR(raw), Heap.heap);
-    defer Buf.done(ADR(raw));
-    if (Files.load(path, ADR(raw)) # 0) or (raw.len = 0) then return false; end;
-    Fmt.write(b, "data:{};base64,", [Fmt.str(m)]);
-    base64(b, Buf.bytes(ADR(raw)));
+    Buf.init(raw, Heap.heap);
+    defer Buf.done(raw);
+    if (Files.load(path, raw) # 0) or (raw.len = 0) then return false; end;
+    Fmt.write(b^, "data:{};base64,", [Fmt.str(m)]);
+    base64(b, Buf.bytes(raw));
     return true;
 end;
 
@@ -252,22 +252,22 @@ end;
 proc take(m: ^Amsg.Msg; path, lines: []U8; seen: ^Strs.Vec; out: ^Buf.Buf): BOOL;
 var key, url: Buf.Buf; s: [][]U8; i: INT;
 begin
-    Buf.init(ADR(key), Heap.heap);
-    defer Buf.done(ADR(key));
-    Buf.str(ADR(key), path);
-    if LEN(lines) > 0 then Fmt.write(ADR(key), ":{}", [Fmt.str(lines)]); end;
-    s := Strs.all(seen);
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.str(key, path);
+    if LEN(lines) > 0 then Fmt.write(key, ":{}", [Fmt.str(lines)]); end;
+    s := Strs.all(seen^);
     for i := 0 to LEN(s) - 1 do
-        if s[i] = Buf.bytes(ADR(key)) then return true; end;
+        if s[i] = Buf.bytes(key) then return true; end;
     end;
-    Buf.init(ADR(url), Heap.heap);
-    defer Buf.done(ADR(url));
+    Buf.init(url, Heap.heap);
+    defer Buf.done(url);
     if (LEN(lines) = 0) and image(path, ADR(url)) then
-        Strs.push(ADR(m^.images), Amsg.keep(Buf.bytes(ADR(url))));
+        Strs.push(m^.images, Amsg.keep(Buf.bytes(url)));
     elsif not bring(path, lines, out) then
         return false;
     end;
-    Strs.push(seen, Amsg.keep(Buf.bytes(ADR(key))));
+    Strs.push(seen^, Amsg.keep(Buf.bytes(key)));
     return true;
 end;
 
@@ -276,10 +276,10 @@ end;
 proc expand*(m: ^Amsg.Msg; text: []U8);
 var out: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []U8; ok: BOOL;
 begin
-    Buf.init(ADR(out), Heap.heap);
-    defer Buf.done(ADR(out));
-    Strs.init(ADR(seen), Heap.heap);
-    Buf.str(ADR(out), text);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    Strs.init(seen, Heap.heap);
+    Buf.str(out, text);
     i := 0;
     while i < LEN(text) do
         if not starts(text, i) then INC(i); continue; end;
@@ -303,9 +303,9 @@ begin
         end;
         i := j;
     end;
-    for i := 0 to seen.len - 1 do Str.free(Heap.heap, Strs.all(ADR(seen))[i]); end;
-    Strs.done(ADR(seen));
-    Amsg.setText(m, Buf.bytes(ADR(out)));
+    for i := 0 to seen.len - 1 do Str.free(Heap.heap, Strs.all(seen)[i]); end;
+    Strs.done(seen);
+    Amsg.setText(m, Buf.bytes(out));
 end;
 
 (* A user's message as the human typed it, its attachments taken off. *)
@@ -324,41 +324,41 @@ end;
 proc paste*(path, why: ^Buf.Buf): BOOL;
 var got: Buf.Buf; st: INT; s, base: []U8; digits: [20]U8; n: INT;
 begin
-    Buf.init(ADR(got), Heap.heap);
-    defer Buf.done(ADR(got));
+    Buf.init(got, Heap.heap);
+    defer Buf.done(got);
     st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, ADR(got));
-    s := Buf.bytes(ADR(got));
-    if (st = 127) or (st < 0) then Buf.str(why, "pasting an image needs xclip"); return false; end;
-    if Str.find(s, "display") >= 0 then Buf.str(why, "no X display to take the clipboard from"); return false; end;
-    if st # 0 then Buf.str(why, "the clipboard is empty"); return false; end;
-    Buf.reset(ADR(got));
-    Fmt.write(ADR(got), "\n{}\n", [Fmt.str(s)]);
-    s := Buf.bytes(ADR(got));
+    s := Buf.bytes(got);
+    if (st = 127) or (st < 0) then Buf.str(why^, "pasting an image needs xclip"); return false; end;
+    if Str.find(s, "display") >= 0 then Buf.str(why^, "no X display to take the clipboard from"); return false; end;
+    if st # 0 then Buf.str(why^, "the clipboard is empty"); return false; end;
+    Buf.reset(got);
+    Fmt.write(got, "\n{}\n", [Fmt.str(s)]);
+    s := Buf.bytes(got);
     if Str.find(s, "\nimage/png\n") < 0 then
         if Str.find(s, "\nimage/") >= 0 then
-            Buf.str(why, "the clipboard's image isn't a PNG");
+            Buf.str(why^, "the clipboard's image isn't a PNG");
         else
-            Buf.str(why, "the clipboard holds no image");
+            Buf.str(why^, "the clipboard holds no image");
         end;
         return false;
     end;
-    Buf.reset(ADR(got));
+    Buf.reset(got);
     st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, ADR(got));
-    if (st # 0) or not Str.hasPrefix(Buf.bytes(ADR(got)), Png) then
-        Buf.str(why, "the clipboard's image couldn't be read");
+    if (st # 0) or not Str.hasPrefix(Buf.bytes(got), Png) then
+        Buf.str(why^, "the clipboard's image couldn't be read");
         return false;
     end;
     if pastes.len = 0 then
         base := Sys.env("XDG_RUNTIME_DIR");
         if LEN(base) = 0 then base := "/tmp"; end;
         digits, n := Str.fromInt(Sys.pid());
-        Fmt.write(ADR(pastes), "{}/arno-{}/", [Fmt.str(base), Fmt.str(digits[0..n])]);
-        _ := Sys.makeDir(Buf.bytes(ADR(pastes)));
+        Fmt.write(pastes, "{}/arno-{}/", [Fmt.str(base), Fmt.str(digits[0..n])]);
+        _ := Sys.makeDir(Buf.bytes(pastes));
     end;
     INC(pasted);
-    Fmt.write(path, "{}{}.png", [Fmt.str(Buf.bytes(ADR(pastes))), Fmt.int(pasted)]);
-    if not Files.write(Buf.bytes(path), Buf.bytes(ADR(got))) then
-        Fmt.write(why, "the image couldn't be written to {}", [Fmt.str(Buf.bytes(ADR(pastes)))]);
+    Fmt.write(path^, "{}{}.png", [Fmt.str(Buf.bytes(pastes)), Fmt.int(pasted)]);
+    if not Files.write(Buf.bytes(path^), Buf.bytes(got)) then
+        Fmt.write(why^, "the image couldn't be written to {}", [Fmt.str(Buf.bytes(pastes))]);
         return false;
     end;
     return true;
@@ -369,14 +369,14 @@ proc drop*;
 var b: Buf.Buf; i: INT;
 begin
     if pastes.len = 0 then return; end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     for i := 1 to pasted do
-        Buf.reset(ADR(b));
-        Fmt.write(ADR(b), "{}{}.png", [Fmt.str(Buf.bytes(ADR(pastes))), Fmt.int(i)]);
-        _ := Sys.remove(Buf.bytes(ADR(b)));
+        Buf.reset(b);
+        Fmt.write(b, "{}{}.png", [Fmt.str(Buf.bytes(pastes)), Fmt.int(i)]);
+        _ := Sys.remove(Buf.bytes(b));
     end;
-    _ := Sys.removeDir(Buf.bytes(ADR(pastes)));
+    _ := Sys.removeDir(Buf.bytes(pastes));
 end;
 
 (* The module's test. *)
@@ -398,11 +398,11 @@ begin
     _ := Files.write("build/attach/a dir/b.txt", "bee");
     _ := Files.write("build/attach/bin", "x\x00y");
     _ := Files.write("build/attach/p.png", "\x89PNG");
-    Buf.init(ADR(b), Heap.heap);
+    Buf.init(b, Heap.heap);
     base64(ADR(b), "Man");
     base64(ADR(b), "Ma");
     base64(ADR(b), "M");
-    expect("base64", Buf.bytes(ADR(b)), "TWFuTWE=TQ==", ADR(failed));
+    expect("base64", Buf.bytes(b), "TWFuTWE=TQ==", ADR(failed));
     Amsg.init(ADR(m), Amsg.Role.user);
     expand(ADR(m), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again");
     expect("lines, once", m.text, "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again\n\n" +
@@ -416,7 +416,7 @@ begin
     expand(ADR(m), "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png");
     expect("a listing", m.text, "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png\n\n" +
         "<file path=\"build/attach/a dir\">\nb.txt\n</file>", ADR(failed));
-    if (m.images.len # 1) or (Strs.all(ADR(m.images))[0] # "data:image/png;base64,iVBORw==") then
+    if (m.images.len # 1) or (Strs.all(m.images)[0] # "data:image/png;base64,iVBORw==") then
         Out.str("Aattach: an image\n");
         failed := true;
     end;
@@ -425,5 +425,5 @@ begin
 end;
 
 begin
-    Buf.init(ADR(pastes), Heap.heap);
+    Buf.init(pastes, Heap.heap);
 end Aattach.

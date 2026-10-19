@@ -86,14 +86,14 @@ end;
 proc emit(p: ^Page; c: U8);
 begin
     if p^.out^.len > p^.start then
-        if (p^.gap = 1) and (p^.nl = 0) then Buf.add(p^.out, ' '); end;
+        if (p^.gap = 1) and (p^.nl = 0) then Buf.add(p^.out^, ' '); end;
         while p^.nl < p^.gap - 1 do   (* 2: a line end, 3: two *)
-            Buf.add(p^.out, '\n');
+            Buf.add(p^.out^, '\n');
             INC(p^.nl);
         end;
     end;
     p^.gap := 0;
-    Buf.add(p^.out, c);
+    Buf.add(p^.out^, c);
     if c = '\n' then INC(p^.nl); else p^.nl := 0; end;
 end;
 
@@ -119,11 +119,11 @@ end;
 proc decode(s: []U8; b: ^Buf.Buf): []U8;
 var i, j, k: INT; c: I32; v: U64; d: I64; ok: BOOL; e: [4]U8; n: INT;
 begin
-    Buf.reset(b);
+    Buf.reset(b^);
     i := 0;
     while i < LEN(s) do
         if s[i] # '&' then
-            Buf.add(b, s[i]);
+            Buf.add(b^, s[i]);
             INC(i);
             continue;
         end;
@@ -150,15 +150,15 @@ begin
             end;
         end;
         if c < 0 then
-            Buf.add(b, '&');
+            Buf.add(b^, '&');
             INC(i);
         else
             e, n := Str.encode(c);
-            Buf.str(b, e[0..n]);
+            Buf.str(b^, e[0..n]);
             i := j + 1;
         end;
     end;
-    return Buf.bytes(b);
+    return Buf.bytes(b^);
 end;
 
 (* A tag, start or end, called name, small, laid out. *)
@@ -174,11 +174,11 @@ begin
             p^.title := p^.out^.len;
         elsif ending and (p^.title >= 0) then
             (* the title's text taken out, and kept apart at the start *)
-            t := Str.trim(Buf.bytes(p^.out)[p^.title..p^.out^.len]);
+            t := Str.trim(Buf.bytes(p^.out^)[p^.title..p^.out^.len]);
             p^.out^.len := p^.title;
             p^.title := -2;
             p^.nl := 0;
-            Buf.str(p^.out, t);
+            Buf.str(p^.out^, t);
             p^.gap := 3;
         end;
     end;
@@ -253,16 +253,16 @@ var i, n: INT; c: I32; e: [4]U8;
 begin
     for i := 0 to LEN(s) - 1 do
         if s[i] < 80H then
-            Buf.add(b, s[i]);
+            Buf.add(b^, s[i]);
         else
             c := I32(s[i]);
             if (c >= 80H) and (c < 0A0H) then c := Win[c - 80H]; end;
             if c = 0 then c := 0FFFDH; end;
             e, n := Str.encode(c);
-            Buf.str(b, e[0..n]);
+            Buf.str(b^, e[0..n]);
         end;
     end;
-    return Buf.bytes(b);
+    return Buf.bytes(b^);
 end;
 
 (* The text of body, an HTML page, added to out: its title, a blank
@@ -271,10 +271,10 @@ end;
 proc text*(body, ctype: []U8; out: ^Buf.Buf);
 var p: Page; ent, bytes: Buf.Buf; s, name, charset: []U8; i, j, k, from: INT; ending: BOOL;
 begin
-    Buf.init(ADR(ent), Heap.heap);
-    defer Buf.done(ADR(ent));
-    Buf.init(ADR(bytes), Heap.heap);
-    defer Buf.done(ADR(bytes));
+    Buf.init(ent, Heap.heap);
+    defer Buf.done(ent);
+    Buf.init(bytes, Heap.heap);
+    defer Buf.done(bytes);
     s := body;
     charset := charsetOf(ctype);
     if LEN(charset) = 0 then
@@ -308,25 +308,25 @@ begin
                 INC(i);
                 continue;
             end;
-            Buf.reset(ADR(ent));
-            Buf.str(ADR(ent), s[j..k]);
-            name := Buf.bytes(ADR(ent));
+            Buf.reset(ent);
+            Buf.str(ent, s[j..k]);
+            name := Buf.bytes(ent);
             Str.lower(name);
             tag(ADR(p), name, ending);
             i := tagEnd(s, k);
             if not ending and Afind.listed(name, Raw) then
                 (* script and style hold text, < and all, to their end tag *)
-                Buf.reset(ADR(bytes));
-                Buf.str(ADR(bytes), "</");
-                Buf.str(ADR(bytes), name);
-                j := findFold(s, Buf.bytes(ADR(bytes)), i);
+                Buf.reset(bytes);
+                Buf.str(bytes, "</");
+                Buf.str(bytes, name);
+                j := findFold(s, Buf.bytes(bytes), i);
                 tag(ADR(p), name, true);
                 i := tagEnd(s, j);
             end;
         end;
     end;
-    out^.len := from + LEN(Str.trimRight(Buf.bytes(out)[from..out^.len]));
-    if out^.len = from then Buf.str(out, "(no text)"); end;
+    out^.len := from + LEN(Str.trimRight(Buf.bytes(out^)[from..out^.len]));
+    if out^.len = from then Buf.str(out^, "(no text)"); end;
 end;
 
 (* The module's test. *)
@@ -336,13 +336,13 @@ var failed: BOOL;
 proc expect(what, html, ctype, want: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
+    Buf.init(b, Heap.heap);
     text(html, ctype, ADR(b));
-    if Buf.bytes(ADR(b)) = want then return; end;
+    if Buf.bytes(b) = want then return; end;
     Out.str("Ahtml: ");
     Out.str(what);
     Out.str(":\n");
-    Out.str(Buf.bytes(ADR(b)));
+    Out.str(Buf.bytes(b));
     Out.str("\nnot\n");
     Out.str(want);
     Out.ln;

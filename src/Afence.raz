@@ -41,7 +41,7 @@ var
 proc up(b: ^Buf.Buf);
 var s: []U8;
 begin
-    s := Buf.bytes(b);
+    s := Buf.bytes(b^);
     b^.len := Str.findLast(s, "/");
     if b^.len < 0 then b^.len := 0; end;
 end;
@@ -55,21 +55,21 @@ end;
 proc resolve*(path: []U8; b: ^Buf.Buf);
 var rest, next: Buf.Buf; s, c, t, dir: []U8; at, i, hops, keep, e: INT;
 begin
-    Buf.init(ADR(rest), Heap.heap);
-    defer Buf.done(ADR(rest));
-    Buf.init(ADR(next), Heap.heap);
-    defer Buf.done(ADR(next));
+    Buf.init(rest, Heap.heap);
+    defer Buf.done(rest);
+    Buf.init(next, Heap.heap);
+    defer Buf.done(next);
     if not Str.hasPrefix(path, "/") then
         dir, e := Sys.workDir();
-        if e = 0 then Buf.str(ADR(rest), dir); end;
-        Buf.add(ADR(rest), '/');
+        if e = 0 then Buf.str(rest, dir); end;
+        Buf.add(rest, '/');
     end;
-    Buf.str(ADR(rest), path);
-    Buf.reset(b);
+    Buf.str(rest, path);
+    Buf.reset(b^);
     at := 0;
     hops := 0;
     while at < rest.len do
-        s := Buf.bytes(ADR(rest));
+        s := Buf.bytes(rest);
         i := at;
         while (i < LEN(s)) and (s[i] # '/') do INC(i); end;
         c := s[at..i];
@@ -77,23 +77,23 @@ begin
         if (LEN(c) = 0) or (c = ".") then continue; end;
         if c = ".." then up(b); continue; end;
         keep := b^.len;
-        Buf.add(b, '/');
-        Buf.str(b, c);
-        t, e := Sys.readLink(Buf.bytes(b));
+        Buf.add(b^, '/');
+        Buf.str(b^, c);
+        t, e := Sys.readLink(Buf.bytes(b^));
         if (e = 0) and (hops < MaxHops) then
             INC(hops);
-            Buf.reset(ADR(next));
-            Buf.str(ADR(next), t);
-            Buf.add(ADR(next), '/');
-            if at < LEN(s) then Buf.str(ADR(next), s[at..LEN(s)]); end;
-            Buf.reset(ADR(rest));
-            Buf.str(ADR(rest), Buf.bytes(ADR(next)));
+            Buf.reset(next);
+            Buf.str(next, t);
+            Buf.add(next, '/');
+            if at < LEN(s) then Buf.str(next, s[at..LEN(s)]); end;
+            Buf.reset(rest);
+            Buf.str(rest, Buf.bytes(next));
             at := 0;
             b^.len := keep;
             if Str.hasPrefix(t, "/") then b^.len := 0; end;
         end;
     end;
-    if b^.len = 0 then Buf.add(b, '/'); end;
+    if b^.len = 0 then Buf.add(b^, '/'); end;
 end;
 
 (* Whether p is base or below it, both resolved: the '/' after the
@@ -115,39 +115,39 @@ end;
 proc forget*;
 var g: [][]U8; i: INT;
 begin
-    g := Strs.all(ADR(grants));
+    g := Strs.all(grants);
     for i := 0 to LEN(g) - 1 do Str.free(Heap.heap, g[i]); end;
-    Strs.reset(ADR(grants));
+    Strs.reset(grants);
 end;
 
 (* The zone found from the working directory, and the grants dropped. *)
 proc init*;
 var b, mark: Buf.Buf; levels, m: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.init(ADR(mark), Heap.heap);
-    defer Buf.done(ADR(mark));
-    if not ready then Strs.init(ADR(grants), Heap.heap); ready := true; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(mark, Heap.heap);
+    defer Buf.done(mark);
+    if not ready then Strs.init(grants, Heap.heap); ready := true; end;
     forget;
     resolve(".", ADR(b));
-    zone := keep(Buf.bytes(ADR(b)));
+    zone := keep(Buf.bytes(b));
     rooted := false;
     for levels := 0 to 2 do
         for m := 0 to LEN(Marks) - 1 do
-            Buf.reset(ADR(mark));
-            Buf.str(ADR(mark), Buf.bytes(ADR(b)));
-            if b.len > 1 then Buf.add(ADR(mark), '/'); end;
-            Buf.str(ADR(mark), Marks[m]);
-            if Sys.access(Buf.bytes(ADR(mark)), {}) = 0 then
-                zone := keep(Buf.bytes(ADR(b)));
+            Buf.reset(mark);
+            Buf.str(mark, Buf.bytes(b));
+            if b.len > 1 then Buf.add(mark, '/'); end;
+            Buf.str(mark, Marks[m]);
+            if Sys.access(Buf.bytes(mark), {}) = 0 then
+                zone := keep(Buf.bytes(b));
                 rooted := true;
                 return;
             end;
         end;
         if b.len = 1 then return; end;
         up(ADR(b));
-        if b.len = 0 then Buf.add(ADR(b), '/'); end;
+        if b.len = 0 then Buf.add(b, '/'); end;
     end;
 end;
 
@@ -155,13 +155,13 @@ end;
 proc inside*(path: []U8): BOOL;
 var b: Buf.Buf; p: []U8; g: [][]U8; i: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     resolve(path, ADR(b));
-    p := Buf.bytes(ADR(b));
+    p := Buf.bytes(b);
     if within(p, zone) then return true; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
-    g := Strs.all(ADR(grants));
+    g := Strs.all(grants);
     for i := 0 to LEN(g) - 1 do
         if within(p, g[i]) then return true; end;
     end;
@@ -173,11 +173,11 @@ end;
 proc useScratch*(path: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     resolve(path, ADR(b));
     if LEN(scratch) > 0 then Str.free(Heap.heap, scratch); end;
-    scratch := keep(Buf.bytes(ADR(b)));
+    scratch := keep(Buf.bytes(b));
 end;
 
 (* Whether path is in the scratch directory, the model's own, so that
@@ -191,10 +191,10 @@ proc ours*(path: []U8): BOOL;
 var b: Buf.Buf;
 begin
     if LEN(scratch) = 0 then return false; end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     resolve(path, ADR(b));
-    return within(Buf.bytes(ADR(b)), scratch);
+    return within(Buf.bytes(b), scratch);
 end;
 
 (* path, and everything below it, inside for the rest of the run;
@@ -202,10 +202,10 @@ end;
 proc grant*(path: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     resolve(path, ADR(b));
-    Strs.push(ADR(grants), keep(Buf.bytes(ADR(b))));
+    Strs.push(grants, keep(Buf.bytes(b)));
 end;
 
 (* The module's test, in build/fence, which it makes. *)
@@ -228,19 +228,19 @@ end;
 proc resolved(path: []U8): []U8;
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
+    Buf.init(b, Heap.heap);
     resolve(path, ADR(b));
-    return Buf.bytes(ADR(b));
+    return Buf.bytes(b);
 end;
 
 (* s and t, joined *)
 proc cat(s, t: []U8): []U8;
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    Buf.str(ADR(b), s);
-    Buf.str(ADR(b), t);
-    return Buf.bytes(ADR(b));
+    Buf.init(b, Heap.heap);
+    Buf.str(b, s);
+    Buf.str(b, t);
+    return Buf.bytes(b);
 end;
 
 proc yes(b: BOOL): []U8;

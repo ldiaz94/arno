@@ -26,10 +26,10 @@
    when it is copied, so that a paragraph wrapped over several rows is
    copied as the one line it was.
 
-   Depends on rtui's TuiScreen and TuiWidth, rterm's Term, Buf, Str and
+   Depends on rtui's TuiScreen, rterm's Term, Buf, Str and
    Heap. *)
 module Aboard;
-import TuiScreen, TuiWidth, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row);
+import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row);
 
 type
     Kind* = (user, reply, tool, info, error);
@@ -81,27 +81,27 @@ var
 (* The entries, oldest first, until one is added. *)
 proc all*: []Entry;
 begin
-    return Entries.all(ADR(entries));
+    return Entries.all(entries);
 end;
 
 (* The last entry, or nil if there is none. *)
 proc last*: ^Entry;
 begin
     if entries.len = 0 then return nil; end;
-    return ADR(Entries.all(ADR(entries))[entries.len - 1]);
+    return ADR(Entries.all(entries)[entries.len - 1]);
 end;
 
 (* A new entry of kind k saying s, at the end. *)
 proc push*(k: Kind; s: []U8): ^Entry;
 var e: ^Entry;
 begin
-    e := Entries.add(ADR(entries));
+    e := Entries.add(entries);
     e^.kind := k;
-    Buf.init(ADR(e^.text), Heap.heap);
-    Buf.init(ADR(e^.args), Heap.heap);
-    Buf.init(ADR(e^.res), Heap.heap);
-    Buf.init(ADR(e^.detail), Heap.heap);
-    Buf.str(ADR(e^.text), s);
+    Buf.init(e^.text, Heap.heap);
+    Buf.init(e^.args, Heap.heap);
+    Buf.init(e^.res, Heap.heap);
+    Buf.init(e^.detail, Heap.heap);
+    Buf.str(e^.text, s);
     return e;
 end;
 
@@ -112,13 +112,13 @@ var e: ^Entry;
 begin
     e := last();
     if (e = nil) or (e^.kind # Kind.reply) then e := push(Kind.reply, ""); end;
-    Buf.str(ADR(e^.text), s);
+    Buf.str(e^.text, s);
 end;
 
 (* A tool call, about to run. *)
 proc call*(name, args: []U8);
 begin
-    Buf.str(ADR(push(tool, name)^.args), args);
+    Buf.str(push(tool, name)^.args, args);
 end;
 
 (* The first call still running, or nil: the one a result answers, as
@@ -140,7 +140,7 @@ var e: ^Entry;
 begin
     e := running();
     if e = nil then return; end;
-    Buf.str(ADR(e^.res), res);
+    Buf.str(e^.res, res);
     e^.done := true;
 end;
 
@@ -150,8 +150,8 @@ var e: ^Entry;
 begin
     e := last();
     if (e = nil) or (e^.kind # tool) then return; end;
-    Buf.reset(ADR(e^.detail));
-    Buf.str(ADR(e^.detail), d);
+    Buf.reset(e^.detail);
+    Buf.str(e^.detail, d);
     e^.open := true;
 end;
 
@@ -161,12 +161,12 @@ var e: []Entry; i: INT;
 begin
     e := all();
     for i := 0 to LEN(e) - 1 do
-        Buf.done(ADR(e[i].text));
-        Buf.done(ADR(e[i].args));
-        Buf.done(ADR(e[i].res));
-        Buf.done(ADR(e[i].detail));
+        Buf.done(e[i].text);
+        Buf.done(e[i].args);
+        Buf.done(e[i].res);
+        Buf.done(e[i].detail);
     end;
-    Entries.reset(ADR(entries));
+    Entries.reset(entries);
 end;
 
 (* The newest call opened, or closed if it is open. *)
@@ -204,8 +204,8 @@ proc emit(pre: []U8; bar: Look; a, b: INT);
 var r, col, limit, x: INT; s, l: []U8;
 begin
     if keeping then
-        Rows.push(ADR(flatRows), {a: flatText.len, b: flatText.len + b - a, x: TuiWidth.text(pre), join: joinNext});
-        Buf.str(ADR(flatText), Buf.bytes(ADR(text))[a..b]);
+        Rows.push(flatRows, {a: flatText.len, b: flatText.len + b - a, x: TuiScreen.columns(pre), join: joinNext});
+        Buf.str(flatText, Buf.bytes(text)[a..b]);
     end;
     joinNext := '\n';
     r := row - top;
@@ -213,8 +213,8 @@ begin
     if (screen = nil) or (r < 0) or (r >= area.rows) then return; end;
     limit := area.col + area.cols;
     col := TuiScreen.putTo(screen, area.row + r, area.col, limit, pre, styles[INT(bar)]);
-    s := Buf.bytes(ADR(text));
-    l := Buf.bytes(ADR(looks));
+    s := Buf.bytes(text);
+    l := Buf.bytes(looks);
     while a < b do
         x := a;
         while (x < b) and (l[x] = l[a]) do INC(x); end;
@@ -229,7 +229,7 @@ end;
 proc wrap(pre: []U8; bar: Look; w: INT);
 var s: []U8; a, i, cols, blank, n: INT; c: I32;
 begin
-    s := Buf.bytes(ADR(text));
+    s := Buf.bytes(text);
     if w < 8 then w := 8; end;
     if LEN(s) = 0 then emit(pre, bar, 0, 0); return; end;
     a := 0;
@@ -240,9 +240,9 @@ begin
         while i < LEN(s) do
             c, n := Str.decode(s[i..LEN(s)]);
             if n < 1 then n := 1; end;
-            if cols + TuiWidth.char(c) > w then break; end;
+            if cols + TuiScreen.width(c) > w then break; end;
             if s[i] = ' ' then blank := i; end;
-            cols := cols + TuiWidth.char(c);
+            cols := cols + TuiScreen.width(c);
             i := i + n;
         end;
         if i >= LEN(s) then emit(pre, bar, a, LEN(s)); return; end;
@@ -265,20 +265,20 @@ begin
     for i := 0 to LEN(s) - 1 do
         if s[i] = '\t' then
             for k := 1 to 4 do
-                Buf.add(ADR(text), ' ');
-                Buf.add(ADR(looks), U8(l));
+                Buf.add(text, ' ');
+                Buf.add(looks, U8(l));
             end;
         else
-            Buf.add(ADR(text), s[i]);
-            Buf.add(ADR(looks), U8(l));
+            Buf.add(text, s[i]);
+            Buf.add(looks, U8(l));
         end;
     end;
 end;
 
 proc start;
 begin
-    Buf.reset(ADR(text));
-    Buf.reset(ADR(looks));
+    Buf.reset(text);
+    Buf.reset(looks);
 end;
 
 (* Each line of s wrapped after pre, in look l. *)
@@ -374,14 +374,14 @@ end;
 proc fit(w: INT);
 var s: []U8; i, cols, n: INT; c: I32;
 begin
-    s := Buf.bytes(ADR(text));
+    s := Buf.bytes(text);
     i := 0;
     cols := 0;
     while i < LEN(s) do
         c, n := Str.decode(s[i..LEN(s)]);
         if n < 1 then n := 1; end;
-        if cols + TuiWidth.char(c) > w then break; end;
-        cols := cols + TuiWidth.char(c);
+        if cols + TuiScreen.width(c) > w then break; end;
+        cols := cols + TuiScreen.width(c);
         i := i + n;
     end;
     text.len := i;
@@ -394,29 +394,29 @@ end;
 proc header(e: ^Entry; w: INT);
 var sum: Buf.Buf; res: []U8; n: INT; l: Look;
 begin
-    Buf.init(ADR(sum), Heap.heap);
-    defer Buf.done(ADR(sum));
-    res := Str.trim(Buf.bytes(ADR(e^.res)));
+    Buf.init(sum, Heap.heap);
+    defer Buf.done(sum);
+    res := Str.trim(Buf.bytes(e^.res));
     n := count(res);
     if not e^.done then
-        Buf.str(ADR(sum), "running\u{2026}");
+        Buf.str(sum, "running\u{2026}");
     elsif n <= 1 then
-        Buf.str(ADR(sum), res);
+        Buf.str(sum, res);
     else
-        Fmt.write(ADR(sum), "{} lines", [Fmt.int(n)]);
+        Fmt.write(sum, "{} lines", [Fmt.int(n)]);
     end;
     l := dim;
     if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then l := red; end;
     start();
     if e^.open then add("\u{25BE} ", hunk); else add("\u{25B8} ", hunk); end;
-    add(Buf.bytes(ADR(e^.text)), hunk);
+    add(Buf.bytes(e^.text), hunk);
     add(" ", hunk);
-    flat(Buf.bytes(ADR(e^.args)), hunk);
-    n := w - 2 - TuiWidth.text(Buf.bytes(ADR(sum)));
+    flat(Buf.bytes(e^.args), hunk);
+    n := w - 2 - TuiScreen.columns(Buf.bytes(sum));
     if n < w div 2 then n := w div 2; end;
     fit(n);
     add("  ", plain);
-    flat(Buf.bytes(ADR(sum)), l);
+    flat(Buf.bytes(sum), l);
     fit(w);
     emit("  ", plain, 0, text.len);
 end;
@@ -440,7 +440,7 @@ proc layout(i: INT; w: INT);
 var e: ^Entry; s, line: []U8; fence, ok: BOOL; more: INT; note: Buf.Buf;
 begin
     e := ADR(all()[i]);
-    s := Buf.bytes(ADR(e^.text));
+    s := Buf.bytes(e^.text);
     match e^.kind of
     | user:
         start();
@@ -460,17 +460,17 @@ begin
     | tool:
         header(e, w - 2);
         if not e^.open then return; end;
-        lines(Buf.bytes(ADR(e^.args)), Gutter, dim, dim, w - 6);
-        if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(ADR(e^.detail))), Gutter, w - 6); end;
-        s, more := head(Str.trimRight(Buf.bytes(ADR(e^.res))), MaxShown);
+        lines(Buf.bytes(e^.args), Gutter, dim, dim, w - 6);
+        if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;
+        s, more := head(Str.trimRight(Buf.bytes(e^.res)), MaxShown);
         if LEN(s) > 0 then
-            if Buf.bytes(ADR(e^.text)) = "git" then diff(s, Gutter, w - 6); else lines(s, Gutter, dim, dim, w - 6); end;
+            if Buf.bytes(e^.text) = "git" then diff(s, Gutter, w - 6); else lines(s, Gutter, dim, dim, w - 6); end;
         end;
         if more > 0 then
-            Buf.init(ADR(note), Heap.heap);
-            defer Buf.done(ADR(note));
-            Fmt.write(ADR(note), "[{} more lines]", [Fmt.int(more)]);
-            lines(Buf.bytes(ADR(note)), Gutter, dim, dim, w - 6);
+            Buf.init(note, Heap.heap);
+            defer Buf.done(note);
+            Fmt.write(note, "[{} more lines]", [Fmt.int(more)]);
+            lines(Buf.bytes(note), Gutter, dim, dim, w - 6);
         end;
     | info:
         if (i > 0) and (all()[i - 1].kind # info) then start(); emit("", plain, 0, 0); end;
@@ -521,8 +521,8 @@ end;
 proc flatten*(w: INT): INT;
 var i: INT;
 begin
-    Rows.reset(ADR(flatRows));
-    Buf.reset(ADR(flatText));
+    Rows.reset(flatRows);
+    Buf.reset(flatText);
     keeping := true;
     screen := nil;
     row := 0;
@@ -534,15 +534,15 @@ end;
 (* Row i of the last flatten. *)
 proc rowAt*(i: INT): Row;
 begin
-    return Rows.all(ADR(flatRows))[i];
+    return Rows.all(flatRows)[i];
 end;
 
 (* Row i's text. *)
 proc rowText*(i: INT): []U8;
 var r: Row;
 begin
-    r := Rows.all(ADR(flatRows))[i];
-    return Buf.bytes(ADR(flatText))[r.a..r.b];
+    r := Rows.all(flatRows)[i];
+    return Buf.bytes(flatText)[r.a..r.b];
 end;
 
 (* The board drawn on a screen of cols by rows, back rows back, as
@@ -552,13 +552,13 @@ var s: TuiScreen.Screen; b: Buf.Buf; got: INT;
 begin
     TuiScreen.init(ADR(s), cols, rows);
     defer TuiScreen.done(ADR(s));
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     got := draw(ADR(s), {row: 0, col: 0, rows: rows, cols: cols}, back);
     TuiScreen.plain(ADR(s), ADR(b));
-    Fmt.write(ADR(b), "back {}\n", [Fmt.int(got)]);
-    if Buf.bytes(ADR(b)) = want then return true; end;
-    Fmt.print("Aboard: {}: got\n{}want\n{}", [Fmt.str(what), Fmt.str(Buf.bytes(ADR(b))), Fmt.str(want)]);
+    Fmt.write(b, "back {}\n", [Fmt.int(got)]);
+    if Buf.bytes(b) = want then return true; end;
+    Fmt.print("Aboard: {}: got\n{}want\n{}", [Fmt.str(what), Fmt.str(Buf.bytes(b)), Fmt.str(want)]);
     return false;
 end;
 
@@ -589,11 +589,11 @@ end;
 
 proc init;
 begin
-    Entries.init(ADR(entries), Heap.heap);
-    Buf.init(ADR(text), Heap.heap);
-    Buf.init(ADR(looks), Heap.heap);
-    Rows.init(ADR(flatRows), Heap.heap);
-    Buf.init(ADR(flatText), Heap.heap);
+    Entries.init(entries, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Buf.init(looks, Heap.heap);
+    Rows.init(flatRows, Heap.heap);
+    Buf.init(flatText, Heap.heap);
     joinNext := '\n';
     styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),

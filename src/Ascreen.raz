@@ -56,11 +56,11 @@
 
    Depends on Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt,
    rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
-   TuiLine, TuiWidth), rterm's Term, Thread and Sys. Leaves out, for
+   TuiLine), rterm's Term, Thread and Sys. Leaves out, for
    the mouse, and vim's keys. *)
 module Ascreen;
 import Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
-    TuiText, TuiLine, TuiWidth, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
+    TuiText, TuiLine, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 
 type
@@ -130,17 +130,17 @@ var
 proc post(s: Sort; a, b, c: []U8; going: BOOL);
 var e: ^Event;
 begin
-    Thread.lock(ADR(mutex));
-    e := Events.add(ADR(events));
+    Thread.lock(mutex);
+    e := Events.add(events);
     e^.sort := s;
     e^.going := going;
-    Buf.init(ADR(e^.a), Heap.heap);
-    Buf.init(ADR(e^.b), Heap.heap);
-    Buf.init(ADR(e^.c), Heap.heap);
-    Buf.str(ADR(e^.a), a);
-    Buf.str(ADR(e^.b), b);
-    Buf.str(ADR(e^.c), c);
-    Thread.unlock(ADR(mutex));
+    Buf.init(e^.a, Heap.heap);
+    Buf.init(e^.b, Heap.heap);
+    Buf.init(e^.c, Heap.heap);
+    Buf.str(e^.a, a);
+    Buf.str(e^.b, b);
+    Buf.str(e^.c, c);
+    Thread.unlock(mutex);
     TuiLoop.wake;
 end;
 
@@ -173,17 +173,17 @@ end;
    the job's while it runs. *)
 proc counted(_arg: ^U8);
 begin
-    Buf.reset(ADR(made));
+    Buf.reset(made);
     Asession.status(session, ADR(made));
-    post(Sort.status, Buf.bytes(ADR(made)), "", "", false);
+    post(Sort.status, Buf.bytes(made), "", "", false);
 end;
 
 proc stopped: BOOL;
 var s: BOOL;
 begin
-    Thread.lock(ADR(mutex));
+    Thread.lock(mutex);
     s := stopping;
-    Thread.unlock(ADR(mutex));
+    Thread.unlock(mutex);
     return s;
 end;
 
@@ -191,9 +191,9 @@ end;
 proc gone: BOOL;
 var g: BOOL;
 begin
-    Thread.lock(ADR(mutex));
+    Thread.lock(mutex);
     g := ending;
-    Thread.unlock(ADR(mutex));
+    Thread.unlock(mutex);
     return g;
 end;
 
@@ -220,11 +220,11 @@ begin
     if gone() or stopped() then return ""; end;
     post(Sort.why, "", "", "", false);
     _ := answer();
-    Thread.lock(ADR(mutex));
-    Buf.reset(ADR(because));
-    Buf.str(ADR(because), Buf.bytes(ADR(reason)));
-    Thread.unlock(ADR(mutex));
-    return Buf.bytes(ADR(because));
+    Thread.lock(mutex);
+    Buf.reset(because);
+    Buf.str(because, Buf.bytes(reason));
+    Thread.unlock(mutex);
+    return Buf.bytes(because);
 end;
 
 (* The front end a session on the screen tells. *)
@@ -240,13 +240,13 @@ proc changed*(c: ^Astore.Conv; _arg: ^U8);
 var m: []Amsg.Msg; calls: []Amsg.Call; i, k: INT;
 begin
     post(cleared, "", "", "", false);
-    m := Msgs.all(ADR(c^.msgs));
+    m := Msgs.all(c^.msgs);
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
         | user: post(typed, Aattach.shown(m[i].text), "", "", false);
         | assistant:
             post(said, m[i].text, "", "", false);
-            calls := Calls.all(ADR(m[i].calls));
+            calls := Calls.all(m[i].calls);
             for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", false); end;
         | tool: post(answered, m[i].text, "", "", false);
         end;
@@ -262,7 +262,7 @@ begin
     if job.len = 0 then
         Asession.prepare(session);
     else
-        going := Asession.line(session, Buf.bytes(ADR(job)));
+        going := Asession.line(session, Buf.bytes(job));
     end;
     counted(nil);
     post(ended, "", "", "", going);
@@ -274,8 +274,8 @@ end;
 proc start(line: []U8);
 var err: ERROR;
 begin
-    Buf.reset(ADR(job));
-    Buf.str(ADR(job), line);
+    Buf.reset(job);
+    Buf.str(job, line);
     stopping := false;
     thread, err := Thread.spawn(work, nil);
     if err # nil then
@@ -297,19 +297,19 @@ end;
 proc pose(q, detail, k: []U8);
 var i: INT;
 begin
-    Buf.reset(ADR(keys));
-    Buf.str(ADR(keys), k);
+    Buf.reset(keys);
+    Buf.str(keys, k);
     no := 'n';
     for i := 0 to LEN(k) - 1 do
         if k[i] # 'y' then no := k[i]; break; end;
     end;
-    Buf.reset(ADR(question));
-    Fmt.write(ADR(question), "{} [", [Fmt.str(q)]);
+    Buf.reset(question);
+    Fmt.write(question, "{} [", [Fmt.str(q)]);
     for i := 0 to LEN(k) - 1 do
-        if i > 0 then Buf.add(ADR(question), '/'); end;
-        if k[i] = no then Buf.add(ADR(question), k[i] - 'a' + 'A'); else Buf.add(ADR(question), k[i]); end;
+        if i > 0 then Buf.add(question, '/'); end;
+        if k[i] = no then Buf.add(question, k[i] - 'a' + 'A'); else Buf.add(question, k[i]); end;
     end;
-    Buf.add(ADR(question), ']');
+    Buf.add(question, ']');
     if LEN(detail) > 0 then Aboard.detail(detail); end;
     back := 0;
 end;
@@ -319,38 +319,38 @@ proc woken;
 var e: []Event; i: INT; finished: BOOL;
 begin
     finished := false;
-    Thread.lock(ADR(mutex));
-    e := Events.all(ADR(events));
+    Thread.lock(mutex);
+    e := Events.all(events);
     for i := 0 to LEN(e) - 1 do
         match e[i].sort of
-        | said: Aboard.reply(Buf.bytes(ADR(e[i].a)));
-        | called: Aboard.call(Buf.bytes(ADR(e[i].a)), Buf.bytes(ADR(e[i].b))); back := 0;
-        | answered: Aboard.result(Buf.bytes(ADR(e[i].a)));
-        | told, shown: _ := Aboard.push(Aboard.info, Buf.bytes(ADR(e[i].a))); back := 0;
-        | failed: _ := Aboard.push(Aboard.error, Buf.bytes(ADR(e[i].a))); back := 0;
-        | typed: _ := Aboard.push(Aboard.user, Buf.bytes(ADR(e[i].a)));
+        | said: Aboard.reply(Buf.bytes(e[i].a));
+        | called: Aboard.call(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0;
+        | answered: Aboard.result(Buf.bytes(e[i].a));
+        | told, shown: _ := Aboard.push(Aboard.info, Buf.bytes(e[i].a)); back := 0;
+        | failed: _ := Aboard.push(Aboard.error, Buf.bytes(e[i].a)); back := 0;
+        | typed: _ := Aboard.push(Aboard.user, Buf.bytes(e[i].a));
         | cleared: Aboard.clear; back := 0;
-        | asked: pose(Buf.bytes(ADR(e[i].a)), Buf.bytes(ADR(e[i].b)), Buf.bytes(ADR(e[i].c)));
+        | asked: pose(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
         | Sort.why: TuiLine.start(ADR(why), " why not? ", "", nil);
-        | Sort.status: Buf.reset(ADR(status)); Buf.str(ADR(status), Buf.bytes(ADR(e[i].a)));
+        | Sort.status: Buf.reset(status); Buf.str(status, Buf.bytes(e[i].a));
         | ended:
             finished := true;
-            Buf.reset(ADR(flash));
+            Buf.reset(flash);
             if not e[i].going then TuiLoop.stop; end;
         end;
-        Buf.done(ADR(e[i].a));
-        Buf.done(ADR(e[i].b));
-        Buf.done(ADR(e[i].c));
+        Buf.done(e[i].a);
+        Buf.done(e[i].b);
+        Buf.done(e[i].c);
     end;
-    Events.reset(ADR(events));
-    Thread.unlock(ADR(mutex));
+    Events.reset(events);
+    Thread.unlock(mutex);
     if finished and (thread # nil) then
         Thread.join(thread);
         thread := nil;
         if mode >= 0 then
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
-            Buf.reset(ADR(status));
+            Buf.reset(status);
             Asession.status(session, ADR(status));
         end;
     end;
@@ -380,10 +380,10 @@ end;
 proc stop(_n: INT);
 begin
     if thread = nil then TuiEdit.setText(ADR(editor), ""); Ahistory.reset; return; end;
-    Thread.lock(ADR(mutex));
+    Thread.lock(mutex);
     stopping := true;
-    Thread.unlock(ADR(mutex));
-    Buf.str(ADR(flash), "stopping");
+    Thread.unlock(mutex);
+    Buf.str(flash, "stopping");
 end;
 
 proc quit(n: INT);
@@ -401,11 +401,11 @@ begin
     m := (m + 1) mod LEN(Aprompt.Modes);
     if thread = nil then
         session^.agent.mode := Aprompt.Mode(m);
-        Buf.reset(ADR(status));
+        Buf.reset(status);
         Asession.status(session, ADR(status));
     else
         mode := m;
-        Fmt.write(ADR(flash), "mode {} from the next turn", [Fmt.str(Aprompt.Modes[m].name)]);
+        Fmt.write(flash, "mode {} from the next turn", [Fmt.str(Aprompt.Modes[m].name)]);
     end;
 end;
 
@@ -519,7 +519,7 @@ var i, k: INT; s: []U8;
 begin
     failing := false;
     if query.len = 0 then return; end;
-    i, s, k := Ahistory.search(Buf.bytes(ADR(query)), from, TuiEdit.text(ADR(editor)));
+    i, s, k := Ahistory.search(Buf.bytes(query), from, TuiEdit.text(ADR(editor)));
     if i < 0 then failing := true; return; end;
     found := i;
     fill(s, k);
@@ -529,9 +529,9 @@ proc searchBack(_n: INT);
 begin
     searching := true;
     failing := false;
-    Buf.reset(ADR(query));
-    Buf.reset(ADR(saved));
-    Buf.str(ADR(saved), TuiEdit.text(ADR(editor)));
+    Buf.reset(query);
+    Buf.reset(saved);
+    Buf.str(saved, TuiEdit.text(ADR(editor)));
     found := Ahistory.count();
 end;
 
@@ -544,21 +544,21 @@ begin
         seek(found - 1);
     elsif (ev.key = TuiKeys.ctrl('g')) or (ev.key = TuiKeys.Esc) then
         searching := false;
-        fill(Buf.bytes(ADR(saved)), LEN(Buf.bytes(ADR(saved))));
+        fill(Buf.bytes(saved), LEN(Buf.bytes(saved)));
         Ahistory.reset;
     elsif (ev.key = TuiKeys.Backspace) or (ev.key = TuiKeys.ctrl('h')) then
-        s := Buf.bytes(ADR(query));
+        s := Buf.bytes(query);
         if LEN(s) > 0 then
             _, n := Str.decodeLast(s);
             query.len := query.len - n;
             seek(Ahistory.count());
         end;
     elsif ev.key = TuiKeys.Paste then
-        Buf.str(ADR(query), ev.paste);
+        Buf.str(query, ev.paste);
         seek(found);
     elsif TuiKeys.printable(ev.key) then
         c, n := Str.encode(I32(ev.key));
-        Buf.str(ADR(query), c[0..n]);
+        Buf.str(query, c[0..n]);
         seek(found);
     else
         searching := false;
@@ -573,17 +573,17 @@ end;
 proc pasteImage(_n: INT);
 var path, t: Buf.Buf; s: []U8; p: INT;
 begin
-    Buf.init(ADR(path), Heap.heap);
-    defer Buf.done(ADR(path));
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
     if not Aattach.paste(ADR(path), ADR(flash)) then return; end;
-    Buf.init(ADR(t), Heap.heap);
-    defer Buf.done(ADR(t));
+    Buf.init(t, Heap.heap);
+    defer Buf.done(t);
     s := TuiEdit.text(ADR(editor));
     p := editor.point;
-    if (p > 0) and (s[p - 1] # ' ') and (s[p - 1] # '\n') and (s[p - 1] # '(') then Buf.add(ADR(t), ' '); end;
-    Fmt.write(ADR(t), "@{}", [Fmt.str(Buf.bytes(ADR(path)))]);
-    if (p >= LEN(s)) or (s[p] # ' ') and (s[p] # '\n') then Buf.add(ADR(t), ' '); end;
-    TuiEdit.paste(ADR(editor), Buf.bytes(ADR(t)));
+    if (p > 0) and (s[p - 1] # ' ') and (s[p - 1] # '\n') and (s[p - 1] # '(') then Buf.add(t, ' '); end;
+    Fmt.write(t, "@{}", [Fmt.str(Buf.bytes(path))]);
+    if (p >= LEN(s)) or (s[p] # ' ') and (s[p] # '\n') then Buf.add(t, ' '); end;
+    TuiEdit.paste(ADR(editor), Buf.bytes(t));
 end;
 
 (* completion *)
@@ -593,9 +593,9 @@ proc refresh;
 var s: []U8;
 begin
     s := TuiEdit.text(ADR(editor));
-    if (Buf.bytes(ADR(looked)) = s) and (lookedAt = editor.point) then return; end;
-    Buf.reset(ADR(looked));
-    Buf.str(ADR(looked), s);
+    if (Buf.bytes(looked) = s) and (lookedAt = editor.point) then return; end;
+    Buf.reset(looked);
+    Buf.str(looked, s);
     lookedAt := editor.point;
     hidden := false;
     menu := [];
@@ -616,13 +616,13 @@ end;
 proc take;
 var b: Buf.Buf; s: []U8;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     s := TuiEdit.text(ADR(editor));
-    Buf.str(ADR(b), s[0..wordA]);
-    Buf.str(ADR(b), menu[chosen].text);
-    Buf.str(ADR(b), s[wordB..LEN(s)]);
-    fill(Buf.bytes(ADR(b)), wordA + LEN(menu[chosen].text));
+    Buf.str(b, s[0..wordA]);
+    Buf.str(b, menu[chosen].text);
+    Buf.str(b, s[wordB..LEN(s)]);
+    fill(Buf.bytes(b), wordA + LEN(menu[chosen].text));
 end;
 
 (* A key while the menu is shown: true if it was the menu's. *)
@@ -659,7 +659,7 @@ begin
     if chosen >= n then first := chosen - n + 1; end;
     w := 0;
     for i := first to first + n - 1 do
-        if TuiWidth.text(menu[i].text) > w then w := TuiWidth.text(menu[i].text); end;
+        if TuiScreen.columns(menu[i].text) > w then w := TuiScreen.columns(menu[i].text); end;
     end;
     if w > s^.cols div 2 then w := s^.cols div 2; end;
     for i := first to first + n - 1 do
@@ -688,22 +688,22 @@ begin
     while (first >= 0) and (e[first].kind # Aboard.user) do DEC(first); end;
     if first < 0 then return; end;
     for i := first to LEN(e) - 1 do
-        s := Buf.bytes(ADR(e[i].text));
+        s := Buf.bytes(e[i].text);
         match e[i].kind of
         | user:
             repeat
                 line, s, ok := Str.cut(s, "\n");
-                Fmt.write(b, "\n> {}", [Fmt.str(line)]);
+                Fmt.write(b^, "\n> {}", [Fmt.str(line)]);
             until not ok;
-            Buf.add(b, '\n');
-        | reply: if LEN(Str.trim(s)) > 0 then Fmt.write(b, "\n{}\n", [Fmt.str(Str.trim(s))]); end;
+            Buf.add(b^, '\n');
+        | reply: if LEN(Str.trim(s)) > 0 then Fmt.write(b^, "\n{}\n", [Fmt.str(Str.trim(s))]); end;
         | tool:
-            line := Buf.bytes(ADR(e[i].args));
+            line := Buf.bytes(e[i].args);
             if LEN(line) > 100 then line := line[0..100]; end;
-            Fmt.write(b, "\n\u{25B8} {} ", [Fmt.str(s)]);
-            Str.replace(b, line, "\n", " ");
-            Buf.add(b, '\n');
-        | error: Fmt.write(b, "\n{}\n", [Fmt.str(s)]);
+            Fmt.write(b^, "\n\u{25B8} {} ", [Fmt.str(s)]);
+            Str.replace(b^, line, "\n", " ");
+            Buf.add(b^, '\n');
+        | error: Fmt.write(b^, "\n{}\n", [Fmt.str(s)]);
         | info:
         end;
     end;
@@ -714,29 +714,29 @@ end;
 proc external(_n: INT);
 var b, last: Buf.Buf; s: []U8; k: INT;
 begin
-    if thread # nil then Buf.str(ADR(flash), "the editor waits until the reply is in"); return; end;
-    Buf.reset(ADR(saved));
-    Buf.str(ADR(saved), TuiEdit.text(ADR(editor)));
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.init(ADR(last), Heap.heap);
-    defer Buf.done(ADR(last));
-    Buf.str(ADR(b), Buf.bytes(ADR(saved)));
+    if thread # nil then Buf.str(flash, "the editor waits until the reply is in"); return; end;
+    Buf.reset(saved);
+    Buf.str(saved, TuiEdit.text(ADR(editor)));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(last, Heap.heap);
+    defer Buf.done(last);
+    Buf.str(b, Buf.bytes(saved));
     exchange(ADR(last));
     if last.len > 0 then
-        Fmt.write(ADR(b), "\n\n{}\n# Not sent: this line and all below it are dropped. The last exchange:\n{}",
-            [Fmt.str(Scissors), Fmt.str(Buf.bytes(ADR(last)))]);
+        Fmt.write(b, "\n\n{}\n# Not sent: this line and all below it are dropped. The last exchange:\n{}",
+            [Fmt.str(Scissors), Fmt.str(Buf.bytes(last))]);
     end;
-    TuiEdit.setText(ADR(editor), Buf.bytes(ADR(b)));
+    TuiEdit.setText(ADR(editor), Buf.bytes(b));
     if not TuiEdit.external(ADR(editor)) then
-        fill(Buf.bytes(ADR(saved)), LEN(Buf.bytes(ADR(saved))));
-        Buf.str(ADR(flash), "the editor failed or was quit; the input is as it was");
+        fill(Buf.bytes(saved), LEN(Buf.bytes(saved)));
+        Buf.str(flash, "the editor failed or was quit; the input is as it was");
         return;
     end;
     (* only a whole line is the scissors: a sentence may quote it *)
-    Buf.reset(ADR(b));
-    Fmt.write(ADR(b), "\n{}\n", [Fmt.str(TuiEdit.text(ADR(editor)))]);
-    s := Buf.bytes(ADR(b));
+    Buf.reset(b);
+    Fmt.write(b, "\n{}\n", [Fmt.str(TuiEdit.text(ADR(editor)))]);
+    s := Buf.bytes(b);
     k := Str.find(s, "\n" + Scissors + "\n");
     if k >= 0 then s := s[0..k]; end;
     s := Str.trimRight(s[1..LEN(s)]);
@@ -751,7 +751,7 @@ var k: INT;
 begin
     k := ev.key;
     if (k >= 'A') and (k <= 'Z') then k := k - 'A' + 'a'; end;
-    if (k > 0) and (k < 128) and (Str.find(Buf.bytes(ADR(keys)), [U8(k)]) >= 0) then
+    if (k > 0) and (k < 128) and (Str.find(Buf.bytes(keys), [U8(k)]) >= 0) then
         reply(U8(k));
     elsif (k = TuiKeys.ctrl('c')) or (k = TuiKeys.Esc) or (k = TuiKeys.Enter) then
         if k = TuiKeys.ctrl('c') then stop(1); end;
@@ -760,23 +760,23 @@ begin
         if not TuiKeys.printable(k) then _ := TuiMap.feed(ADR(reader), ADR(map), k); end;
         return;
     end;
-    Buf.reset(ADR(question));
+    Buf.reset(question);
 end;
 
 proc key(ev: TuiKeys.Event);
 var out: TuiLine.Outcome;
 begin
-    Buf.reset(ADR(flash));
+    Buf.reset(flash);
     if why.open then
         (* Esc leaves it as C-g does, as it leaves a question *)
         out := TuiLine.givenUp;
         if ev.key # TuiKeys.Esc then out := TuiLine.key(ADR(why), ev); end;
         if out # TuiLine.going then
             why.open := false;
-            Thread.lock(ADR(mutex));
-            Buf.reset(ADR(reason));
-            if out = TuiLine.taken then Buf.str(ADR(reason), TuiLine.value(ADR(why))); end;
-            Thread.unlock(ADR(mutex));
+            Thread.lock(mutex);
+            Buf.reset(reason);
+            if out = TuiLine.taken then Buf.str(reason, TuiLine.value(ADR(why))); end;
+            Thread.unlock(mutex);
             reply('.');
             TuiEdit.focus(ADR(editor));
         end;
@@ -785,7 +785,7 @@ begin
     if question.len > 0 then answering(ev); return; end;
     if Acopy.active() then
         if not Acopy.key(ev) then
-            Buf.str(ADR(flash), Acopy.saying());
+            Buf.str(flash, Acopy.saying());
             TuiEdit.focus(ADR(editor));
         end;
         return;
@@ -810,14 +810,14 @@ var col, right: INT; d: Buf.Buf;
 begin
     if why.open then TuiLine.draw(ADR(why), s, r, 0); return; end;
     if Acopy.active() and Acopy.rule(s, r) then return; end;
-    Buf.init(ADR(d), Heap.heap);
-    defer Buf.done(ADR(d));
-    if back > 0 then Fmt.write(ADR(d), " \u{2191}{} ", [Fmt.int(back)]); end;
-    right := s^.cols - TuiWidth.text(Buf.bytes(ADR(d)));
+    Buf.init(d, Heap.heap);
+    defer Buf.done(d);
+    if back > 0 then Fmt.write(d, " \u{2191}{} ", [Fmt.int(back)]); end;
+    right := s^.cols - TuiScreen.columns(Buf.bytes(d));
     col := 0;
     if question.len > 0 then
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
-        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(question)), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(question), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
     elsif Acopy.active() then
         col := TuiScreen.putTo(s, r, 0, right, " COPY ", TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
@@ -829,17 +829,17 @@ begin
         col := TuiScreen.putTo(s, r, 0, right, " history", TuiScreen.style(Term.info, {}));
         if failing then col := TuiScreen.putTo(s, r, col, right, ", failing", TuiScreen.style(Term.bad, {})); end;
         col := TuiScreen.putTo(s, r, col, right, ": ", TuiScreen.style(Term.info, {}));
-        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(query)), TuiScreen.style(Term.strong, {}));
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(query), TuiScreen.style(Term.strong, {}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
     elsif flash.len > 0 then
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
-        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(ADR(flash)), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
+        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(flash), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
     elsif thread # nil then
         col := TuiScreen.putTo(s, r, 0, right, " \u{25CF} working \u{B7} ^C stops ", TuiScreen.style(Term.info, {}));
     end;
     while col < right do col := TuiScreen.put(s, r, col, "\u{2500}", TuiScreen.style(Term.line, {})); end;
-    _ := TuiScreen.put(s, r, right, Buf.bytes(ADR(d)), TuiScreen.style(Term.dim, {}));
+    _ := TuiScreen.put(s, r, right, Buf.bytes(d), TuiScreen.style(Term.dim, {}));
 end;
 
 (* The status line on the last row, reversed, the hints at its right
@@ -850,8 +850,8 @@ begin
     r := s^.rows - 1;
     st := TuiScreen.style(Term.select, {});
     TuiScreen.fill(s, r, 0, s^.cols, st);
-    col := TuiScreen.put(s, r, 1, Buf.bytes(ADR(status)), st);
-    w := TuiWidth.text(Hints);
+    col := TuiScreen.put(s, r, 1, Buf.bytes(status), st);
+    w := TuiScreen.columns(Hints);
     if col + w + 3 < s^.cols then _ := TuiScreen.put(s, r, s^.cols - w - 1, Hints, st); end;
 end;
 
@@ -938,20 +938,20 @@ begin
     TuiLine.init(ADR(why));
     define();
     mode := -1;
-    Fmt.write(ADR(made), "{}history", [Fmt.str(Astore.dir())]);
-    Ahistory.load(Buf.bytes(ADR(made)));
-    Buf.reset(ADR(made));
-    Fmt.write(ADR(made), "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
+    Fmt.write(made, "{}history", [Fmt.str(Astore.dir())]);
+    Ahistory.load(Buf.bytes(made));
+    Buf.reset(made);
+    Fmt.write(made, "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
         Fmt.str(s^.conf.prov.name)]);
-    _ := Aboard.push(Aboard.info, Buf.bytes(ADR(made)));
+    _ := Aboard.push(Aboard.info, Buf.bytes(made));
     Asession.status(s, ADR(status));
     TuiLoop.after(0);
     ran := TuiLoop.run({key: key, draw: draw, woken: woken, tick: tick});
     if thread # nil then
-        Thread.lock(ADR(mutex));
+        Thread.lock(mutex);
         stopping := true;
         ending := true;
-        Thread.unlock(ADR(mutex));
+        Thread.unlock(mutex);
         if (question.len > 0) or why.open then reply(no); end;
         Thread.join(thread);
     end;
@@ -961,18 +961,18 @@ end;
 
 proc init;
 begin
-    Events.init(ADR(events), Heap.heap);
-    Buf.init(ADR(reason), Heap.heap);
-    Buf.init(ADR(job), Heap.heap);
-    Buf.init(ADR(made), Heap.heap);
-    Buf.init(ADR(because), Heap.heap);
-    Buf.init(ADR(status), Heap.heap);
-    Buf.init(ADR(flash), Heap.heap);
-    Buf.init(ADR(question), Heap.heap);
-    Buf.init(ADR(keys), Heap.heap);
-    Buf.init(ADR(query), Heap.heap);
-    Buf.init(ADR(saved), Heap.heap);
-    Buf.init(ADR(looked), Heap.heap);
+    Events.init(events, Heap.heap);
+    Buf.init(reason, Heap.heap);
+    Buf.init(job, Heap.heap);
+    Buf.init(made, Heap.heap);
+    Buf.init(because, Heap.heap);
+    Buf.init(status, Heap.heap);
+    Buf.init(flash, Heap.heap);
+    Buf.init(question, Heap.heap);
+    Buf.init(keys, Heap.heap);
+    Buf.init(query, Heap.heap);
+    Buf.init(saved, Heap.heap);
+    Buf.init(looked, Heap.heap);
 end;
 
 begin

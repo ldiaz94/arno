@@ -34,10 +34,10 @@
    doesn't know it ignores it. TuiLoop.send writes it between frames.
 
    Depends on Aboard, Aattach (base64), rtui's TuiLoop, TuiScreen,
-   TuiMap, TuiKeys, TuiLine and TuiWidth, rterm's Term, Buf and Str. Leaves
+   TuiMap, TuiKeys and TuiLine, rterm's Term, Buf and Str. Leaves
    out the mouse, and vi's counts. *)
 module Acopy;
-import Aboard, Aattach, TuiLoop, TuiScreen, TuiMap, TuiKeys, TuiLine, TuiWidth, Term, Buf, Str, Heap, Fmt, Rt;
+import Aboard, Aattach, TuiLoop, TuiScreen, TuiMap, TuiKeys, TuiLine, Term, Buf, Str, Heap, Fmt, Rt;
 
 type
     Sel = (none, letters, rows);
@@ -83,7 +83,7 @@ proc column(i, k: INT): INT;
 var t: []U8;
 begin
     t := Aboard.rowText(i);
-    return Aboard.rowAt(i).x + TuiWidth.text(t[0..byteAt(t, k)]);
+    return Aboard.rowAt(i).x + TuiScreen.columns(t[0..byteAt(t, k)]);
 end;
 
 (* The cursor kept on a character: a row there is, and a character of
@@ -194,7 +194,7 @@ proc findIn(i, from: INT): INT;
 var t, q: []U8; k: INT;
 begin
     t := Aboard.rowText(i);
-    q := Buf.bytes(ADR(pattern));
+    q := Buf.bytes(pattern);
     for k := from to LEN(t) - LEN(q) do
         if Str.eqFold(t[k..k + LEN(q)], q) then return k; end;
     end;
@@ -231,7 +231,7 @@ begin
             return;
         end;
     end;
-    Fmt.write(ADR(said), "{} isn't there", [Fmt.str(Buf.bytes(ADR(pattern)))]);
+    Fmt.write(said, "{} isn't there", [Fmt.str(Buf.bytes(pattern))]);
 end;
 
 (* copying *)
@@ -247,12 +247,12 @@ end;
 proc clip(s: []U8);
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
-    Buf.str(ADR(b), "\x1b]52;c;");
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, "\x1b]52;c;");
     Aattach.base64(ADR(b), s);
-    Buf.add(ADR(b), 7);
-    TuiLoop.send(Buf.bytes(ADR(b)));
+    Buf.add(b, 7);
+    TuiLoop.send(Buf.bytes(b));
 end;
 
 (* What is selected copied, or the cursor's line, and copy mode left. *)
@@ -268,11 +268,11 @@ begin
         sel := rows;
     end;
     l1, c1, l2, c2 := bounds();
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     for i := l1 to l2 do
         r := Aboard.rowAt(i);
-        if (i > l1) and (r.join # 0) then Buf.add(ADR(b), r.join); end;
+        if (i > l1) and (r.join # 0) then Buf.add(b, r.join); end;
         t := Aboard.rowText(i);
         lo := 0;
         hi := LEN(t);
@@ -280,11 +280,11 @@ begin
             if i = l1 then lo := byteAt(t, c1); end;
             if i = l2 then hi := byteAt(t, c2 + 1); end;
         end;
-        Buf.str(ADR(b), t[lo..hi]);
+        Buf.str(b, t[lo..hi]);
     end;
-    clip(Buf.bytes(ADR(b)));
-    Buf.reset(ADR(said));
-    Fmt.write(ADR(said), "copied {} characters", [Fmt.int(Str.chars(Buf.bytes(ADR(b))))]);
+    clip(Buf.bytes(b));
+    Buf.reset(said);
+    Fmt.write(said, "copied {} characters", [Fmt.int(Str.chars(Buf.bytes(b)))]);
     on := false;
 end;
 
@@ -468,7 +468,7 @@ proc start*(cols, shown, back: INT);
 begin
     on := LEN(Aboard.all()) > 0;
     sel := none;
-    Buf.reset(ADR(said));
+    Buf.reset(said);
     height := shown;
     total := Aboard.flatten(cols);
     top := total - height - back;
@@ -488,22 +488,22 @@ end;
 (* What copy mode said last: why a search failed, or how much it copied. *)
 proc saying*: []U8;
 begin
-    return Buf.bytes(ADR(said));
+    return Buf.bytes(said);
 end;
 
 (* A key: false once copy mode has ended. *)
 proc key*(ev: TuiKeys.Event): BOOL;
 var out: TuiLine.Outcome;
 begin
-    Buf.reset(ADR(said));
+    Buf.reset(said);
     if finding.open then
         out := TuiLine.givenUp;
         if ev.key # TuiKeys.Esc then out := TuiLine.key(ADR(finding), ev); end;
         if out # TuiLine.going then finding.open := false; end;
         if out = TuiLine.taken then
             if LEN(TuiLine.value(ADR(finding))) > 0 then
-                Buf.reset(ADR(pattern));
-                Buf.str(ADR(pattern), TuiLine.value(ADR(finding)));
+                Buf.reset(pattern);
+                Buf.str(pattern, TuiLine.value(ADR(finding)));
             end;
             find(ahead);
         end;
@@ -636,8 +636,8 @@ end;
 
 proc init;
 begin
-    Buf.init(ADR(pattern), Heap.heap);
-    Buf.init(ADR(said), Heap.heap);
+    Buf.init(pattern, Heap.heap);
+    Buf.init(said, Heap.heap);
     TuiLine.init(ADR(finding));
     define();
 end;

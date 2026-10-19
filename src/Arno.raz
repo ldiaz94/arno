@@ -127,21 +127,21 @@ var answer: Buf.Buf;   (* the last line read from standard input *)
 proc readLine: ([]U8, BOOL);
 var c: [1]U8; n: INT;
 begin
-    Buf.reset(ADR(answer));
+    Buf.reset(answer);
     while true do
         n := Sys.read(Sys.stdin, c);
         if n = 1 then
             if c[0] = '\n' then break; end;
-            Buf.add(ADR(answer), c[0]);
+            Buf.add(answer, c[0]);
         elsif (n < 0) and Sys.came(Sys.sigInt) then
-            Buf.reset(ADR(answer));
+            Buf.reset(answer);
             Out.ln;
             Out.flush;
         else
-            return Buf.bytes(ADR(answer)), answer.len > 0;
+            return Buf.bytes(answer), answer.len > 0;
         end;
     end;
-    return Buf.bytes(ADR(answer)), true;
+    return Buf.bytes(answer), true;
 end;
 
 (* The human's answer to question, after detail: one of keys, the first
@@ -213,14 +213,14 @@ begin
         say("arno: ", Files.arg(1), " is not here yet\n");
         return 2;
     end;
-    Buf.init(ADR(prompt), Heap.heap);
+    Buf.init(prompt, Heap.heap);
     for i := first to ARGC() - 1 do
-        if i > first then Buf.add(ADR(prompt), ' '); end;
-        Buf.str(ADR(prompt), Files.arg(i));
+        if i > first then Buf.add(prompt, ' '); end;
+        Buf.str(prompt, Files.arg(i));
     end;
     (* an empty prompt is a mistake of the script that made it, a
        prompt file never written, not a question for a model *)
-    if (ARGC() >= 2) and (LEN(Str.trim(Buf.bytes(ADR(prompt)))) = 0) then
+    if (ARGC() >= 2) and (LEN(Str.trim(Buf.bytes(prompt))) = 0) then
         say("arno: no prompt\n", "", "");
         _ := Sys.write(Sys.stderr, Usage);
         return 2;
@@ -234,7 +234,7 @@ begin
         say("arno: the terminal can't be used\n", "", "");
         return 1;
     end;
-    Buf.init(ADR(answer), Heap.heap);
+    Buf.init(answer, Heap.heap);
     Asession.init(ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
         stopped: interrupted}, shown, nil);
     _ := Sys.handle(Sys.sigInt);
@@ -245,10 +245,10 @@ begin
         return 1;
     end;
     Asession.prepare(ADR(s));
-    Buf.init(ADR(failure), Heap.heap);
-    err := Asession.turn(ADR(s), Str.trim(Buf.bytes(ADR(prompt))), ADR(failure));
+    Buf.init(failure, Heap.heap);
+    err := Asession.turn(ADR(s), Str.trim(Buf.bytes(prompt)), ADR(failure));
     breakLine;
-    if err = Awire.Failed then say("arno: ", Buf.bytes(ADR(failure)), "\n"); end;
+    if err = Awire.Failed then say("arno: ", Buf.bytes(failure), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;
     say("arno --resume ", s.conv.id, " PROMPT goes on from here\n");
     if err = Awire.Failed then return 1; end;

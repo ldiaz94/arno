@@ -32,7 +32,7 @@ proc keep(s: []U8);
 var copy: []U8; ok: BOOL;
 begin
     copy, ok := Str.copy(Heap.heap, s);
-    if ok then Strs.push(ADR(entries), copy); end;
+    if ok then Strs.push(entries, copy); end;
 end;
 
 (* s added to b, escaped as a line of the file. *)
@@ -40,26 +40,26 @@ proc escape(b: ^Buf.Buf; s: []U8);
 var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
-        if s[i] = '\\' then Buf.str(b, "\\\\");
-        elsif s[i] = '\n' then Buf.str(b, "\\n");
-        else Buf.add(b, s[i]);
+        if s[i] = '\\' then Buf.str(b^, "\\\\");
+        elsif s[i] = '\n' then Buf.str(b^, "\\n");
+        else Buf.add(b^, s[i]);
         end;
     end;
-    Buf.add(b, '\n');
+    Buf.add(b^, '\n');
 end;
 
 (* A line of the file, unescaped, into b. *)
 proc unescape(b: ^Buf.Buf; s: []U8);
 var i: INT;
 begin
-    Buf.reset(b);
+    Buf.reset(b^);
     i := 0;
     while i < LEN(s) do
         if (s[i] = '\\') and (i + 1 < LEN(s)) then
             INC(i);
-            if s[i] = 'n' then Buf.add(b, '\n'); else Buf.add(b, s[i]); end;
+            if s[i] = 'n' then Buf.add(b^, '\n'); else Buf.add(b^, s[i]); end;
         else
-            Buf.add(b, s[i]);
+            Buf.add(b^, s[i]);
         end;
         INC(i);
     end;
@@ -70,33 +70,33 @@ end;
 proc load*(file: []U8);
 var text, line: Buf.Buf; s, l: []U8; all: [][]U8; i, n: INT;
 begin
-    Buf.reset(ADR(path));
-    Buf.str(ADR(path), file);
-    Buf.init(ADR(text), Heap.heap);
-    defer Buf.done(ADR(text));
-    Buf.init(ADR(line), Heap.heap);
-    defer Buf.done(ADR(line));
-    if Files.load(file, ADR(text)) # 0 then return; end;
-    s := Buf.bytes(ADR(text));
+    Buf.reset(path);
+    Buf.str(path, file);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    if Files.load(file, text) # 0 then return; end;
+    s := Buf.bytes(text);
     while LEN(s) > 0 do
         l, s, _ := Str.cut(s, "\n");
         if LEN(l) = 0 then continue; end;
         unescape(ADR(line), l);
-        keep(Buf.bytes(ADR(line)));
+        keep(Buf.bytes(line));
     end;
     at := entries.len;
     if entries.len <= 2 * Max then return; end;
     (* the oldest dropped, and the file written again *)
-    all := Strs.all(ADR(entries));
+    all := Strs.all(entries);
     n := entries.len - Max;
     for i := 0 to n - 1 do Str.free(Heap.heap, all[i]); end;
     for i := 0 to Max - 1 do all[i] := all[i + n]; end;
-    Strs.resize(ADR(entries), Max);
+    Strs.resize(entries, Max);
     at := Max;
-    Buf.reset(ADR(text));
-    all := Strs.all(ADR(entries));
+    Buf.reset(text);
+    all := Strs.all(entries);
     for i := 0 to Max - 1 do escape(ADR(text), all[i]); end;
-    _ := Files.write(file, Buf.bytes(ADR(text)));
+    _ := Files.write(file, Buf.bytes(text));
 end;
 
 (* s, a line sent, added: kept, unless it is the newest already, and
@@ -105,16 +105,16 @@ proc add*(s: []U8);
 var b: Buf.Buf; fd: INT;
 begin
     at := entries.len;
-    if (LEN(s) = 0) or (entries.len > 0) and (Strs.all(ADR(entries))[entries.len - 1] = s) then return; end;
+    if (LEN(s) = 0) or (entries.len > 0) and (Strs.all(entries)[entries.len - 1] = s) then return; end;
     keep(s);
     at := entries.len;
     if path.len = 0 then return; end;
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     escape(ADR(b), s);
-    fd := Sys.open(Buf.bytes(ADR(path)), {Sys.Access.writing, Sys.Access.creating, Sys.Access.appending});
+    fd := Sys.open(Buf.bytes(path), {Sys.Access.writing, Sys.Access.creating, Sys.Access.appending});
     if fd < 0 then return; end;
-    _ := Sys.write(fd, Buf.bytes(ADR(b)));
+    _ := Sys.write(fd, Buf.bytes(b));
     Sys.close(fd);
 end;
 
@@ -132,12 +132,12 @@ proc recall(i: INT; typed: []U8): ([]U8, BOOL);
 begin
     if (i < 0) or (i > entries.len) or (i = at) then return "", false; end;
     if at = entries.len then
-        Buf.reset(ADR(draft));
-        Buf.str(ADR(draft), typed);
+        Buf.reset(draft);
+        Buf.str(draft, typed);
     end;
     at := i;
-    if i = entries.len then return Buf.bytes(ADR(draft)), true; end;
-    return Strs.all(ADR(entries))[i], true;
+    if i = entries.len then return Buf.bytes(draft), true; end;
+    return Strs.all(entries)[i], true;
 end;
 
 (* The entry before the one shown, and true; false at the oldest. *)
@@ -159,7 +159,7 @@ end;
 proc prefixed*(typed, pre: []U8; dir: INT): ([]U8, BOOL);
 var i: INT; all: [][]U8;
 begin
-    all := Strs.all(ADR(entries));
+    all := Strs.all(entries);
     i := at + dir;
     while (i >= 0) and (i < LEN(all)) do
         if Str.hasPrefix(all[i], pre) and (all[i] # typed) then return recall(i, typed); end;
@@ -186,7 +186,7 @@ end;
 proc search*(q: []U8; from: INT; typed: []U8): (INT, []U8, INT);
 var i, k: INT; all: [][]U8;
 begin
-    all := Strs.all(ADR(entries));
+    all := Strs.all(entries);
     if LEN(q) = 0 then return -1, "", 0; end;
     if from >= LEN(all) then from := LEN(all) - 1; end;
     for i := from to 0 by -1 do
@@ -228,7 +228,7 @@ begin
     add("two\nlines \\ back");
     add("two\nlines \\ back");
     add("/load x");
-    Strs.reset(ADR(entries));
+    Strs.reset(entries);
     load("build/history.test");
     if count() # 3 then Out.str("Ahistory: read back\n"); failed := true; end;
     s, ok := back("typing");
@@ -248,18 +248,18 @@ begin
     if (i # 0) or (k # 0) then Out.str("Ahistory: search\n"); failed := true; end;
     i, s, k := search("lines", count(), "x");
     if (i # 1) or (k # 4) then Out.str("Ahistory: search further\n"); failed := true; end;
-    Buf.init(ADR(b), Heap.heap);
-    _ := Files.read("build/history.test", ADR(b));
-    expect("the file", Buf.bytes(ADR(b)), true, "one\ntwo\\nlines \\\\ back\n/load x\n", ADR(failed));
+    Buf.init(b, Heap.heap);
+    _ := Files.read("build/history.test", b);
+    expect("the file", Buf.bytes(b), true, "one\ntwo\\nlines \\\\ back\n/load x\n", ADR(failed));
     if failed then return 1; end;
     return 0;
 end;
 
 proc init;
 begin
-    Strs.init(ADR(entries), Heap.heap);
-    Buf.init(ADR(draft), Heap.heap);
-    Buf.init(ADR(path), Heap.heap);
+    Strs.init(entries, Heap.heap);
+    Buf.init(draft, Heap.heap);
+    Buf.init(path, Heap.heap);
 end;
 
 begin

@@ -8,7 +8,7 @@
 # raz's website, at download/raz-$(RAZVERSION)-linux-x86_64.tar.gz.
 
 RAZ ?= raz
-RAZVERSION = 0.17.2
+RAZVERSION = 0.21.0
 RAZSITE = https://raz.lucelad.workers.dev
 # raz's tools, the formatter among them, lie beside its real path
 RAZTOOLS = $(dir $(realpath $(shell command -v $(RAZ))))tools

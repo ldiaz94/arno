@@ -72,8 +72,8 @@ proc init*(m: ^Msg; role: Role);
 begin
     m^ := {};
     m^.role := role;
-    Strs.init(ADR(m^.images), Heap.heap);
-    Calls.init(ADR(m^.calls), Heap.heap);
+    Strs.init(m^.images, Heap.heap);
+    Calls.init(m^.calls, Heap.heap);
 end;
 
 (* What m holds given back; m is left an empty user's message, to be
@@ -82,17 +82,17 @@ proc free*(m: ^Msg);
 var i: INT; images: [][]U8; calls: []Call;
 begin
     Str.free(Heap.heap, m^.text);
-    images := Strs.all(ADR(m^.images));
+    images := Strs.all(m^.images);
     for i := 0 to LEN(images) - 1 do Str.free(Heap.heap, images[i]); end;
-    Strs.done(ADR(m^.images));
-    calls := Calls.all(ADR(m^.calls));
+    Strs.done(m^.images);
+    calls := Calls.all(m^.calls);
     for i := 0 to LEN(calls) - 1 do
         Str.free(Heap.heap, calls[i].id);
         Str.free(Heap.heap, calls[i].name);
         Str.free(Heap.heap, calls[i].args);
         Str.free(Heap.heap, calls[i].extra);
     end;
-    Calls.done(ADR(m^.calls));
+    Calls.done(m^.calls);
     Str.free(Heap.heap, m^.callId);
     Str.free(Heap.heap, m^.tool);
     Str.free(Heap.heap, m^.think);
@@ -111,7 +111,7 @@ end;
 proc addCall*(m: ^Msg; id, name, args, extra: []U8);
 var c: ^Call;
 begin
-    c := Calls.add(ADR(m^.calls));
+    c := Calls.add(m^.calls);
     c^.id := keep(id);
     c^.name := keep(name);
     c^.args := keep(args);
@@ -132,7 +132,7 @@ begin
     Str.free(Heap.heap, m^.thinkKey);
     m^.think := "";
     m^.thinkKey := "";
-    calls := Calls.all(ADR(m^.calls));
+    calls := Calls.all(m^.calls);
     for i := 0 to LEN(calls) - 1 do
         Str.free(Heap.heap, calls[i].extra);
         calls[i].extra := "";
@@ -147,27 +147,27 @@ proc quote*(b: ^Buf.Buf; s: []U8);
 const Hex = "0123456789abcdef";
 var i, from: INT; c: U8;
 begin
-    Buf.add(b, '"');
+    Buf.add(b^, '"');
     from := 0;
     for i := 0 to LEN(s) - 1 do
         c := s[i];
         if (c >= ' ') and (c # '"') and (c # '\\') then continue; end;
-        Buf.str(b, s[from..i]);
+        Buf.str(b^, s[from..i]);
         from := i + 1;
         match c of
-        | '"': Buf.str(b, "\\\"");
-        | '\\': Buf.str(b, "\\\\");
-        | '\n': Buf.str(b, "\\n");
-        | '\r': Buf.str(b, "\\r");
-        | '\t': Buf.str(b, "\\t");
+        | '"': Buf.str(b^, "\\\"");
+        | '\\': Buf.str(b^, "\\\\");
+        | '\n': Buf.str(b^, "\\n");
+        | '\r': Buf.str(b^, "\\r");
+        | '\t': Buf.str(b^, "\\t");
         | else:
-            Buf.str(b, "\\u00");
-            Buf.add(b, Hex[c shr 4]);
-            Buf.add(b, Hex[c & 15]);
+            Buf.str(b^, "\\u00");
+            Buf.add(b^, Hex[c shr 4]);
+            Buf.add(b^, Hex[c & 15]);
         end;
     end;
-    Buf.str(b, s[from..LEN(s)]);
-    Buf.add(b, '"');
+    Buf.str(b^, s[from..LEN(s)]);
+    Buf.add(b^, '"');
 end;
 
 (* v, a value of d, added to b as compact JSON, its strings quoted as
@@ -177,25 +177,25 @@ var i: INT;
 begin
     match Json.kind(d, v) of
     | string: quote(b, Json.text(d, v));
-    | number: Buf.str(b, Json.text(d, v));
+    | number: Buf.str(b^, Json.text(d, v));
     | array:
-        Buf.add(b, '[');
+        Buf.add(b^, '[');
         for i := 0 to Json.len(d, v) - 1 do
-            if i > 0 then Buf.add(b, ','); end;
+            if i > 0 then Buf.add(b^, ','); end;
             compact(d, Json.item(d, v, i), b);
         end;
-        Buf.add(b, ']');
+        Buf.add(b^, ']');
     | object:
-        Buf.add(b, '{');
+        Buf.add(b^, '{');
         for i := 0 to Json.len(d, v) - 1 do
-            if i > 0 then Buf.add(b, ','); end;
+            if i > 0 then Buf.add(b^, ','); end;
             quote(b, Json.key(d, v, i));
-            Buf.add(b, ':');
+            Buf.add(b^, ':');
             compact(d, Json.item(d, v, i), b);
         end;
-        Buf.add(b, '}');
-    | bool: if v = Json.True then Buf.str(b, "true"); else Buf.str(b, "false"); end;
-    | null, none: Buf.str(b, "null");
+        Buf.add(b^, '}');
+    | bool: if v = Json.True then Buf.str(b^, "true"); else Buf.str(b^, "false"); end;
+    | null, none: Buf.str(b^, "null");
     end;
 end;
 
@@ -205,61 +205,61 @@ var i: INT; images: [][]U8; calls: []Call;
 begin
     match m^.role of
     | user:
-        Buf.str(b, `{"role":"user","content":`);
-        images := Strs.all(ADR(m^.images));
+        Buf.str(b^, `{"role":"user","content":`);
+        images := Strs.all(m^.images);
         if LEN(images) = 0 then
             quote(b, m^.text);
         else
-            Buf.str(b, `[{"type":"text","text":`);
+            Buf.str(b^, `[{"type":"text","text":`);
             quote(b, m^.text);
-            Buf.add(b, '}');
+            Buf.add(b^, '}');
             for i := 0 to LEN(images) - 1 do
-                Buf.str(b, `,{"type":"image_url","image_url":{"url":`);
+                Buf.str(b^, `,{"type":"image_url","image_url":{"url":`);
                 quote(b, images[i]);
-                Buf.str(b, "}}");
+                Buf.str(b^, "}}");
             end;
-            Buf.add(b, ']');
+            Buf.add(b^, ']');
         end;
     | assistant:
-        Buf.str(b, `{"role":"assistant","content":`);
+        Buf.str(b^, `{"role":"assistant","content":`);
         quote(b, m^.text);
         if LEN(m^.think) > 0 then
-            Buf.add(b, ',');
+            Buf.add(b^, ',');
             quote(b, m^.thinkKey);
-            Buf.add(b, ':');
+            Buf.add(b^, ':');
             quote(b, m^.think);
         end;
-        calls := Calls.all(ADR(m^.calls));
+        calls := Calls.all(m^.calls);
         if LEN(calls) > 0 then
-            Buf.str(b, `,"tool_calls":[`);
+            Buf.str(b^, `,"tool_calls":[`);
             for i := 0 to LEN(calls) - 1 do
-                if i > 0 then Buf.add(b, ','); end;
-                Buf.str(b, `{"id":`);
+                if i > 0 then Buf.add(b^, ','); end;
+                Buf.str(b^, `{"id":`);
                 quote(b, calls[i].id);
-                Buf.str(b, `,"type":"function","function":{"name":`);
+                Buf.str(b^, `,"type":"function","function":{"name":`);
                 quote(b, calls[i].name);
-                Buf.str(b, `,"arguments":`);
+                Buf.str(b^, `,"arguments":`);
                 quote(b, calls[i].args);
-                Buf.add(b, '}');
+                Buf.add(b^, '}');
                 if LEN(calls[i].extra) > 0 then
-                    Buf.str(b, `,"extra_content":`);
-                    Buf.str(b, calls[i].extra);
+                    Buf.str(b^, `,"extra_content":`);
+                    Buf.str(b^, calls[i].extra);
                 end;
-                Buf.add(b, '}');
+                Buf.add(b^, '}');
             end;
-            Buf.add(b, ']');
+            Buf.add(b^, ']');
         end;
     | tool:
-        Buf.str(b, `{"role":"tool","tool_call_id":`);
+        Buf.str(b^, `{"role":"tool","tool_call_id":`);
         quote(b, m^.callId);
         if LEN(m^.tool) > 0 then
-            Buf.str(b, `,"name":`);
+            Buf.str(b^, `,"name":`);
             quote(b, m^.tool);
         end;
-        Buf.str(b, `,"content":`);
+        Buf.str(b^, `,"content":`);
         quote(b, m^.text);
     end;
-    Buf.add(b, '}');
+    Buf.add(b^, '}');
 end;
 
 (* v, a value of d, as compact JSON text, copied for a message to keep:
@@ -267,10 +267,10 @@ end;
 proc keepJson(d: ^Json.Doc; v: Json.Value): []U8;
 var b: Buf.Buf;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     compact(d, v, ADR(b));
-    return keep(Buf.bytes(ADR(b)));   (* made before b is given back *)
+    return keep(Buf.bytes(b));   (* made before b is given back *)
 end;
 
 (* m made from v, a message of d in the format write writes. A user's
@@ -293,7 +293,7 @@ begin
             part := Json.item(d, content, i);
             match Json.text(d, Json.member(d, part, "type")) of
             | "text": setText(m, Json.text(d, Json.member(d, part, "text")));
-            | "image_url": Strs.push(ADR(m^.images), keep(Json.text(d, Json.get(d, part, "image_url.url"))));
+            | "image_url": Strs.push(m^.images, keep(Json.text(d, Json.get(d, part, "image_url.url"))));
             | else:
             end;
         end;
@@ -312,7 +312,7 @@ begin
     calls := Json.member(d, v, "tool_calls");
     for i := 0 to Json.len(d, calls) - 1 do
         call := Json.item(d, calls, i);
-        c := Calls.add(ADR(m^.calls));
+        c := Calls.add(m^.calls);
         c^.id := keep(Json.text(d, Json.member(d, call, "id")));
         c^.name := keep(Json.text(d, Json.get(d, call, "function.name")));
         args := Json.get(d, call, "function.arguments");
@@ -350,19 +350,19 @@ var d: Json.Doc; v: Json.Value; m: Msg; i: INT; copy: Buf.Buf;
 begin
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
     defer Json.done(ADR(d));
-    Buf.init(ADR(copy), Heap.heap);   (* parsing rewrites its text *)
-    defer Buf.done(ADR(copy));
-    Buf.str(ADR(copy), text);
-    v := Json.parse(ADR(d), Buf.bytes(ADR(copy)));
+    Buf.init(copy, Heap.heap);   (* parsing rewrites its text *)
+    defer Buf.done(copy);
+    Buf.str(copy, text);
+    v := Json.parse(ADR(d), Buf.bytes(copy));
     if v = Json.None then return false; end;
-    Buf.add(b, '[');
+    Buf.add(b^, '[');
     for i := 0 to Json.len(ADR(d), v) - 1 do
         if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then return false; end;
-        if i > 0 then Buf.add(b, ','); end;
+        if i > 0 then Buf.add(b^, ','); end;
         write(ADR(m), b);
         free(ADR(m));
     end;
-    Buf.add(b, ']');
+    Buf.add(b^, ']');
     return true;
 end;
 
@@ -381,40 +381,40 @@ const Shapes = `[{"role":"user","content":"a \"quote\", a back\\slash, é, a tab
 proc conversation(path: []U8);
 var text, b, copy: Buf.Buf; d: Json.Doc; v: Json.Value; m: Msg; i: INT;
 begin
-    Buf.init(ADR(text), Heap.heap);
-    Buf.init(ADR(b), Heap.heap);
-    Buf.init(ADR(copy), Heap.heap);
-    defer Buf.done(ADR(text));
-    defer Buf.done(ADR(b));
-    defer Buf.done(ADR(copy));
-    if not Files.read(path, ADR(text)) then fail(path); return; end;
-    Buf.str(ADR(copy), Buf.bytes(ADR(text)));
+    Buf.init(text, Heap.heap);
+    Buf.init(b, Heap.heap);
+    Buf.init(copy, Heap.heap);
+    defer Buf.done(text);
+    defer Buf.done(b);
+    defer Buf.done(copy);
+    if not Files.read(path, text) then fail(path); return; end;
+    Buf.str(copy, Buf.bytes(text));
     if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
     defer Json.done(ADR(d));
-    v := Json.parse(ADR(d), Buf.bytes(ADR(copy)));
+    v := Json.parse(ADR(d), Buf.bytes(copy));
     if v = Json.None then fail(path); return; end;
     v := Json.member(ADR(d), v, "messages");
     if v = Json.None then return; end;   (* not a conversation: stage.json, tests.json *)
-    Buf.str(ADR(b), `"messages":[`);
+    Buf.str(b, `"messages":[`);
     for i := 0 to Json.len(ADR(d), v) - 1 do
         if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then fail(path); return; end;
-        if i > 0 then Buf.add(ADR(b), ','); end;
+        if i > 0 then Buf.add(b, ','); end;
         write(ADR(m), ADR(b));
         free(ADR(m));
     end;
-    Buf.add(ADR(b), ']');
-    if Str.find(Buf.bytes(ADR(text)), Buf.bytes(ADR(b))) < 0 then fail(path); end;
+    Buf.add(b, ']');
+    if Str.find(Buf.bytes(text), Buf.bytes(b)) < 0 then fail(path); end;
 end;
 
 proc main*: INT;
 var b: Buf.Buf; m: Msg; i: INT;
 begin
-    Buf.init(ADR(b), Heap.heap);
-    defer Buf.done(ADR(b));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     if not again(Shapes, ADR(b)) then fail("the shapes don't read");
-    elsif Buf.bytes(ADR(b)) # Shapes then
+    elsif Buf.bytes(b) # Shapes then
         fail("the shapes, written back, differ:");
-        Out.str(Buf.bytes(ADR(b)));
+        Out.str(Buf.bytes(b));
         Out.ln;
     end;
 
@@ -425,10 +425,10 @@ begin
     m.thinkKey := keep("reasoning");
     addCall(ADR(m), "c", "find", `{"glob":"*.raz"}`, `{"x":1}`);
     settle(ADR(m));
-    Buf.reset(ADR(b));
+    Buf.reset(b);
     write(ADR(m), ADR(b));
     free(ADR(m));
-    if Buf.bytes(ADR(b)) # `{"role":"assistant","content":"done","tool_calls":[{"id":"c","type":"function",` +
+    if Buf.bytes(b) # `{"role":"assistant","content":"done","tool_calls":[{"id":"c","type":"function",` +
             `"function":{"name":"find","arguments":"{\"glob\":\"*.raz\"}"}}]}` then
         fail("settle");
     end;
