@@ -13,15 +13,16 @@ version `RAZVERSION` in the Makefile says.
     make check      # each module's main, its test
     make fmt        # src/ is laid out as raz's formatter lays it out
 
-`make check` and `make fmt` must pass before every commit. rjson and
-rnet are siblings of this directory (`RJSON`, `RNET` in the Makefile).
+`make check` and `make fmt` must pass before every commit. rjson, rnet
+and the other libraries, rzone (local time) among them, are siblings of
+this directory (`RJSON`, `RNET`, `RZONE`... in the Makefile).
 
 ## How we work
 
 - Work goes step by step, as `PLAN.md` lists; one commit per step,
   pushed, then stop for review. New work starts only on the owner's
   word.
-- Do not edit rjson, rnet or rtui from here: what arno needs of them is
+- Do not edit rjson, rnet, rtui or rzone from here: what arno needs of them is
   asked of their owners.
 - Readability first: code that is easy to read and follow, and well
   commented, comes before its length.

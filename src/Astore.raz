@@ -36,12 +36,12 @@
    of them (keyed): tests.json, the project's test command, and, when
    the stage comes, stage.json.
 
-   Depends on Amsg, rjson's Json, and the C library's localtime_r, for
-   the local time; arno uses C for TLS already. Leaves out the other
+   Depends on Amsg, rjson's Json, and rzone's Zone, for the local
+   time. Leaves out the other
    files the agent keeps beside the conversations (memory, notes, the
    tool cache), and the stage. *)
 module Astore;
-import Amsg, Json, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
+import Amsg, Json, Zone, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
     Items := Vec(Item), Order := Sort(Item, before);
 
 type
@@ -61,20 +61,11 @@ type
         updated*: I64;    (* when its file last changed, in nanoseconds since 1970 *)
     end;
 
-    (* C's struct tm *)
-    Tm = record
-        sec, min, hour, mday, mon, year, wday, yday, isdst: I32;
-        gmtoff: I64;
-        zone: ^U8;
-    end;
-
 const
     BadId*: ERROR = "no conversation has that id";
     NotSaved*: ERROR = "the conversation can't be written";
     Unreadable*: ERROR = "the conversation's file isn't one arno reads";
     DayNs = 86400000000000;   (* a day, in nanoseconds *)
-
-extern proc localtime_r(t: ^I64; tm: ^Tm): ^Tm;
 
 var
     where: Buf.Buf;   (* arno's directory, with a slash after it *)
@@ -254,7 +245,7 @@ begin
 end;
 
 (* n, from 0 to 99, as two digits. *)
-proc two(b: ^Buf.Buf; n: I32);
+proc two(b: ^Buf.Buf; n: INT);
 begin
     Buf.add(b^, U8('0' + n div 10));
     Buf.add(b^, U8('0' + n mod 10));
@@ -262,16 +253,15 @@ end;
 
 (* Today's date, in local time, as yyyy-mm-dd, added to b. *)
 proc date*(b: ^Buf.Buf);
-var secs: I64; tm: Tm;
+var tm: Zone.Time;
 begin
-    secs := Sys.now() div 1000000000;
-    _ := localtime_r(ADR(secs), ADR(tm));
-    two(b, tm.year div 100 + 19);
+    tm := Zone.local(Sys.now() div 1000000000);
+    two(b, tm.year div 100);
     two(b, tm.year mod 100);
     Buf.add(b^, '-');
-    two(b, tm.mon + 1);
+    two(b, tm.month);
     Buf.add(b^, '-');
-    two(b, tm.mday);
+    two(b, tm.day);
 end;
 
 (* Whether id may name a conversation: an id comes from outside too, a
@@ -413,20 +403,19 @@ end;
    and -2, -3 and so on after it while a conversation saved has it, as
    one begun in the same second may. *)
 proc newId*(b: ^Buf.Buf);
-var secs: I64; tm: Tm; path: Buf.Buf; n, at: INT;
+var tm: Zone.Time; path: Buf.Buf; n, at: INT;
 begin
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
-    secs := Sys.now() div 1000000000;
-    _ := localtime_r(ADR(secs), ADR(tm));
-    two(b, tm.year div 100 + 19);
+    tm := Zone.local(Sys.now() div 1000000000);
+    two(b, tm.year div 100);
     two(b, tm.year mod 100);
-    two(b, tm.mon + 1);
-    two(b, tm.mday);
+    two(b, tm.month);
+    two(b, tm.day);
     Buf.add(b^, '-');
     two(b, tm.hour);
-    two(b, tm.min);
-    two(b, tm.sec);
+    two(b, tm.minute);
+    two(b, tm.second);
     at := b^.len;
     n := 1;
     while Sys.access(file(Buf.bytes(b^), ADR(path)), {}) = 0 do

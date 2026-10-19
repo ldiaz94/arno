@@ -1,19 +1,22 @@
 # arno is a harness for language models in the terminal, written in raz
 # over rjson (JSON), rnet (HTTP and TLS), rwalk (walking directories),
-# rtui (the screen) and rterm (its colours), which it reaches with -I;
-# they are siblings of this directory unless RJSON, RNET, RWALK, RTUI,
-# RTERM say otherwise.
+# rtui (the screen), rterm (its colours) and rzone (local time), which
+# it reaches with -I; they are siblings of this directory unless RJSON,
+# RNET, RWALK, RTUI, RTERM, RZONE say otherwise.
 # It builds with the raz on PATH, which must be the version it is
 # written for, RAZVERSION: make warns of any other. Its tarball is on
 # raz's website, at download/raz-$(RAZVERSION)-linux-x86_64.tar.gz.
+# A build from raz's sources after a release, 0.21.0-1-g69d40f8, is that
+# release's.
 
 RAZ ?= raz
 RAZVERSION = 0.21.0
 RAZSITE = https://raz.lucelad.workers.dev
 # raz's tools, the formatter among them, lie beside its real path
+comma := ,
 RAZTOOLS = $(dir $(realpath $(shell command -v $(RAZ))))tools
 
-ifneq "$(word 2,$(shell $(RAZ) --version 2>/dev/null))" "$(RAZVERSION),"
+ifneq "$(firstword $(subst -, ,$(subst $(comma),,$(word 2,$(shell $(RAZ) --version 2>/dev/null)))))" "$(RAZVERSION)"
 $(warning arno is written for raz $(RAZVERSION), from $(RAZSITE); $(RAZ) is $(or $(shell $(RAZ) --version 2>/dev/null),not found))
 endif
 RJSON ?= ../rjson
@@ -21,14 +24,15 @@ RNET ?= ../rnet
 RWALK ?= ../rwalk
 RTUI ?= ../rtui
 RTERM ?= ../rterm
+RZONE ?= ../rzone
 # rnet's TLS backend, OpenSSL unless TLS says GnuTLS
 TLS ?= openssl
-INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS) -I $(RWALK)/lib -I $(RTUI)/src -I $(RTERM)/src
+INC = -I src -I $(RJSON)/src -I $(RNET)/src -I $(RNET)/tls/$(TLS) -I $(RWALK)/lib -I $(RTUI)/src -I $(RTERM)/src -I $(RZONE)/src
 # the modules whose main is their test
 MODS = Amsg Awire Astore Aconf Afence Afind Arun Aahead Amemory Aprice Aprompt Ahtml Atools Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
-LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz $(RWALK)/lib/*.raz $(RTUI)/src/*.raz $(RTERM)/src/*.raz)
+LIBS = $(wildcard $(RJSON)/src/*.raz $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz $(RWALK)/lib/*.raz $(RTUI)/src/*.raz $(RTERM)/src/*.raz $(RZONE)/src/*.raz)
 CONCHA = concha
 
 all: build/arno
