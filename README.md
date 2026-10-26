@@ -44,7 +44,7 @@ the jailed shell, MCP, and editor peers are still ahead; `--serve` and
 
 ### Build
 
-Use a Linux environment with `make`, [raz 0.21.0](https://raz.lucelad.workers.dev),
+Use a Linux environment with `make`, [raz 0.24.0](https://raz.lucelad.workers.dev),
 and the development files for OpenSSL, the default TLS backend.
 The build links against libc, pthreads, and the TLS libraries.
 [Concha](https://github.com/ldiaz94/concha) is needed for `make check`.
