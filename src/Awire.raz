@@ -50,18 +50,19 @@
 module Awire;
 import Amsg, Json, Http, Tls, Buf, Str, Sys, Heap, Fmt, Rt, Out, Thread, Slots := Vec(Slot), Msgs := Vec(Amsg.Msg),
     Calls := Vec(Amsg.Call), Strs := Vec([]U8);
+import SYSTEM;
 
 type
     Dialect* = (openai, anthropic);
 
     (* A provider: where to send, what model, and how. *)
     Prov* = record
-        name*: []U8;
-        url*: []U8;          (* the API's base, as https://api.openai.com/v1 *)
-        model*: []U8;
-        keyEnv*: []U8;       (* the environment variable of its key; "" for none *)
+        name*: []const U8;
+        url*: []const U8;          (* the API's base, as https://api.openai.com/v1 *)
+        model*: []const U8;
+        keyEnv*: []const U8;       (* the environment variable of its key; "" for none *)
         dialect*: Dialect;
-        params*: [][]U8;     (* config's other keys, each "key=value", given as written *)
+        params*: [][]const U8;     (* config's other keys, each "key=value", given as written *)
         retries*: INT;       (* times a request whose connection failed is made again *)
         backoff*: INT;       (* seconds before the first of them, doubled for each next, 30 at most *)
         timeout*: INT;       (* milliseconds each read of the reply waits for more *)
@@ -70,9 +71,9 @@ type
 
     (* A tool the model may call. *)
     Tool* = record
-        name*: []U8;
-        description*: []U8;
-        params*: []U8;       (* its arguments' JSON schema, as compact JSON text *)
+        name*: []const U8;
+        description*: []const U8;
+        params*: []const U8;       (* its arguments' JSON schema, as compact JSON text *)
     end;
 
     (* What a request cost in tokens, the same whichever dialect said
@@ -84,10 +85,10 @@ type
     Request* = record
         prov*: ^Prov;
         client*: ^Http.Client;   (* made by initClient; its connection kept from one request to the next *)
-        system*: []U8;
+        system*: []const U8;
         msgs*: []Amsg.Msg;
-        tools*: []Tool;
-        emit*: proc(text: []U8; arg: ^U8);   (* each piece of the reply's text, as it comes; or nil *)
+        tools*: []const Tool;
+        emit*: proc(text: []const U8; arg: ^U8);   (* each piece of the reply's text, as it comes; or nil *)
         arg*: ^U8;
         stopped*: proc: BOOL;                (* whether to stop the reply now, asked as it comes; or nil *)
     end;
@@ -98,12 +99,12 @@ type
     (* A reply coming in, line by line. *)
     Acc = record
         dialect: Dialect;
-        emit: proc(text: []U8; arg: ^U8);
+        emit: proc(text: []const U8; arg: ^U8);
         arg: ^U8;
         line: Buf.Buf;       (* the line coming, up to its line feed *)
         text: Buf.Buf;
         think: Buf.Buf;
-        thinkKey: []U8;      (* one of Amsg.ThinkKeys *)
+        thinkKey: []const U8;      (* one of Amsg.ThinkKeys *)
         slots: Slots.Vec;
         raw: Buf.Buf;        (* the lines that weren't events: a body that is no stream, an error's *)
         err: Buf.Buf;        (* the message of an error event *)
@@ -123,7 +124,7 @@ const
 
 (* p set up as the provider called name, one of Presets, its params
    left as they are; false, and p unchanged, for any other name. *)
-proc preset*(name: []U8; p: ^Prov): BOOL;
+proc preset*(name: []const U8; p: ^Prov): BOOL;
 begin
     match name of
     | "ollama":
@@ -158,7 +159,7 @@ end;
 
 (* The models arno knows the preset name to have, a line each, for when
    its server can't be asked; "" for one it knows none of. *)
-proc known*(name: []U8): []U8;
+proc known*(name: []const U8): []const U8;
 begin
     match name of
     | "openai": return "gpt-5\ngpt-5-mini\ngpt-5-nano";
@@ -169,8 +170,8 @@ begin
 end;
 
 (* The value of the param key, or "" if p has none. *)
-proc param*(p: ^Prov; key: []U8): []U8;
-var i: INT; k, v: []U8; ok: BOOL;
+proc param*(p: ^Prov; key: []const U8): []const U8;
+var i: INT; k, v: []const U8; ok: BOOL;
 begin
     for i := 0 to LEN(p^.params) - 1 do
         k, v, ok := Str.cut(p^.params[i], "=");
@@ -181,8 +182,8 @@ end;
 
 (* How hard the model is to think: reasoning_effort@MODEL for p's
    model, else reasoning_effort, else "". *)
-proc effort(p: ^Prov): []U8;
-var b: Buf.Buf; v: []U8;
+proc effort(p: ^Prov): []const U8;
+var b: Buf.Buf; v: []const U8;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -195,8 +196,8 @@ end;
 
 (* The params a body carries as numbers, as config wrote them:
    ,"key":value for each of keys that p has. *)
-proc numbers(p: ^Prov; b: ^Buf.Buf; keys: [][]U8);
-var i: INT; v: []U8;
+proc numbers(p: ^Prov; b: ^Buf.Buf; keys: [][]const U8);
+var i: INT; v: []const U8;
 begin
     for i := 0 to LEN(keys) - 1 do
         v := param(p, keys[i]);
@@ -213,7 +214,7 @@ end;
 
 (* r's body for an OpenAI-compatible server, into b. *)
 proc openaiBody(r: ^Request; b: ^Buf.Buf);
-var i: INT; e: []U8;
+var i: INT; e: []const U8;
 begin
     Buf.str(b^, `{"model":`);
     Amsg.quote(b, r^.prov^.model);
@@ -224,7 +225,7 @@ begin
     Buf.add(b^, '}');
     for i := 0 to LEN(r^.msgs) - 1 do
         Buf.add(b^, ',');
-        Amsg.write(ADR(r^.msgs[i]), b);
+        Amsg.write(SYSTEM.ADR(r^.msgs[i]), b);
     end;
     Buf.add(b^, ']');
     if LEN(r^.tools) > 0 then
@@ -252,23 +253,23 @@ end;
 
 (* A call's arguments, args, as a tool_use block's input: the object
    they parse to, or {} if they don't parse to one. *)
-proc input(args: []U8; b: ^Buf.Buf);
+proc input(args: []const U8; b: ^Buf.Buf);
 var d: Json.Doc; text: Buf.Buf; v: Json.Value;
 begin
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     Buf.init(text, Heap.heap);   (* parsing rewrites its text *)
     defer Buf.done(text);
     Buf.str(text, args);
-    v := Json.parse(ADR(d), Buf.bytes(text));
-    if Json.kind(ADR(d), v) = Json.object then Amsg.compact(ADR(d), v, b); else Buf.str(b^, "{}"); end;
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text));
+    if Json.kind(SYSTEM.ADR(d), v) = Json.object then Amsg.compact(SYSTEM.ADR(d), v, b); else Buf.str(b^, "{}"); end;
 end;
 
 (* An image's data: URL, data:MIME;base64,DATA, as Anthropic's image
    block. arno sends no image but one it read and encoded itself, so
    the URL always has that shape. *)
-proc image(url: []U8; b: ^Buf.Buf);
-var at: INT; mime, data: []U8;
+proc image(url: []const U8; b: ^Buf.Buf);
+var at: INT; mime, data: []const U8;
 begin
     mime := "";
     data := "";
@@ -336,7 +337,7 @@ end;
 (* r's body for Anthropic, into b: the module's comment says how the
    conversation is translated. *)
 proc anthropicBody(r: ^Request; b: ^Buf.Buf);
-var i, k: INT; m: ^Amsg.Msg; pend: Buf.Buf; first: BOOL; images: [][]U8; v: []U8;
+var i, k: INT; m: ^Amsg.Msg; pend: Buf.Buf; first: BOOL; images: [][]U8; v: []const U8;
 begin
     Buf.init(pend, Heap.heap);
     defer Buf.done(pend);
@@ -351,27 +352,27 @@ begin
     Buf.str(b^, "," + Mark + `}],"messages":[`);
     first := true;
     for i := 0 to LEN(r^.msgs) - 1 do
-        m := ADR(r^.msgs[i]);
+        m := SYSTEM.ADR(r^.msgs[i]);
         match m^.role of
         | user:
-            block(ADR(pend));
+            block(SYSTEM.ADR(pend));
             Buf.str(pend, `{"type":"text","text":`);
-            Amsg.quote(ADR(pend), m^.text);
+            Amsg.quote(SYSTEM.ADR(pend), m^.text);
             Buf.add(pend, '}');
             images := Strs.all(m^.images);
             for k := 0 to LEN(images) - 1 do
-                block(ADR(pend));
-                image(images[k], ADR(pend));
+                block(SYSTEM.ADR(pend));
+                image(images[k], SYSTEM.ADR(pend));
             end;
         | tool:
-            block(ADR(pend));
+            block(SYSTEM.ADR(pend));
             Buf.str(pend, `{"type":"tool_result","tool_use_id":`);
-            Amsg.quote(ADR(pend), m^.callId);
+            Amsg.quote(SYSTEM.ADR(pend), m^.callId);
             Buf.str(pend, `,"content":`);
-            Amsg.quote(ADR(pend), m^.text);
+            Amsg.quote(SYSTEM.ADR(pend), m^.text);
             Buf.add(pend, '}');
         | assistant:
-            flush(b, ADR(pend), ADR(first));
+            flush(b, SYSTEM.ADR(pend), SYSTEM.ADR(first));
             if not first then Buf.add(b^, ','); end;
             assistantTurn(m, b);
             first := false;
@@ -383,7 +384,7 @@ begin
         DEC(pend.len);
         Buf.str(pend, "," + Mark + "}");
     end;
-    flush(b, ADR(pend), ADR(first));
+    flush(b, SYSTEM.ADR(pend), SYSTEM.ADR(first));
     Buf.add(b^, ']');
     if LEN(r^.tools) > 0 then
         Buf.str(b^, `,"tools":[`);
@@ -413,7 +414,7 @@ end;
 
 (* the reply *)
 
-proc initAcc(a: ^Acc; dialect: Dialect; emit: proc(text: []U8; arg: ^U8); arg: ^U8);
+proc initAcc(a: ^Acc; dialect: Dialect; emit: proc(text: []const U8; arg: ^U8); arg: ^U8);
 begin
     a^ := {dialect: dialect, emit: emit, arg: arg};
     Buf.init(a^.line, Heap.heap);
@@ -422,7 +423,7 @@ begin
     Buf.init(a^.raw, Heap.heap);
     Buf.init(a^.err, Heap.heap);
     Slots.init(a^.slots, Heap.heap);
-    if not Json.init(ADR(a^.d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    if not Json.init(SYSTEM.ADR(a^.d), Heap.heap) then Rt.stop("arno: out of memory"); end;
 end;
 
 proc doneAcc(a: ^Acc);
@@ -441,7 +442,7 @@ begin
         Buf.done(s[i].extra);
     end;
     Slots.done(a^.slots);
-    Json.done(ADR(a^.d));
+    Json.done(SYSTEM.ADR(a^.d));
 end;
 
 (* Call k's slot, made, with every one before it, if it isn't there. *)
@@ -455,10 +456,10 @@ begin
         Buf.init(s^.args, Heap.heap);
         Buf.init(s^.extra, Heap.heap);
     end;
-    return ADR(Slots.all(a^.slots)[k]);
+    return SYSTEM.ADR(Slots.all(a^.slots)[k]);
 end;
 
-proc put(b: ^Buf.Buf; s: []U8);
+proc put(b: ^Buf.Buf; s: []const U8);
 begin
     Buf.reset(b^);
     Buf.str(b^, s);
@@ -468,13 +469,13 @@ end;
 proc int(a: ^Acc; v: Json.Value): I64;
 var n: I64; ok: BOOL;
 begin
-    n, ok := Json.toInt(ADR(a^.d), v);
+    n, ok := Json.toInt(SYSTEM.ADR(a^.d), v);
     if not ok then return 0; end;
     return n;
 end;
 
 (* Reply text that came, kept and shown. *)
-proc said(a: ^Acc; s: []U8);
+proc said(a: ^Acc; s: []const U8);
 begin
     if LEN(s) = 0 then return; end;
     Buf.str(a^.text, s);
@@ -482,7 +483,7 @@ begin
 end;
 
 (* The id of the last call that has come, or "" if none has. *)
-proc lastId(a: ^Acc): []U8;
+proc lastId(a: ^Acc): []const U8;
 begin
     if a^.slots.len = 0 then return ""; end;
     return Buf.bytes(Slots.all(a^.slots)[a^.slots.len - 1].id);
@@ -491,9 +492,9 @@ end;
 (* An OpenAI-compatible server's chunk: a delta of the text, the
    thinking or the tool calls; the last, when asked, has the usage. *)
 proc openaiEvent(a: ^Acc; v: Json.Value);
-var d: ^Json.Doc; x, delta, calls, f, args: Json.Value; i, k: INT; s, id: []U8; total: I64; sl: ^Slot;
+var d: ^Json.Doc; x, delta, calls, f, args: Json.Value; i, k: INT; s, id: []const U8; total: I64; sl: ^Slot;
 begin
-    d := ADR(a^.d);
+    d := SYSTEM.ADR(a^.d);
     (* prompt_tokens counts the cached ones too. The reply is the total
        less the prompt where there is a total: Gemini leaves its
        thinking out of completion_tokens but bills it as output, and
@@ -530,15 +531,15 @@ begin
         end;
         if k < 0 then k := 0; end;
         sl := slot(a, k);
-        if LEN(id) > 0 then put(ADR(sl^.id), id); end;
+        if LEN(id) > 0 then put(SYSTEM.ADR(sl^.id), id); end;
         if Json.member(d, x, "extra_content") # Json.None then
             Buf.reset(sl^.extra);
-            Amsg.compact(d, Json.member(d, x, "extra_content"), ADR(sl^.extra));
+            Amsg.compact(d, Json.member(d, x, "extra_content"), SYSTEM.ADR(sl^.extra));
         end;
         f := Json.member(d, x, "function");
         if f # Json.None then
             s := Json.text(d, Json.member(d, f, "name"));
-            if LEN(s) > 0 then put(ADR(sl^.name), s); end;
+            if LEN(s) > 0 then put(SYSTEM.ADR(sl^.name), s); end;
             (* arguments come as text in pieces, or from some servers
                whole, as an object *)
             args := Json.member(d, f, "arguments");
@@ -546,7 +547,7 @@ begin
                 Buf.str(sl^.args, Json.text(d, args));
             elsif Json.kind(d, args) = Json.object then
                 Buf.reset(sl^.args);
-                Amsg.compact(d, args, ADR(sl^.args));
+                Amsg.compact(d, args, SYSTEM.ADR(sl^.args));
             end;
         end;
     end;
@@ -558,7 +559,7 @@ end;
 proc anthropicEvent(a: ^Acc; v: Json.Value);
 var d: ^Json.Doc; x: Json.Value; k: INT; sl: ^Slot;
 begin
-    d := ADR(a^.d);
+    d := SYSTEM.ADR(a^.d);
     k := INT(int(a, Json.member(d, v, "index")));
     if k < 0 then k := 0; end;
     match Json.text(d, Json.member(d, v, "type")) of
@@ -579,8 +580,8 @@ begin
         sl := slot(a, k);
         x := Json.member(d, v, "content_block");
         if Json.text(d, Json.member(d, x, "type")) = "tool_use" then
-            put(ADR(sl^.id), Json.text(d, Json.member(d, x, "id")));
-            put(ADR(sl^.name), Json.text(d, Json.member(d, x, "name")));
+            put(SYSTEM.ADR(sl^.id), Json.text(d, Json.member(d, x, "id")));
+            put(SYSTEM.ADR(sl^.name), Json.text(d, Json.member(d, x, "name")));
         end;
     | "content_block_delta":
         sl := slot(a, k);
@@ -610,7 +611,7 @@ end;
    Anthropic's events, which their JSON names too. Any other line is
    kept, for a reply that isn't a stream at all, such as an error. *)
 proc feed(a: ^Acc; line: []U8);
-var v, e: Json.Value;
+var v, e: Json.Value; s: []U8;
 begin
     if not Str.hasPrefix(line, "data:") then
         if not Str.hasPrefix(line, "event:") then
@@ -619,18 +620,21 @@ begin
         end;
         return;
     end;
-    Json.reset(ADR(a^.d));
-    v := Json.parse(ADR(a^.d), Str.trim(line[5..LEN(line)]));
+    Json.reset(SYSTEM.ADR(a^.d));
+    s := line[5..LEN(line)];
+    while (LEN(s) > 0) and Str.isSpace(s[0]) do s := s[1..LEN(s)]; end;
+    while (LEN(s) > 0) and Str.isSpace(s[LEN(s) - 1]) do s := s[0..LEN(s) - 1]; end;
+    v := Json.parse(SYSTEM.ADR(a^.d), s);
     if v = Json.None then return; end;
     a^.events := true;
-    e := Json.member(ADR(a^.d), v, "error");
-    if (e # Json.None) and (a^.err.len = 0) then errorOf(ADR(a^.d), e, ADR(a^.err)); end;
+    e := Json.member(SYSTEM.ADR(a^.d), v, "error");
+    if (e # Json.None) and (a^.err.len = 0) then errorOf(SYSTEM.ADR(a^.d), e, SYSTEM.ADR(a^.err)); end;
     if a^.dialect = openai then openaiEvent(a, v); else anthropicEvent(a, v); end;
 end;
 
 (* What came of the reply, s, cut into lines, each fed as its line feed
    comes; a line's carriage return is dropped. *)
-proc lines(a: ^Acc; s: []U8);
+proc lines(a: ^Acc; s: []const U8);
 var i, from: INT; l: []U8;
 begin
     from := 0;
@@ -660,13 +664,13 @@ var callSeq: INT;   (* the ids made for calls that came without one *)
    Kimi K2 was trained on, functions.NAME:N, since an open model sees
    ids in its own template, and one it knows is one less to confuse
    it; every other provider takes an id as it is. *)
-proc newId(name: []U8; b: ^Buf.Buf);
+proc newId(name: []const U8; b: ^Buf.Buf);
 var n: INT; digits: [20]U8;
 begin
     Buf.str(b^, "functions.");
     Buf.str(b^, name);
     Buf.add(b^, ':');
-    digits, n := Str.fromInt(I64(XADD(ADR(callSeq), 1)));
+    digits, n := Str.fromInt(I64(XADD(callSeq, 1)));
     Buf.str(b^, digits[0..n]);
 end;
 
@@ -676,7 +680,7 @@ end;
    half made can't be run. A slot without a name is a text block's,
    or none. *)
 proc made(a: ^Acc; m: ^Amsg.Msg; stopped: BOOL);
-var i: INT; s: []Slot; id: Buf.Buf; args: []U8;
+var i: INT; s: []Slot; id: Buf.Buf; args: []const U8;
 begin
     Amsg.setText(m, Buf.bytes(a^.text));
     if a^.think.len > 0 then
@@ -691,7 +695,7 @@ begin
         if s[i].name.len > 0 then
             Buf.reset(id);
             Buf.str(id, Buf.bytes(s[i].id));
-            if id.len = 0 then newId(Buf.bytes(s[i].name), ADR(id)); end;
+            if id.len = 0 then newId(Buf.bytes(s[i].name), SYSTEM.ADR(id)); end;
             args := Buf.bytes(s[i].args);
             if LEN(Str.trim(args)) = 0 then args := "{}"; end;
             Amsg.addCall(m, Buf.bytes(id), Buf.bytes(s[i].name), args, Buf.bytes(s[i].extra));
@@ -710,7 +714,7 @@ begin
 end;
 
 (* s and t joined, in b. *)
-proc join(b: ^Buf.Buf; s, t: []U8): []U8;
+proc join(b: ^Buf.Buf; s, t: []const U8): []const U8;
 begin
     Buf.reset(b^);
     Buf.str(b^, s);
@@ -723,9 +727,9 @@ end;
    said to stop, *status the response's. Its error is a failure to
    reach the server, or of the connection; an error the server
    answered is in a, for the caller to find. *)
-proc exchange(r: ^Request; key, body: []U8; a: ^Acc; got, stopped: ^BOOL; status: ^INT): ERROR;
+proc exchange(r: ^Request; key, body: []const U8; a: ^Acc; got, stopped: ^BOOL; status: ^INT): ERROR;
 var req, res: Http.Message; url, auth: Buf.Buf; rd: ^Http.Reader; chunk: [16384]U8; n: INT;
-    err: ERROR; version: []U8;
+    err: ERROR; version: []const U8;
 begin
     Http.init(req, Heap.heap);
     Http.init(res, Heap.heap);
@@ -743,10 +747,10 @@ begin
         version := param(r^.prov, "anthropic_version");
         if LEN(version) = 0 then version := "2023-06-01"; end;
         try Http.add(req, "anthropic-version", version);
-        _ := join(ADR(url), r^.prov^.url, "/messages");
+        _ := join(SYSTEM.ADR(url), r^.prov^.url, "/messages");
     else
-        if LEN(key) > 0 then try Http.add(req, "Authorization", join(ADR(auth), "Bearer ", key)); end;
-        _ := join(ADR(url), r^.prov^.url, "/chat/completions");
+        if LEN(key) > 0 then try Http.add(req, "Authorization", join(SYSTEM.ADR(auth), "Bearer ", key)); end;
+        _ := join(SYSTEM.ADR(url), r^.prov^.url, "/chat/completions");
     end;
     r^.client^.timeout := r^.prov^.timeout;
     r^.client^.deadline := 0;
@@ -775,7 +779,7 @@ end;
    one of its errors; then the error an event or the body gave, or the
    body itself, 400 bytes of it at most, or why the connection failed. *)
 proc explain(a: ^Acc; err: ERROR; status: INT; why: ^Buf.Buf);
-var digits: [20]U8; n: INT; raw: Buf.Buf; d: Json.Doc; e: Json.Value; text: []U8;
+var digits: [20]U8; n: INT; raw: Buf.Buf; d: Json.Doc; e: Json.Value; text: []const U8;
 begin
     if status >= 400 then
         digits, n := Str.fromInt(status);
@@ -788,11 +792,11 @@ begin
     Buf.init(raw, Heap.heap);   (* parsing rewrites its text *)
     defer Buf.done(raw);
     Buf.str(raw, text);
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
-    e := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(raw)), "error");
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    e := Json.member(SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), Buf.bytes(raw)), "error");
     if e # Json.None then
-        errorOf(ADR(d), e, why);
+        errorOf(SYSTEM.ADR(d), e, why);
     elsif LEN(text) > 400 then
         Buf.str(why^, text[0..400]);
     elsif LEN(text) > 0 then
@@ -808,7 +812,7 @@ end;
    Failed, with why in why, if it lists none. Gemini names each
    models/NAME, which chat wants as NAME. *)
 proc models*(p: ^Prov; out, why: ^Buf.Buf): ERROR;
-var cl: Http.Client; req, res: Http.Message; url, auth: Buf.Buf; d: Json.Doc; data: Json.Value; key, version, id: []U8;
+var cl: Http.Client; req, res: Http.Message; url, auth, text: Buf.Buf; d: Json.Doc; data: Json.Value; key, version, id: []const U8;
     i: INT; err: ERROR;
 begin
     key := "";
@@ -819,7 +823,7 @@ begin
             return Failed;
         end;
     end;
-    initClient(ADR(cl));
+    initClient(SYSTEM.ADR(cl));
     defer Http.doneClient(cl);
     Http.init(res, Heap.heap);
     defer Http.done(res);
@@ -834,23 +838,27 @@ begin
         if LEN(version) = 0 then version := "2023-06-01"; end;
         _ := Http.add(req, "anthropic-version", version);
     elsif LEN(key) > 0 then
-        _ := Http.add(req, "Authorization", join(ADR(auth), "Bearer ", key));
+        _ := Http.add(req, "Authorization", join(SYSTEM.ADR(auth), "Bearer ", key));
     end;
     cl.deadline := Sys.clock() + 30 * 1000000000;
-    err := Http.fetch(cl, req, join(ADR(url), p^.url, "/models"), res);
+    err := Http.fetch(cl, req, join(SYSTEM.ADR(url), p^.url, "/models"), res);
     if err # nil then
         Buf.str(why^, MSG(err));
         return Failed;
     end;
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
-    data := Json.member(ADR(d), Json.parse(ADR(d), res.body), "data");
-    if (res.status >= 400) or (Json.len(ADR(d), data) = 0) then
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    (* parsing changes its text, so the body is copied *)
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.str(text, res.body);
+    data := Json.member(SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), Buf.bytes(text)), "data");
+    if (res.status >= 400) or (Json.len(SYSTEM.ADR(d), data) = 0) then
         Fmt.write(why^, "HTTP {}", [Fmt.int(res.status)]);
         return Failed;
     end;
-    for i := 0 to Json.len(ADR(d), data) - 1 do
-        id := Json.text(ADR(d), Json.member(ADR(d), Json.item(ADR(d), data, i), "id"));
+    for i := 0 to Json.len(SYSTEM.ADR(d), data) - 1 do
+        id := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), data, i), "id"));
         if Str.hasPrefix(id, "models/") then id := id[7..LEN(id)]; end;
         if LEN(id) = 0 then continue; end;
         Buf.str(out^, id);
@@ -864,7 +872,7 @@ end;
    u, as far as the server said. Failed, with why in why; Stopped if
    r's stopped said so, with what came in m. *)
 proc chat*(r: ^Request; m: ^Amsg.Msg; u: ^Usage; why: ^Buf.Buf): ERROR;
-var key: []U8; body: Buf.Buf; a: Acc; tries, status, wait: INT; err: ERROR; got, stopped: BOOL;
+var key: []const U8; body: Buf.Buf; a: Acc; tries, status, wait: INT; err: ERROR; got, stopped: BOOL;
 begin
     Amsg.init(m, Amsg.assistant);
     u^ := {};
@@ -879,32 +887,32 @@ begin
     end;
     Buf.init(body, Heap.heap);
     defer Buf.done(body);
-    if r^.prov^.dialect = anthropic then anthropicBody(r, ADR(body)); else openaiBody(r, ADR(body)); end;
+    if r^.prov^.dialect = anthropic then anthropicBody(r, SYSTEM.ADR(body)); else openaiBody(r, SYSTEM.ADR(body)); end;
     tries := 0;
     repeat
-        initAcc(ADR(a), r^.prov^.dialect, r^.emit, r^.arg);
+        initAcc(SYSTEM.ADR(a), r^.prov^.dialect, r^.emit, r^.arg);
         got := false;
         stopped := false;
         status := 0;
-        err := exchange(r, key, Buf.bytes(body), ADR(a), ADR(got), ADR(stopped), ADR(status));
+        err := exchange(r, key, Buf.bytes(body), SYSTEM.ADR(a), SYSTEM.ADR(got), SYSTEM.ADR(stopped), SYSTEM.ADR(status));
         if (err = nil) or got or stopped or (tries >= r^.prov^.retries) then break; end;
-        doneAcc(ADR(a));
+        doneAcc(SYSTEM.ADR(a));
         wait := r^.prov^.backoff shl tries;
         if wait > 30 then wait := 30; end;
         Sys.sleep(1000 * wait);
         INC(tries);
     until false;
-    defer doneAcc(ADR(a));
+    defer doneAcc(SYSTEM.ADR(a));
     u^ := a.u;
     if stopped then
-        made(ADR(a), m, true);
+        made(SYSTEM.ADR(a), m, true);
         return Stopped;
     end;
     if (a.err.len > 0) or (err # nil) or not a.events then
-        explain(ADR(a), err, status, why);
+        explain(SYSTEM.ADR(a), err, status, why);
         return Failed;
     end;
-    made(ADR(a), m, false);
+    made(SYSTEM.ADR(a), m, false);
     return nil;
 end;
 
@@ -918,7 +926,7 @@ end;
 
 var failed: BOOL;
 
-proc fail(what: []U8);
+proc fail(what: []const U8);
 begin
     Out.str("Awire: ");
     Out.str(what);
@@ -926,7 +934,7 @@ begin
     failed := true;
 end;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     fail(what);
@@ -937,7 +945,7 @@ begin
     Out.ln;
 end;
 
-proc expectInt(what: []U8; got, want: I64);
+proc expectInt(what: []const U8; got, want: I64);
 begin
     if got = want then return; end;
     fail(what);
@@ -951,7 +959,7 @@ end;
 (* the conversation, the tools and the system prompt the Pascal arno
    was given, and the bodies it wrote for them, as its test had them *)
 const History = `[{"role":"user","content":"a \"quote\", é, a tab\t and \u0001"},{"role":"assistant","content":"I'll look.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"git","arguments":"{\"args\":[\"status\"]}"}},{"id":"call_2","type":"function","function":{"name":"read","arguments":"not json"},"extra_content":{"google":{"thought_signature":"c2ln"}}}]},{"role":"tool","tool_call_id":"call_1","name":"git","content":"(no output)"},{"role":"tool","tool_call_id":"call_2","name":"read","content":"no such file"},{"role":"user","content":"and now?"},{"role":"assistant","content":"  ","reasoning_content":"nothing to say"},{"role":"user","content":[{"type":"text","text":"The pictures read above: a.png"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBO"}}]}]`;
-    Tools: []Tool = [{name: "read", description: "Read a file.",
+    Tools: []const Tool = [{name: "read", description: "Read a file.",
             params: `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`},
         {name: "git", description: "Run git, read-only.",
             params: `{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"}}}}`}];
@@ -1009,51 +1017,51 @@ proc readHistory;
 var d: Json.Doc; text: Buf.Buf; v: Json.Value; i: INT;
 begin
     Msgs.init(history, Heap.heap);
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     Buf.init(text, Heap.heap);
     defer Buf.done(text);
     Buf.str(text, History);
-    v := Json.parse(ADR(d), Buf.bytes(text));
-    for i := 0 to Json.len(ADR(d), v) - 1 do
-        if Amsg.read(ADR(d), Json.item(ADR(d), v, i), Msgs.add(history)) # nil then fail("History"); end;
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text));
+    for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
+        if Amsg.read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), Msgs.add(history)) # nil then fail("History"); end;
     end;
 end;
 
 (* r's body in both dialects, against the Pascal arno's. *)
-proc bodies(r: ^Request; openaiWant, anthropicWant: []U8);
+proc bodies(r: ^Request; openaiWant, anthropicWant: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    openaiBody(r, ADR(b));
+    openaiBody(r, SYSTEM.ADR(b));
     expect("the OpenAI body", Buf.bytes(b), openaiWant);
     Buf.reset(b);
-    anthropicBody(r, ADR(b));
+    anthropicBody(r, SYSTEM.ADR(b));
     expect("the Anthropic body", Buf.bytes(b), anthropicWant);
 end;
 
 (* stream fed a few bytes at a time, as a server's pieces may cut it
    anywhere: the message it makes, and its usage. *)
-proc pieces(dialect: Dialect; stream, want: []U8; u: Usage);
+proc pieces(dialect: Dialect; stream, want: []const U8; u: Usage);
 var a: Acc; m: Amsg.Msg; b: Buf.Buf; i, j: INT;
 begin
-    initAcc(ADR(a), dialect, nil, nil);
-    defer doneAcc(ADR(a));
+    initAcc(SYSTEM.ADR(a), dialect, nil, nil);
+    defer doneAcc(SYSTEM.ADR(a));
     i := 0;
     while i < LEN(stream) do
         j := i + 7;
         if j > LEN(stream) then j := LEN(stream); end;
-        lines(ADR(a), stream[i..j]);
+        lines(SYSTEM.ADR(a), stream[i..j]);
         i := j;
     end;
-    ended(ADR(a));
-    Amsg.init(ADR(m), Amsg.assistant);
-    made(ADR(a), ADR(m), false);
+    ended(SYSTEM.ADR(a));
+    Amsg.init(SYSTEM.ADR(m), Amsg.assistant);
+    made(SYSTEM.ADR(a), SYSTEM.ADR(m), false);
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    Amsg.write(ADR(m), ADR(b));
-    Amsg.free(ADR(m));
+    Amsg.write(SYSTEM.ADR(m), SYSTEM.ADR(b));
+    Amsg.free(SYSTEM.ADR(m));
     expect("a reply put together", Buf.bytes(b), want);
     expectInt("its tokens in", a.u.inp, u.inp);
     expectInt("its tokens cached", a.u.cached, u.cached);
@@ -1085,10 +1093,10 @@ end;
 
 proc serving(_arg: ^U8);
 begin
-    _ := Http.serve(ADR(server), listening);
+    _ := Http.serve(SYSTEM.ADR(server), listening);
 end;
 
-proc show(text: []U8; _arg: ^U8);
+proc show(text: []const U8; _arg: ^U8);
 begin
     Buf.str(shown, text);
 end;
@@ -1099,7 +1107,7 @@ begin
 end;
 
 (* r sent to the test's server at path: chat's error, and why. *)
-proc ask(r: ^Request; prov: ^Prov; url: []U8; m: ^Amsg.Msg; u: ^Usage; why: ^Buf.Buf): ERROR;
+proc ask(r: ^Request; prov: ^Prov; url: []const U8; m: ^Amsg.Msg; u: ^Usage; why: ^Buf.Buf): ERROR;
 begin
     prov^.url := url;
     Buf.reset(why^);
@@ -1112,15 +1120,15 @@ var p: Prov; r: Request; cl: Http.Client; m: Amsg.Msg; u: Usage; why, url: Buf.B
     base: [20]U8; n: INT;
 begin
     readHistory;
-    _ := preset("ollama", ADR(p));
+    _ := preset("ollama", SYSTEM.ADR(p));
     p.model := "m1";
     p.params := ["temperature=0.2", "max_tokens=1000", "reasoning_effort@m1=high", "reasoning_effort=low"];
-    r := {prov: ADR(p), system: System, msgs: Msgs.all(history), tools: Tools};
-    bodies(ADR(r), OpenaiM1, AnthropicM1);
+    r := {prov: SYSTEM.ADR(p), system: System, msgs: Msgs.all(history), tools: Tools};
+    bodies(SYSTEM.ADR(r), OpenaiM1, AnthropicM1);
     p.model := "m2";
     p.params := [];
     r.tools := [];
-    bodies(ADR(r), OpenaiM2, AnthropicM2);
+    bodies(SYSTEM.ADR(r), OpenaiM2, AnthropicM2);
 
     pieces(openai, OpenaiStream, OpenaiReply, {inp: 100, cached: 80, out: 20});
     pieces(anthropic, AnthropicStream, AnthropicReply, {inp: 240, cached: 200, written: 30, out: 42});
@@ -1139,58 +1147,58 @@ begin
     base, n := Str.fromInt(Sys.localPort(listening));
     Buf.str(url, "http://127.0.0.1:");
     Buf.str(url, base[0..n]);
-    initClient(ADR(cl));
-    r.client := ADR(cl);
+    initClient(SYSTEM.ADR(cl));
+    r.client := SYSTEM.ADR(cl);
     r.emit := show;
 
-    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(url), "/o"), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), join(SYSTEM.ADR(why), Buf.bytes(url), "/o"), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if err # nil then fail("an OpenAI request"); Out.str(Buf.bytes(why)); Out.ln; end;
     expect("what went to emit", Buf.bytes(shown), "Hello");
     expectInt("the tokens out", u.out, 20);
     expectInt("the calls", m.calls.len, 3);
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     Buf.reset(why);
     p.dialect := anthropic;
     p.keyEnv := "HOME";   (* a key that is always set *)
-    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(url), "/a"), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), join(SYSTEM.ADR(why), Buf.bytes(url), "/a"), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if err # nil then fail("an Anthropic request"); Out.str(Buf.bytes(why)); Out.ln; end;
     expect("the text", m.text, "Hi");
     expect("the key sent", Buf.bytes(apiKey), Sys.env("HOME"));
     Buf.reset(why);
-    anthropicBody(ADR(r), ADR(why));
+    anthropicBody(SYSTEM.ADR(r), SYSTEM.ADR(why));
     expect("the body sent", Buf.bytes(asked), Buf.bytes(why));
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     Buf.reset(why);
-    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(url), "/denied"), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), join(SYSTEM.ADR(why), Buf.bytes(url), "/denied"), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if err # Failed then fail("a refusal"); end;
     expect("a refusal's why", Buf.bytes(why), "HTTP 401: invalid x-api-key");
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     Buf.reset(why);
-    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(url), "/overloaded"), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), join(SYSTEM.ADR(why), Buf.bytes(url), "/overloaded"), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if err # Failed then fail("an error event"); end;
     expect("an error event's why", Buf.bytes(why), "Overloaded");
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     Buf.reset(why);
     r.stopped := always;
-    err := ask(ADR(r), ADR(p), join(ADR(why), Buf.bytes(url), "/a"), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), join(SYSTEM.ADR(why), Buf.bytes(url), "/a"), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if err # Stopped then fail("a stop"); end;
     expect("a stop's text", m.text, "Hi");
     expectInt("a stop's calls", m.calls.len, 0);
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
     r.stopped := nil;
 
-    err := ask(ADR(r), ADR(p), "http://127.0.0.1:1", ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), "http://127.0.0.1:1", SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     if (err # Failed) or (why.len = 0) then fail("a server that isn't there"); end;
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     p.keyEnv := "ARNO_TEST_NO_SUCH_KEY";
-    err := ask(ADR(r), ADR(p), Buf.bytes(url), ADR(m), ADR(u), ADR(why));
+    err := ask(SYSTEM.ADR(r), SYSTEM.ADR(p), Buf.bytes(url), SYSTEM.ADR(m), SYSTEM.ADR(u), SYSTEM.ADR(why));
     expect("a key not set", Buf.bytes(why), "ARNO_TEST_NO_SUCH_KEY is not set");
-    Amsg.free(ADR(m));
+    Amsg.free(SYSTEM.ADR(m));
 
     if failed then return 1; end;
     return 0;

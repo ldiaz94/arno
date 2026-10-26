@@ -27,10 +27,11 @@
 module Acomplete;
 import Aprompt, Astore, Awire, Afind, Aattach, Buf, Str, Sys, Files, Heap, Arena, Fmt, Out, Items := Vec(Item),
     Listed := Vec(Astore.Item);
+import SYSTEM;
 
 type
     (* What a word may become, and what it is. *)
-    Item* = record text*, desc*: []U8; end;
+    Item* = record text*, desc*: []const U8; end;
 
 const
     MaxHits = 40;    (* files a bare name finds below *)
@@ -42,7 +43,7 @@ var
 
 (* The word of s being completed, with the point at point: from where it
    starts to where it ends; -1 and -1 for none. *)
-proc token*(s: []U8; point: INT): (INT, INT);
+proc token*(s: []const U8; point: INT): (INT, INT);
 var i: INT;
 begin
     if (LEN(s) > 0) and (s[0] = '/') and (Str.find(s, "\n") < 0) then return 0, LEN(s); end;
@@ -57,16 +58,16 @@ begin
 end;
 
 (* s kept until the next call. *)
-proc keep(s: []U8): []U8;
-var c: []U8; ok: BOOL;
+proc keep(s: []const U8): []const U8;
+var c: []const U8; ok: BOOL;
 begin
-    c, ok := Str.copy(ADR(mem.base), s);
+    c, ok := Str.copy(SYSTEM.ADR(mem.base), s);
     if not ok then return ""; end;
     return c;
 end;
 
 (* An item of text and desc, unless one has its text already. *)
-proc add(text, desc: []U8);
+proc add(text, desc: []const U8);
 var all: []Item; i: INT;
 begin
     all := Items.all(items);
@@ -77,13 +78,13 @@ begin
 end;
 
 (* Whether s begins with p, ASCII letters' case aside. *)
-proc begins(s, p: []U8): BOOL;
+proc begins(s, p: []const U8): BOOL;
 begin
     return (LEN(s) >= LEN(p)) and Str.eqFold(s[0..LEN(p)], p);
 end;
 
 (* Whether s holds q, which is in small letters, case aside. *)
-proc holds(s, q: []U8): BOOL;
+proc holds(s, q: []const U8): BOOL;
 var i: INT;
 begin
     for i := 0 to LEN(s) - LEN(q) do
@@ -95,7 +96,7 @@ end;
 (* The item that writes path: @path and a blank after a file, a slash
    after a directory; quoted, the quote left open after a directory, if
    path has a blank in it. *)
-proc path(p: []U8; dir: BOOL);
+proc path(p: []const U8; dir: BOOL);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
@@ -111,8 +112,8 @@ begin
 end;
 
 (* The items for word, an @path being typed. *)
-proc files(word: []U8);
-var p, dir, base, name, rest: []U8; list, full: Buf.Buf; i, seen: INT; ok: BOOL; w: Afind.Walk;
+proc files(word: []const U8);
+var p, dir, base, name, rest: []const U8; list, full: Buf.Buf; i, seen: INT; ok: BOOL; w: Afind.Walk;
 begin
     p := word[1..LEN(word)];
     if Str.hasPrefix(p, "\"") then p := p[1..LEN(p)]; end;
@@ -126,7 +127,7 @@ begin
     defer Buf.done(full);
     name := dir;
     if LEN(name) = 0 then name := "."; end;
-    if Aattach.listing(Str.trimRight(name), ADR(list)) then
+    if Aattach.listing(Str.trimRight(name), SYSTEM.ADR(list)) then
         rest := Buf.bytes(list);
         ok := LEN(rest) > 0;
         while ok do
@@ -145,11 +146,11 @@ begin
     end;
     (* a bare name: the files below that hold it *)
     if (LEN(dir) > 0) or (LEN(base) = 0) then return; end;
-    Afind.open(ADR(w), ".");
-    defer Afind.close(ADR(w));
+    Afind.open(SYSTEM.ADR(w), ".");
+    defer Afind.close(SYSTEM.ADR(w));
     seen := 0;
     while (seen < MaxWalk) and (items.len < MaxHits) do
-        name, ok := Afind.next(ADR(w));
+        name, ok := Afind.next(SYSTEM.ADR(w));
         if not ok then break; end;
         INC(seen);
         i := Str.findLast(name, "/");
@@ -159,8 +160,8 @@ end;
 
 (* The items for word, a command line. models are the provider's, a line
    each. *)
-proc command(word, models: []U8);
-var cmd, arg, s, m: []U8; b: Buf.Buf; i, n: INT; list: Listed.Vec; l: []Astore.Item; c: Aprompt.Command;
+proc command(word, models: []const U8);
+var cmd, arg, s, m: []const U8; b: Buf.Buf; i, n: INT; list: Listed.Vec; l: []Astore.Item; c: Aprompt.Command;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -203,14 +204,14 @@ begin
             add(Buf.bytes(b), "");
         end;
     | "/load":
-        Astore.recent(8, arg, ADR(list));
+        Astore.recent(8, arg, SYSTEM.ADR(list));
         l := Listed.all(list);
         for i := 0 to LEN(l) - 1 do
             Buf.reset(b);
             Fmt.write(b, "/load {}", [Fmt.str(l[i].id)]);
             add(Buf.bytes(b), l[i].title);
         end;
-        Astore.drop(ADR(list));
+        Astore.drop(SYSTEM.ADR(list));
     | else:
     end;
 end;
@@ -218,7 +219,7 @@ end;
 (* What word, which token found, may become: none if the one it may
    become is word itself. models are the provider's, a line each, for
    /model. *)
-proc complete*(word, models: []U8): []Item;
+proc complete*(word, models: []const U8): []Item;
 var all: []Item;
 begin
     Arena.reset(mem);
@@ -234,7 +235,7 @@ end;
 
 var failed: BOOL;
 
-proc expect(what: []U8; word: []U8; want: []U8);
+proc expect(what: []const U8; word: []const U8; want: []const U8);
 var all: []Item; b: Buf.Buf; i: INT;
 begin
     Buf.init(b, Heap.heap);
@@ -248,7 +249,7 @@ begin
     failed := true;
 end;
 
-proc at(what, s: []U8; point, a, b: INT);
+proc at(what, s: []const U8; point, a, b: INT);
 var x, y: INT;
 begin
     x, y := token(s, point);
@@ -258,7 +259,7 @@ begin
 end;
 
 proc main*: INT;
-var here: Buf.Buf; d: []U8;
+var here: Buf.Buf; d: []const U8;
 begin
     at("a command", "/mo", 1, 0, 3);
     at("a word", "see @src/A", 10, 4, 10);

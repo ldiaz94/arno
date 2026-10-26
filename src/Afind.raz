@@ -29,7 +29,8 @@
    ripgrep and fd, which the Pascal arno ran when config named them;
    and a stop by the human in the middle of a walk. *)
 module Afind;
-import Afence, Rwalk, Rwglob, Buf, Str, Sys, Files, Mem, Heap, Arena, Out, Lines := Vec([]U8), Ints := Vec(INT);
+import Afence, Rwalk, Rwglob, Buf, Str, Sys, Files, Mem, Heap, Arena, Out, Lines := Vec([]const U8), Ints := Vec(INT);
+import SYSTEM;
 
 const
     MaxFiles = 500;        (* files find lists *)
@@ -76,18 +77,18 @@ type
 (* Walking *)
 
 (* w made to walk the files under path, or the file path. *)
-proc open*(w: ^Walk; path: []U8);
+proc open*(w: ^Walk; path: []const U8);
 begin
-    Rwalk.init(ADR(w^.w), Heap.heap, path, {});
+    Rwalk.init(SYSTEM.ADR(w^.w), Heap.heap, path, {});
 end;
 
 (* The next file of the walk, its path as a program writes it, without
    the "./" a walk from "." puts before each; false when there are no
    more. *)
-proc next*(w: ^Walk): ([]U8, BOOL);
-var p: []U8; i: Sys.Info; e: INT;
+proc next*(w: ^Walk): ([]const U8, BOOL);
+var p: []const U8; i: Sys.Info; e: INT;
 begin
-    while Rwalk.next(ADR(w^.w), ADR(w^.e)) do
+    while Rwalk.next(SYSTEM.ADR(w^.w), SYSTEM.ADR(w^.e)) do
         p := w^.e.path;
         if w^.e.kind = Rwalk.symlink then
             i, e := Sys.info(p);
@@ -103,7 +104,7 @@ end;
 
 proc close*(w: ^Walk);
 begin
-    Rwalk.done(ADR(w^.w));
+    Rwalk.done(SYSTEM.ADR(w^.w));
 end;
 
 (* s made ready to hold files, from mem. *)
@@ -116,8 +117,8 @@ end;
 
 (* The file at path read into s and cut into lines: false if it can't
    be read, is too big, or is binary. *)
-proc load(s: ^Source; path: []U8): BOOL;
-var t: []U8; i: Sys.Info; e, at, j: INT;
+proc load(s: ^Source; path: []const U8): BOOL;
+var t: []const U8; i: Sys.Info; e, at, j: INT;
 begin
     Buf.reset(s^.text);
     Lines.reset(s^.lines);
@@ -153,7 +154,7 @@ end;
 
 (* Line n of a file, numbered as read numbers it: the number right
    aligned in five columns, then a tab. *)
-proc numbered*(out: ^Buf.Buf; n: INT; text: []U8);
+proc numbered*(out: ^Buf.Buf; n: INT; text: []const U8);
 var digits: [20]U8; k, i: INT;
 begin
     digits, k := Str.fromInt(n);
@@ -173,7 +174,7 @@ end;
 
 (* s cut to at most max bytes, where a character starts, and whether it
    was cut. *)
-proc cut(s: []U8; max: INT): ([]U8, BOOL);
+proc cut(s: []const U8; max: INT): ([]const U8, BOOL);
 begin
     if LEN(s) <= max then return s, false; end;
     while (max > 0) and (s[max] & 0C0H = 80H) do DEC(max); end;
@@ -184,7 +185,7 @@ end;
 
 (* Whether path's names, each directory's and the file's, has one that
    matches g. *)
-proc anyName(g: ^Rwglob.Glob; path: []U8): BOOL;
+proc anyName(g: ^Rwglob.Glob; path: []const U8): BOOL;
 var i, j: INT;
 begin
     i := 0;
@@ -203,25 +204,25 @@ end;
    the code of a feature asks for *feature* whether that is a file or a
    directory, and tried glob after glob when a directory of that name
    went unfound. *)
-proc find*(dir, pat: []U8; out: ^Buf.Buf);
-var w: Walk; g: Rwglob.Glob; p, t: []U8; whole, ok: BOOL; n: INT;
+proc find*(dir, pat: []const U8; out: ^Buf.Buf);
+var w: Walk; g: Rwglob.Glob; p, t: []const U8; whole, ok: BOOL; n: INT;
 begin
-    if Rwglob.compile(ADR(g), Heap.heap, pat, false) # nil then
+    if Rwglob.compile(SYSTEM.ADR(g), Heap.heap, pat, false) # nil then
         Buf.str(out^, "error: ");
         Buf.str(out^, pat);
         Buf.str(out^, " is not a glob");
         return;
     end;
-    defer Rwglob.done(ADR(g));
+    defer Rwglob.done(SYSTEM.ADR(g));
     t := pat;
     while (LEN(t) > 0) and (t[LEN(t) - 1] = '/') do t := t[0..LEN(t) - 1]; end;
     whole := Str.find(t, "/") >= 0;   (* a / at the end only says a directory *)
-    open(ADR(w), dir);
-    defer close(ADR(w));
+    open(SYSTEM.ADR(w), dir);
+    defer close(SYSTEM.ADR(w));
     n := 0;
-    p, ok := next(ADR(w));
+    p, ok := next(SYSTEM.ADR(w));
     while ok do
-        if whole and Rwglob.matches(ADR(g), p) or not whole and anyName(ADR(g), p) then
+        if whole and Rwglob.matches(SYSTEM.ADR(g), p) or not whole and anyName(SYSTEM.ADR(g), p) then
             if n = MaxFiles then
                 Buf.str(out^, "[stopped at 500 files]");
                 return;
@@ -230,7 +231,7 @@ begin
             Buf.add(out^, '\n');
             INC(n);
         end;
-        p, ok := next(ADR(w));
+        p, ok := next(SYSTEM.ADR(w));
     end;
     if n = 0 then Buf.str(out^, "no files"); end;
 end;
@@ -239,7 +240,7 @@ end;
 
 type
     Grep = record
-        pat: []U8;          (* small, if fold *)
+        pat: []const U8;          (* small, if fold *)
         fold: BOOL;
         context: INT;
         glob: Rwglob.Glob;
@@ -250,8 +251,8 @@ type
 
 (* Line n of the file at path, from 1, as grep shows it: path, sep, n,
    sep, a blank and the line, cut at MaxLine. *)
-proc show(out: ^Buf.Buf; path: []U8; s: ^Source; n: INT; sep: U8);
-var line: []U8; cutShort: BOOL;
+proc show(out: ^Buf.Buf; path: []const U8; s: ^Source; n: INT; sep: U8);
+var line: []const U8; cutShort: BOOL;
 begin
     Buf.str(out^, path);
     Buf.add(out^, sep);
@@ -270,10 +271,10 @@ end;
    groups that overlap from showing a line twice; upto is how far the
    group's trailing context reaches. False once MaxHits are found and
    the last one's context is shown. *)
-proc scan(g: ^Grep; s: ^Source; path: []U8; out: ^Buf.Buf): BOOL;
-var lines: [][]U8; text: []U8; n, a, k, last, upto, at: INT; more: BOOL;
+proc scan(g: ^Grep; s: ^Source; path: []const U8; out: ^Buf.Buf): BOOL;
+var lines: [][]const U8; text: []const U8; n, a, k, last, upto, at: INT; more: BOOL;
 begin
-    if g^.globbed and not Rwglob.matches(ADR(g^.glob), path) then return true; end;
+    if g^.globbed and not Rwglob.matches(SYSTEM.ADR(g^.glob), path) then return true; end;
     if not load(s, path) then return true; end;
     text := Buf.bytes(s^.text);
     if g^.fold then text := lowered(s); end;
@@ -311,8 +312,8 @@ end;
 (* The lines of the files under dir, or of the file dir, that hold pat,
    and context lines around each; only files whose name matches glob,
    if it isn't "". Case is ignored, for ASCII letters, if fold. *)
-proc grep*(dir, pat, glob: []U8; fold: BOOL; context: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var g: Grep; s: Source; w: Walk; p: []U8; low: Buf.Buf; ok: BOOL;
+proc grep*(dir, pat, glob: []const U8; fold: BOOL; context: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var g: Grep; s: Source; w: Walk; p: []const U8; low: Buf.Buf; small: []U8; ok: BOOL;
 begin
     if LEN(pat) = 0 then
         Buf.str(out^, "error: give the text to look for");
@@ -324,11 +325,12 @@ begin
     if fold then
         Buf.init(low, mem);
         Buf.str(low, pat);
-        g.pat := Buf.bytes(low);
-        Str.lower(g.pat);
+        small := Buf.bytes(low);
+        Str.lower(small);
+        g.pat := small;
     end;
     if LEN(glob) > 0 then
-        if Rwglob.compile(ADR(g.glob), Heap.heap, glob, false) # nil then
+        if Rwglob.compile(SYSTEM.ADR(g.glob), Heap.heap, glob, false) # nil then
             Buf.str(out^, "error: ");
             Buf.str(out^, glob);
             Buf.str(out^, " is not a glob");
@@ -336,19 +338,19 @@ begin
         end;
         g.globbed := true;
     end;
-    defer Rwglob.done(ADR(g.glob));
-    init(ADR(s), mem);
-    open(ADR(w), dir);
-    defer close(ADR(w));
-    p, ok := next(ADR(w));
-    while ok and scan(ADR(g), ADR(s), p, out) do p, ok := next(ADR(w)); end;
+    defer Rwglob.done(SYSTEM.ADR(g.glob));
+    init(SYSTEM.ADR(s), mem);
+    open(SYSTEM.ADR(w), dir);
+    defer close(SYSTEM.ADR(w));
+    p, ok := next(SYSTEM.ADR(w));
+    while ok and scan(SYSTEM.ADR(g), SYSTEM.ADR(s), p, out) do p, ok := next(SYSTEM.ADR(w)); end;
     if g.hits >= MaxHits then Buf.str(out^, "[stopped at 200 matches]"); end;
     if out^.len = 0 then Buf.str(out^, "no matches"); end;
 end;
 
 (* outline and def: reading a line *)
 
-proc indent(s: []U8): INT;
+proc indent(s: []const U8): INT;
 var n: INT;
 begin
     n := 0;
@@ -356,14 +358,14 @@ begin
     return n;
 end;
 
-proc blank(s: []U8): BOOL;
+proc blank(s: []const U8): BOOL;
 begin
     return indent(s) = LEN(s);
 end;
 
 (* Whether w is one of the words of list, which has a blank at either
    end and between each two. *)
-proc listed*(w, list: []U8): BOOL;
+proc listed*(w, list: []const U8): BOOL;
 var i, at: INT;
 begin
     if (LEN(w) = 0) or (Str.find(w, " ") >= 0) then return false; end;
@@ -380,7 +382,7 @@ end;
 
 (* listed, ASCII capitals and small letters taken as the same: Pascal's
    words are written either way. *)
-proc listedFold(w, list: []U8): BOOL;
+proc listedFold(w, list: []const U8): BOOL;
 var low: [32]U8;
 begin
     if LEN(w) > LEN(low) then return false; end;
@@ -399,7 +401,7 @@ end;
 
 (* The identifier at s[i], dots and all (TFoo.Bar, a.b), i moved past
    it. *)
-proc ident(s: []U8; var i: INT): []U8;
+proc ident(s: []const U8; var i: INT): []const U8;
 var j: INT;
 begin
     j := i;
@@ -410,13 +412,13 @@ end;
 
 (* i moved past blanks, tabs and stars: a pointer's star, or the star
    that exports a name in raz and Oberon. *)
-proc skip(s: []U8; var i: INT);
+proc skip(s: []const U8; var i: INT);
 begin
     while (i < LEN(s)) and ((s[i] = ' ') or (s[i] = '\t') or (s[i] = '*')) do INC(i); end;
 end;
 
 (* Whether path's extension, case aside, is one of list's. *)
-proc ext(path, list: []U8): BOOL;
+proc ext(path, list: []const U8): BOOL;
 var i: INT;
 begin
     i := LEN(path);
@@ -430,17 +432,17 @@ end;
    own indentation when it is var, begin and the like, and where a brace
    doesn't open a body; and C, whose functions may have their type on
    the line above. *)
-proc prose(path: []U8): BOOL;
+proc prose(path: []const U8): BOOL;
 begin
     return ext(path, " md markdown ");
 end;
 
-proc pascal(path: []U8): BOOL;
+proc pascal(path: []const U8): BOOL;
 begin
     return ext(path, " pas pp inc lpr dpr raz ");
 end;
 
-proc cish(path: []U8): BOOL;
+proc cish(path: []const U8): BOOL;
 begin
     return ext(path, " c h cc cpp cxx hh hpp ");
 end;
@@ -451,8 +453,8 @@ end;
    on a line of its own counts as much as one at the end, and the
    parameters may run over several lines. A prototype, ending in ";",
    doesn't. *)
-proc opensBody(l: [][]U8; n, k: INT): BOOL;
-var t: []U8; depth, e: INT; closed: BOOL;
+proc opensBody(l: [][]const U8; n, k: INT): BOOL;
+var t: []const U8; depth, e: INT; closed: BOOL;
 begin
     depth := 0;
     e := n;
@@ -492,8 +494,8 @@ end;
    after it, no control word, no "=" before the "(", named by what
    stands just before the "(". Not in Pascal, whose routines all start
    with a word, and where a brace opens a comment. *)
-proc declName(l: [][]U8; n: INT; md, pas: BOOL): []U8;
-var line, t, w: []U8; i, j, k: INT;
+proc declName(l: [][]const U8; n: INT; md, pas: BOOL): []const U8;
+var line, t, w: []const U8; i, j, k: INT;
 begin
     line := l[n];
     if md then
@@ -541,8 +543,8 @@ end;
 
 (* Whether line begins a closing: a brace, a parenthesis or a bracket,
    or Pascal's end. *)
-proc closer(line: []U8): BOOL;
-var t: []U8;
+proc closer(line: []const U8): BOOL;
+var t: []const U8;
 begin
     t := Str.trim(line);
     if LEN(t) = 0 then return false; end;
@@ -553,7 +555,7 @@ begin
     return false;
 end;
 
-proc hashes(s: []U8): INT;
+proc hashes(s: []const U8): INT;
 var n: INT;
 begin
     n := 0;
@@ -571,8 +573,8 @@ end;
    const, type, label and begin stand at its own indentation and belong
    to it. A Markdown section runs to the next heading of its level or
    above. Blank lines at the end are dropped. *)
-proc defEnd(l: [][]U8; n: INT; md, pas: BOOL): INT;
-var w: []U8; last, i, k, m, level: INT; routine: BOOL;
+proc defEnd(l: [][]const U8; n: INT; md, pas: BOOL): INT;
+var w: []const U8; last, i, k, m, level: INT; routine: BOOL;
 begin
     last := LEN(l) - 1;
     if md then
@@ -601,14 +603,14 @@ begin
 end;
 
 (* Whether x, its blanks aside, starts with open. *)
-proc opens(x, open: []U8): BOOL;
+proc opens(x, open: []const U8): BOOL;
 begin
     return Str.hasPrefix(Str.trim(x), open);
 end;
 
 (* Whether x is a line comment or a decorator: //, #, --, ; or @. *)
-proc marked(x: []U8): BOOL;
-var y: []U8;
+proc marked(x: []const U8): BOOL;
+var y: []const U8;
 begin
     y := Str.trim(x);
     if LEN(y) = 0 then return false; end;
@@ -616,7 +618,7 @@ begin
 end;
 
 (* Whether s holds any of the bytes of any. *)
-proc holds(s, any: []U8): BOOL;
+proc holds(s, any: []const U8): BOOL;
 var i: INT;
 begin
     for i := 0 to LEN(any) - 1 do
@@ -633,8 +635,8 @@ end;
    comments or decorators just above counts. In C, a line of bare words
    just above, at the same indentation, is the type K&R puts on a line
    of its own, and is taken in first. *)
-proc defStart(l: [][]U8; n: INT; pas, c: BOOL): INT;
-var t, open: []U8; m: INT;
+proc defStart(l: [][]const U8; n: INT; pas, c: BOOL): INT;
+var t, open: []const U8; m: INT;
 begin
     if c and (n > 0) and not blank(l[n - 1]) and (indent(l[n - 1]) = indent(l[n])) and
         not holds(l[n - 1], "(;{}=#/*") then
@@ -672,8 +674,8 @@ end;
    string ("src/**/x"), is passed over, rather than taking the rest of
    the file for a comment. Pascal's and raz's comments are (* *), the
    others' /* */. *)
-proc after(line: []U8; open, pas: BOOL): BOOL;
-var t, opener, closer: []U8; i: INT;
+proc after(line: []const U8; open, pas: BOOL): BOOL;
+var t, opener, closer: []const U8; i: INT;
 begin
     opener := "/*";
     closer := "*/";
@@ -694,8 +696,8 @@ end;
 
 (* The declarations of the file at path, a line each, numbered, under
    its path; nothing for a file with none. *)
-proc outlineFile(s: ^Source; path: []U8; out: ^Buf.Buf);
-var l: [][]U8; text: []U8; n, hits: INT; md, pas, open, inside: BOOL;
+proc outlineFile(s: ^Source; path: []const U8; out: ^Buf.Buf);
+var l: [][]const U8; text: []const U8; n, hits: INT; md, pas, open, inside: BOOL;
 begin
     if not load(s, path) then return; end;
     l := Lines.all(s^.lines);
@@ -720,17 +722,17 @@ end;
 (* The declarations of the file dir, or of each file under it, as
    outlineFile gives them; at most room bytes of them, cut at a line,
    and a note of where to look instead. *)
-proc outline*(dir: []U8; room: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var s: Source; w: Walk; p: []U8; start: INT; ok: BOOL;
+proc outline*(dir: []const U8; room: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var s: Source; w: Walk; p: []const U8; start: INT; ok: BOOL;
 begin
-    init(ADR(s), mem);
+    init(SYSTEM.ADR(s), mem);
     start := out^.len;
-    open(ADR(w), dir);
-    defer close(ADR(w));
-    p, ok := next(ADR(w));
+    open(SYSTEM.ADR(w), dir);
+    defer close(SYSTEM.ADR(w));
+    p, ok := next(SYSTEM.ADR(w));
     while ok and (out^.len - start <= room) do
-        outlineFile(ADR(s), p, out);
-        p, ok := next(ADR(w));
+        outlineFile(SYSTEM.ADR(s), p, out);
+        p, ok := next(SYSTEM.ADR(w));
     end;
     if out^.len - start > room - 100 then
         out^.len := start + room - 100;
@@ -748,7 +750,7 @@ end;
 
 (* Whether the declared name is name, small already, case aside, or
    ends in it after a dot: Bar finds TFoo.Bar. *)
-proc names(declared, name: []U8): BOOL;
+proc names(declared, name: []const U8): BOOL;
 var k: INT;
 begin
     if Str.eqFold(declared, name) then return true; end;
@@ -760,8 +762,8 @@ end;
    first, numbered as read numbers lines, under "path:first-last"; the
    count kept in found, which stops at MaxDefs. A file whose text never
    says the name is passed over before it is cut into lines. *)
-proc defsIn(s: ^Source; path, name: []U8; found: ^INT; out: ^Buf.Buf);
-var l: [][]U8; n, a, b, k: INT; md, pas, open, inside: BOOL;
+proc defsIn(s: ^Source; path, name: []const U8; found: ^INT; out: ^Buf.Buf);
+var l: [][]const U8; n, a, b, k: INT; md, pas, open, inside: BOOL;
 begin
     if not load(s, path) or (Str.find(lowered(s), name) < 0) then return; end;
     l := Lines.all(s^.lines);
@@ -798,8 +800,8 @@ end;
 
 (* Every definition of name in the file dir, or in the files under it,
    as defsIn gives them: how many, at most MaxDefs. *)
-proc defs*(dir, name: []U8; mem: ^Mem.Allocator; out: ^Buf.Buf): INT;
-var s: Source; w: Walk; low: Buf.Buf; p, small: []U8; found: INT; ok: BOOL;
+proc defs*(dir, name: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf): INT;
+var s: Source; w: Walk; low: Buf.Buf; p: []const U8; small: []U8; found: INT; ok: BOOL;
 begin
     Buf.init(low, mem);
     Buf.str(low, Str.trim(name));
@@ -807,13 +809,13 @@ begin
     Str.lower(small);
     found := 0;
     if LEN(small) = 0 then return 0; end;
-    init(ADR(s), mem);
-    open(ADR(w), dir);
-    defer close(ADR(w));
-    p, ok := next(ADR(w));
+    init(SYSTEM.ADR(s), mem);
+    open(SYSTEM.ADR(w), dir);
+    defer close(SYSTEM.ADR(w));
+    p, ok := next(SYSTEM.ADR(w));
     while ok and (found < MaxDefs) do
-        defsIn(ADR(s), p, small, ADR(found), out);
-        p, ok := next(ADR(w));
+        defsIn(SYSTEM.ADR(s), p, small, SYSTEM.ADR(found), out);
+        p, ok := next(SYSTEM.ADR(w));
     end;
     return found;
 end;
@@ -822,7 +824,7 @@ end;
 
 var failed: BOOL; mem: Arena.Arena;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     Out.str("Afind: ");
@@ -835,8 +837,8 @@ begin
     failed := true;
 end;
 
-proc result(b: ^Buf.Buf): []U8;
-var s: []U8;
+proc result(b: ^Buf.Buf): []const U8;
+var s: []const U8;
 begin
     s := Buf.bytes(b^);
     Buf.init(b^, Heap.heap);
@@ -846,8 +848,8 @@ end;
 
 (* The first line declared in text, as a file named path, and the
    definition's lines, from 1: "name first-last". *)
-proc decl(path, text: []U8): []U8;
-var l: Lines.Vec; b: Buf.Buf; t: []U8; at, j, n: INT; md, pas: BOOL;
+proc decl(path, text: []const U8): []const U8;
+var l: Lines.Vec; b: Buf.Buf; t: []const U8; at, j, n: INT; md, pas: BOOL;
 begin
     Lines.init(l, Heap.heap);
     Buf.init(b, Heap.heap);
@@ -865,9 +867,9 @@ begin
         if LEN(t) > 0 then
             Buf.str(b, t);
             Buf.add(b, ' ');
-            int(ADR(b), defStart(Lines.all(l), n, pas, cish(path)) + 1);
+            int(SYSTEM.ADR(b), defStart(Lines.all(l), n, pas, cish(path)) + 1);
             Buf.add(b, '-');
-            int(ADR(b), defEnd(Lines.all(l), n, md, pas) + 1);
+            int(SYSTEM.ADR(b), defEnd(Lines.all(l), n, md, pas) + 1);
             return Buf.bytes(b);
         end;
     end;
@@ -875,7 +877,7 @@ begin
 end;
 
 proc main*: INT;
-var b: Buf.Buf; dir: []U8; n: INT;
+var b: Buf.Buf; dir: []const U8; n: INT;
 begin
     if not Arena.init(mem, 1 shl 26) then return 1; end;
     Buf.init(b, Heap.heap);
@@ -912,31 +914,31 @@ begin
     if Sys.setWorkDir("build/find") # 0 then Out.str("Afind: no build/find\n"); return 1; end;
     Afence.init;
 
-    find(".", "*.c", ADR(b));
-    expect("find", result(ADR(b)), "src/a.c\n");
-    find(".", "*feature*", ADR(b));
-    expect("find, a directory's name", result(ADR(b)), "src/feature/x.py\n");
-    find("src", "src/*/*.py", ADR(b));
-    expect("find, a path", result(ADR(b)), "src/feature/x.py\n");
-    find(".", "*.java", ADR(b));
-    expect("find, none", result(ADR(b)), "no files");
-    find("gen", "*", ADR(b));
-    expect("find, an ignored directory asked for", result(ADR(b)), "gen/g.c\n");
+    find(".", "*.c", SYSTEM.ADR(b));
+    expect("find", result(SYSTEM.ADR(b)), "src/a.c\n");
+    find(".", "*feature*", SYSTEM.ADR(b));
+    expect("find, a directory's name", result(SYSTEM.ADR(b)), "src/feature/x.py\n");
+    find("src", "src/*/*.py", SYSTEM.ADR(b));
+    expect("find, a path", result(SYSTEM.ADR(b)), "src/feature/x.py\n");
+    find(".", "*.java", SYSTEM.ADR(b));
+    expect("find, none", result(SYSTEM.ADR(b)), "no files");
+    find("gen", "*", SYSTEM.ADR(b));
+    expect("find, an ignored directory asked for", result(SYSTEM.ADR(b)), "gen/g.c\n");
 
-    grep(".", "ADD", "", true, 0, ADR(mem.base), ADR(b));
-    expect("grep", result(ADR(b)), "src/a.c:2: add(int a, int b)\nsrc/feature/x.py:1: def add(a):\n");
-    grep("src/a.c", "return", "", false, 1, ADR(mem.base), ADR(b));
-    expect("grep, context", result(ADR(b)), "src/a.c-3- {\nsrc/a.c:4:     return a + b;\nsrc/a.c-5- }\n");
-    grep(".", "add", "*.py", false, 0, ADR(mem.base), ADR(b));
-    expect("grep, a glob", result(ADR(b)), "src/feature/x.py:1: def add(a):\n");
-    grep(".", "nowhere", "", false, 0, ADR(mem.base), ADR(b));
-    expect("grep, none", result(ADR(b)), "no matches");
+    grep(".", "ADD", "", true, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("grep", result(SYSTEM.ADR(b)), "src/a.c:2: add(int a, int b)\nsrc/feature/x.py:1: def add(a):\n");
+    grep("src/a.c", "return", "", false, 1, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("grep, context", result(SYSTEM.ADR(b)), "src/a.c-3- {\nsrc/a.c:4:     return a + b;\nsrc/a.c-5- }\n");
+    grep(".", "add", "*.py", false, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("grep, a glob", result(SYSTEM.ADR(b)), "src/feature/x.py:1: def add(a):\n");
+    grep(".", "nowhere", "", false, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("grep, none", result(SYSTEM.ADR(b)), "no matches");
 
-    outline(".", 32000, ADR(mem.base), ADR(b));
-    expect("outline", result(ADR(b)), "src/a.c:\n    2\tadd(int a, int b)\nsrc/feature/x.py:\n    1\tdef add(a):\n" +
+    outline(".", 32000, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("outline", result(SYSTEM.ADR(b)), "src/a.c:\n    2\tadd(int a, int b)\nsrc/feature/x.py:\n    1\tdef add(a):\n" +
         "src/m.raz:\n    4\tmodule M;\n    5\tconst X = \"(* \";\n    6\ttype T = INT;\n");
-    n := defs(".", "Add", ADR(mem.base), ADR(b));
-    expect("def", result(ADR(b)), "src/a.c:1-5\n    1\tint\n    2\tadd(int a, int b)\n    3\t{\n" +
+    n := defs(".", "Add", SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    expect("def", result(SYSTEM.ADR(b)), "src/a.c:1-5\n    1\tint\n    2\tadd(int a, int b)\n    3\t{\n" +
         "    4\t    return a + b;\n    5\t}\nsrc/feature/x.py:1-2\n    1\tdef add(a):\n    2\t    return a\n");
     if n # 2 then Out.str("Afind: def counts wrong\n"); failed := true; end;
     _ := Sys.setWorkDir(dir);

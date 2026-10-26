@@ -30,6 +30,7 @@
    Heap. *)
 module Aboard;
 import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row);
+import SYSTEM;
 
 type
     Kind* = (user, reply, tool, info, error);
@@ -88,11 +89,11 @@ end;
 proc last*: ^Entry;
 begin
     if entries.len = 0 then return nil; end;
-    return ADR(Entries.all(entries)[entries.len - 1]);
+    return SYSTEM.ADR(Entries.all(entries)[entries.len - 1]);
 end;
 
 (* A new entry of kind k saying s, at the end. *)
-proc push*(k: Kind; s: []U8): ^Entry;
+proc push*(k: Kind; s: []const U8): ^Entry;
 var e: ^Entry;
 begin
     e := Entries.add(entries);
@@ -107,7 +108,7 @@ end;
 
 (* A piece of the model's text, added to the reply it goes on, or the
    start of a new one if something came between. *)
-proc reply*(s: []U8);
+proc reply*(s: []const U8);
 var e: ^Entry;
 begin
     e := last();
@@ -116,7 +117,7 @@ begin
 end;
 
 (* A tool call, about to run. *)
-proc call*(name, args: []U8);
+proc call*(name, args: []const U8);
 begin
     Buf.str(push(tool, name)^.args, args);
 end;
@@ -129,13 +130,13 @@ var e: []Entry; i: INT;
 begin
     e := all();
     for i := 0 to LEN(e) - 1 do
-        if (e[i].kind = tool) and not e[i].done then return ADR(e[i]); end;
+        if (e[i].kind = tool) and not e[i].done then return SYSTEM.ADR(e[i]); end;
     end;
     return nil;
 end;
 
 (* res, the result of the call running. *)
-proc result*(res: []U8);
+proc result*(res: []const U8);
 var e: ^Entry;
 begin
     e := running();
@@ -145,7 +146,7 @@ begin
 end;
 
 (* The diff a question about the newest call shows, which opens it. *)
-proc detail*(d: []U8);
+proc detail*(d: []const U8);
 var e: ^Entry;
 begin
     e := last();
@@ -200,8 +201,8 @@ end;
 (* The row of the transcript row is next: drawn if it is in the part
    shown, pre in bar, then text from a to b, piece by piece in its
    looks. *)
-proc emit(pre: []U8; bar: Look; a, b: INT);
-var r, col, limit, x: INT; s, l: []U8;
+proc emit(pre: []const U8; bar: Look; a, b: INT);
+var r, col, limit, x: INT; s, l: []const U8;
 begin
     if keeping then
         Rows.push(flatRows, {a: flatText.len, b: flatText.len + b - a, x: TuiScreen.columns(pre), join: joinNext});
@@ -226,8 +227,8 @@ end;
 (* The line in text wrapped at w columns, at a blank where there is
    one in the row, else where the row is full; the blanks a row breaks
    at are left out of the next. *)
-proc wrap(pre: []U8; bar: Look; w: INT);
-var s: []U8; a, i, cols, blank, n: INT; c: I32;
+proc wrap(pre: []const U8; bar: Look; w: INT);
+var s: []const U8; a, i, cols, blank, n: INT; c: I32;
 begin
     s := Buf.bytes(text);
     if w < 8 then w := 8; end;
@@ -259,7 +260,7 @@ end;
 
 (* s added to the line being laid out, in look l; a tab as four
    blanks. *)
-proc add(s: []U8; l: Look);
+proc add(s: []const U8; l: Look);
 var i, k: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -282,8 +283,8 @@ begin
 end;
 
 (* Each line of s wrapped after pre, in look l. *)
-proc lines(s, pre: []U8; bar, l: Look; w: INT);
-var line: []U8; ok: BOOL;
+proc lines(s, pre: []const U8; bar, l: Look; w: INT);
+var line: []const U8; ok: BOOL;
 begin
     repeat
         line, s, ok := Str.cut(s, "\n");
@@ -295,8 +296,8 @@ end;
 
 (* Each line of s wrapped after pre, coloured as a diff's: added lines
    green, taken lines red, a hunk's head in its own, the rest dim. *)
-proc diff(s, pre: []U8; w: INT);
-var line: []U8; l: Look; ok: BOOL;
+proc diff(s, pre: []const U8; w: INT);
+var line: []const U8; l: Look; ok: BOOL;
 begin
     repeat
         line, s, ok := Str.cut(s, "\n");
@@ -313,7 +314,7 @@ end;
 
 (* A reply's line, as markdown, into text and looks; fence says whether
    a block of code is open, before and after. *)
-proc markdown(line: []U8; fence: ^BOOL);
+proc markdown(line: []const U8; fence: ^BOOL);
 var h, i: INT; bold, quoted: BOOL; l: Look;
 begin
     start();
@@ -349,7 +350,7 @@ begin
 end;
 
 (* s on one line: its line breaks and tabs as blanks. *)
-proc flat(s: []U8; l: Look);
+proc flat(s: []const U8; l: Look);
 var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -358,7 +359,7 @@ begin
 end;
 
 (* How many lines s has, a last one without its line feed counted. *)
-proc count(s: []U8): INT;
+proc count(s: []const U8): INT;
 var i, n: INT;
 begin
     n := 0;
@@ -372,7 +373,7 @@ end;
 (* The start of text, as the line being laid out, cut to what fits in
    w columns. *)
 proc fit(w: INT);
-var s: []U8; i, cols, n: INT; c: I32;
+var s: []const U8; i, cols, n: INT; c: I32;
 begin
     s := Buf.bytes(text);
     i := 0;
@@ -392,7 +393,7 @@ end;
    room for what came of it: running, its result if it is a line, or
    how many lines came; a failure in red. *)
 proc header(e: ^Entry; w: INT);
-var sum: Buf.Buf; res: []U8; n: INT; l: Look;
+var sum: Buf.Buf; res: []const U8; n: INT; l: Look;
 begin
     Buf.init(sum, Heap.heap);
     defer Buf.done(sum);
@@ -422,7 +423,7 @@ begin
 end;
 
 (* The first max lines of s, and how many were left out. *)
-proc head(s: []U8; max: INT): ([]U8, INT);
+proc head(s: []const U8; max: INT): ([]const U8, INT);
 var i, n: INT;
 begin
     n := 0;
@@ -437,9 +438,9 @@ end;
 
 (* Entry i laid out at w columns, its rows counted from row on. *)
 proc layout(i: INT; w: INT);
-var e: ^Entry; s, line: []U8; fence, ok: BOOL; more: INT; note: Buf.Buf;
+var e: ^Entry; s, line: []const U8; fence, ok: BOOL; more: INT; note: Buf.Buf;
 begin
-    e := ADR(all()[i]);
+    e := SYSTEM.ADR(all()[i]);
     s := Buf.bytes(e^.text);
     match e^.kind of
     | user:
@@ -454,7 +455,7 @@ begin
         fence := false;
         repeat
             line, s, ok := Str.cut(s, "\n");
-            markdown(line, ADR(fence));
+            markdown(line, SYSTEM.ADR(fence));
             wrap(ReplyBar, dim, w - 2);
         until not ok;
     | tool:
@@ -538,7 +539,7 @@ begin
 end;
 
 (* Row i's text. *)
-proc rowText*(i: INT): []U8;
+proc rowText*(i: INT): []const U8;
 var r: Row;
 begin
     r := Rows.all(flatRows)[i];
@@ -547,15 +548,15 @@ end;
 
 (* The board drawn on a screen of cols by rows, back rows back, as
    text, matched with want; false, and both said, if they differ. *)
-proc expect(what: []U8; cols, rows, back: INT; want: []U8): BOOL;
+proc expect(what: []const U8; cols, rows, back: INT; want: []const U8): BOOL;
 var s: TuiScreen.Screen; b: Buf.Buf; got: INT;
 begin
-    TuiScreen.init(ADR(s), cols, rows);
-    defer TuiScreen.done(ADR(s));
+    TuiScreen.init(SYSTEM.ADR(s), cols, rows);
+    defer TuiScreen.done(SYSTEM.ADR(s));
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    got := draw(ADR(s), {row: 0, col: 0, rows: rows, cols: cols}, back);
-    TuiScreen.plain(ADR(s), ADR(b));
+    got := draw(SYSTEM.ADR(s), {row: 0, col: 0, rows: rows, cols: cols}, back);
+    TuiScreen.plain(SYSTEM.ADR(s), SYSTEM.ADR(b));
     Fmt.write(b, "back {}\n", [Fmt.int(got)]);
     if Buf.bytes(b) = want then return true; end;
     Fmt.print("Aboard: {}: got\n{}want\n{}", [Fmt.str(what), Fmt.str(Buf.bytes(b)), Fmt.str(want)]);

@@ -25,13 +25,14 @@
    Depends on Sys, Buf and Str. *)
 module Afence;
 import Buf, Str, Sys, Heap, Rt, Out, Strs := Vec([]U8);
+import SYSTEM;
 
 const
-    Marks: [][]U8 = [".git", ".sauce", ".hg", ".jj", ".svn"];
+    Marks: []const []const U8 = [".git", ".sauce", ".hg", ".jj", ".svn"];
     MaxHops = 40;   (* links followed in a path, as the kernel's own ELOOP limit *)
 
 var
-    zone*: []U8;           (* resolved; set by init *)
+    zone*: []const U8;           (* resolved; set by init *)
     scratch*: []U8;        (* resolved, from Heap; set by useScratch, "" before *)
     rooted*: BOOL;         (* zone holds a mark, rather than being the bare working directory *)
     grants: Strs.Vec;      (* the directories granted, resolved, each from Heap *)
@@ -39,7 +40,7 @@ var
 
 (* b cut to its last '/': "/a/b" to "/a", and "/a" to "". *)
 proc up(b: ^Buf.Buf);
-var s: []U8;
+var s: []const U8;
 begin
     s := Buf.bytes(b^);
     b^.len := Str.findLast(s, "/");
@@ -52,8 +53,8 @@ end;
    is the parent of where link points, as the kernel has it. A part
    that is a link is put back as its target, in front of rest; an
    absolute target starts again from "/". *)
-proc resolve*(path: []U8; b: ^Buf.Buf);
-var rest, next: Buf.Buf; s, c, t, dir: []U8; at, i, hops, keep, e: INT;
+proc resolve*(path: []const U8; b: ^Buf.Buf);
+var rest, next: Buf.Buf; s, c, t, dir: []const U8; at, i, hops, keep, e: INT;
 begin
     Buf.init(rest, Heap.heap);
     defer Buf.done(rest);
@@ -98,12 +99,12 @@ end;
 
 (* Whether p is base or below it, both resolved: the '/' after the
    prefix keeps /r/arno2 out of /r/arno. *)
-proc within*(p, base: []U8): BOOL;
+proc within*(p, base: []const U8): BOOL;
 begin
     return (base = "/") or (p = base) or Str.hasPrefix(p, base) and (p[LEN(base)] = '/');
 end;
 
-proc keep(s: []U8): []U8;
+proc keep(s: []const U8): []U8;
 var c: []U8; ok: BOOL;
 begin
     c, ok := Str.copy(Heap.heap, s);
@@ -130,7 +131,7 @@ begin
     defer Buf.done(mark);
     if not ready then Strs.init(grants, Heap.heap); ready := true; end;
     forget;
-    resolve(".", ADR(b));
+    resolve(".", SYSTEM.ADR(b));
     zone := keep(Buf.bytes(b));
     rooted := false;
     for levels := 0 to 2 do
@@ -146,18 +147,18 @@ begin
             end;
         end;
         if b.len = 1 then return; end;
-        up(ADR(b));
+        up(SYSTEM.ADR(b));
         if b.len = 0 then Buf.add(b, '/'); end;
     end;
 end;
 
 (* Whether path is in the zone, in the scratch directory, or under a grant. *)
-proc inside*(path: []U8): BOOL;
-var b: Buf.Buf; p: []U8; g: [][]U8; i: INT;
+proc inside*(path: []const U8): BOOL;
+var b: Buf.Buf; p: []const U8; g: [][]U8; i: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, ADR(b));
+    resolve(path, SYSTEM.ADR(b));
     p := Buf.bytes(b);
     if within(p, zone) then return true; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
@@ -170,12 +171,12 @@ end;
 
 (* path, resolved, the conversation's scratch directory from now on;
    the one before it is let go. *)
-proc useScratch*(path: []U8);
+proc useScratch*(path: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, ADR(b));
+    resolve(path, SYSTEM.ADR(b));
     if LEN(scratch) > 0 then Str.free(Heap.heap, scratch); end;
     scratch := keep(Buf.bytes(b));
 end;
@@ -187,24 +188,24 @@ end;
    contents with a name elsewhere, maybe the human's; raz's Sys.Info
    has no link count yet (proposed to raz as Info.links), so until
    then that isn't checked. *)
-proc ours*(path: []U8): BOOL;
+proc ours*(path: []const U8): BOOL;
 var b: Buf.Buf;
 begin
     if LEN(scratch) = 0 then return false; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, ADR(b));
+    resolve(path, SYSTEM.ADR(b));
     return within(Buf.bytes(b), scratch);
 end;
 
 (* path, and everything below it, inside for the rest of the run;
    after init. *)
-proc grant*(path: []U8);
+proc grant*(path: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, ADR(b));
+    resolve(path, SYSTEM.ADR(b));
     Strs.push(grants, keep(Buf.bytes(b)));
 end;
 
@@ -212,7 +213,7 @@ end;
 
 var failed: BOOL;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     Out.str("Afence: ");
@@ -225,16 +226,16 @@ begin
     failed := true;
 end;
 
-proc resolved(path: []U8): []U8;
+proc resolved(path: []const U8): []const U8;
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
-    resolve(path, ADR(b));
+    resolve(path, SYSTEM.ADR(b));
     return Buf.bytes(b);
 end;
 
 (* s and t, joined *)
-proc cat(s, t: []U8): []U8;
+proc cat(s, t: []const U8): []const U8;
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
@@ -243,14 +244,14 @@ begin
     return Buf.bytes(b);
 end;
 
-proc yes(b: BOOL): []U8;
+proc yes(b: BOOL): []const U8;
 begin
     if b then return "yes"; end;
     return "no";
 end;
 
 proc main*: INT;
-var top, dir: []U8;
+var top, dir: []const U8;
 begin
     _ := Sys.makeDir("build");
     _ := Sys.makeDir("build/fence");

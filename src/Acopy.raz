@@ -38,6 +38,7 @@
    out the mouse, and vi's counts. *)
 module Acopy;
 import Aboard, Aattach, TuiLoop, TuiScreen, TuiMap, TuiKeys, TuiLine, Term, Buf, Str, Heap, Fmt, Rt;
+import SYSTEM;
 
 type
     Sel = (none, letters, rows);
@@ -66,7 +67,7 @@ begin
 end;
 
 (* Where the k-th character of t starts, or its end if there are fewer. *)
-proc byteAt(t: []U8; k: INT): INT;
+proc byteAt(t: []const U8; k: INT): INT;
 var i: INT;
 begin
     i := 0;
@@ -80,7 +81,7 @@ end;
 
 (* The column of row i's k-th character. *)
 proc column(i, k: INT): INT;
-var t: []U8;
+var t: []const U8;
 begin
     t := Aboard.rowText(i);
     return Aboard.rowAt(i).x + TuiScreen.columns(t[0..byteAt(t, k)]);
@@ -106,7 +107,7 @@ end;
 (* What kind of character the cursor's at (k) is: 0 a blank or the end of
    the row, 1 a word's, 2 another mark. *)
 proc kind(i, k: INT): INT;
-var t: []U8; b: U8;
+var t: []const U8; b: U8;
 begin
     t := Aboard.rowText(i);
     k := byteAt(t, k);
@@ -191,7 +192,7 @@ end;
 
 (* Whether row i holds the pattern from its byte from on: where, or -1. *)
 proc findIn(i, from: INT): INT;
-var t, q: []U8; k: INT;
+var t, q: []const U8; k: INT;
 begin
     t := Aboard.rowText(i);
     q := Buf.bytes(pattern);
@@ -204,7 +205,7 @@ end;
 (* The cursor on the pattern's next place onward (on) or back, round the
    ends; said if there is none. *)
 proc find(on: BOOL);
-var i, n, k, limit, at: INT; t: []U8;
+var i, n, k, limit, at: INT; t: []const U8;
 begin
     if (pattern.len = 0) or (total = 0) then return; end;
     for n := 0 to total do
@@ -244,20 +245,20 @@ begin
 end;
 
 (* s sent to the terminal, for its clipboard, by OSC 52. *)
-proc clip(s: []U8);
+proc clip(s: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     Buf.str(b, "\x1b]52;c;");
-    Aattach.base64(ADR(b), s);
+    Aattach.base64(SYSTEM.ADR(b), s);
     Buf.add(b, 7);
     TuiLoop.send(Buf.bytes(b));
 end;
 
 (* What is selected copied, or the cursor's line, and copy mode left. *)
 proc copy(_n: INT);
-var b: Buf.Buf; l1, c1, l2, c2, i, lo, hi: INT; t: []U8; r: Aboard.Row;
+var b: Buf.Buf; l1, c1, l2, c2, i, lo, hi: INT; t: []const U8; r: Aboard.Row;
 begin
     if total = 0 then on := false; return; end;
     if sel = none then
@@ -429,13 +430,13 @@ end;
 proc searchOn(_n: INT);
 begin
     ahead := true;
-    TuiLine.start(ADR(finding), " search: ", "", nil);
+    TuiLine.start(SYSTEM.ADR(finding), " search: ", "", nil);
 end;
 
 proc searchBack(_n: INT);
 begin
     ahead := false;
-    TuiLine.start(ADR(finding), " search back: ", "", nil);
+    TuiLine.start(SYSTEM.ADR(finding), " search back: ", "", nil);
 end;
 
 proc again(_n: INT);
@@ -475,7 +476,7 @@ begin
     if top < 0 then top := 0; end;
     l := top + height - 1;
     c := 0;
-    TuiMap.reset(ADR(reader));
+    TuiMap.reset(SYSTEM.ADR(reader));
     clamp();
 end;
 
@@ -486,7 +487,7 @@ begin
 end;
 
 (* What copy mode said last: why a search failed, or how much it copied. *)
-proc saying*: []U8;
+proc saying*: []const U8;
 begin
     return Buf.bytes(said);
 end;
@@ -498,17 +499,17 @@ begin
     Buf.reset(said);
     if finding.open then
         out := TuiLine.givenUp;
-        if ev.key # TuiKeys.Esc then out := TuiLine.key(ADR(finding), ev); end;
+        if ev.key # TuiKeys.Esc then out := TuiLine.key(SYSTEM.ADR(finding), ev); end;
         if out # TuiLine.going then finding.open := false; end;
         if out = TuiLine.taken then
-            if LEN(TuiLine.value(ADR(finding))) > 0 then
+            if LEN(TuiLine.value(SYSTEM.ADR(finding))) > 0 then
                 Buf.reset(pattern);
-                Buf.str(pattern, TuiLine.value(ADR(finding)));
+                Buf.str(pattern, TuiLine.value(SYSTEM.ADR(finding)));
             end;
             find(ahead);
         end;
     else
-        _ := TuiMap.feed(ADR(reader), ADR(map), ev.key);
+        _ := TuiMap.feed(SYSTEM.ADR(reader), SYSTEM.ADR(map), ev.key);
     end;
     if on then clamp(); end;
     return on;
@@ -559,17 +560,17 @@ end;
 proc rule*(s: ^TuiScreen.Screen; r: INT): BOOL;
 begin
     if not finding.open then return false; end;
-    TuiLine.draw(ADR(finding), s, r, 0);
+    TuiLine.draw(SYSTEM.ADR(finding), s, r, 0);
     return true;
 end;
 
 (* Each of k bound to command, in emacs's way of writing keys, in which
    copy mode's are written, vi's letters among them. *)
-proc keys(command: []U8; k: [][]U8);
+proc keys(command: []const U8; k: [][]const U8);
 var i: INT;
 begin
     for i := 0 to LEN(k) - 1 do
-        if TuiMap.bind(ADR(map), TuiKeys.emacs, k[i], command) # nil then Rt.stop(command); end;
+        if TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, k[i], command) # nil then Rt.stop(command); end;
     end;
 end;
 
@@ -603,7 +604,7 @@ begin
     TuiMap.define("copy-again-back", "the search again, the other way", againBack);
     TuiMap.define("copy-drop", "the selection dropped; with none, copy mode left", drop);
     TuiMap.define("copy-leave", "copy mode left", leave);
-    TuiMap.init(ADR(map), "copy", nil);
+    TuiMap.init(SYSTEM.ADR(map), "copy", nil);
     keys("copy-left", ["C-b", "h", "<left>"]);
     keys("copy-right", ["C-f", "l", "<right>"]);
     keys("copy-up", ["C-p", "k", "<up>"]);
@@ -638,7 +639,7 @@ proc init;
 begin
     Buf.init(pattern, Heap.heap);
     Buf.init(said, Heap.heap);
-    TuiLine.init(ADR(finding));
+    TuiLine.init(SYSTEM.ADR(finding));
     define();
 end;
 

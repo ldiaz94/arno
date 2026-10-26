@@ -14,6 +14,7 @@
    peak, which the status line and the turns' ledger show, in stage 3. *)
 module Aprice;
 import Awire, Str, Math, Out;
+import SYSTEM;
 
 type
     Price* = record
@@ -22,7 +23,7 @@ type
     end;
 
     Listed = record
-        model: []U8;
+        model: []const U8;
         inp, cached, out: F64;
         window: I64;
     end;
@@ -62,7 +63,7 @@ const
         {model: "nemotron-3-ultra:cloud", inp: 0.10, cached: 0.1, out: 3.0, window: 262144}];
 
 (* The row of model in Table, or -1. *)
-proc row(model: []U8): INT;
+proc row(model: []const U8): INT;
 var i: INT;
 begin
     for i := 0 to LEN(Table) - 1 do
@@ -80,7 +81,7 @@ end;
    if that is listed: a snapshot of a model is sold at the model's
    price. *)
 proc price*(p: ^Awire.Prov): (Price, BOOL);
-var pr: Price; w, rest, before: []U8; vals: [3]F64; i, n: INT; window: I64; known, ok: BOOL;
+var pr: Price; w, rest, before: []const U8; vals: [3]F64; i, n: INT; window: I64; known, ok: BOOL;
 begin
     pr := {};
     i := row(p^.model);
@@ -124,20 +125,20 @@ proc main*: INT;
 var p: Awire.Prov; pr: Price; known: BOOL;
 begin
     p := {model: "deepseek-v4-pro:0813"};
-    pr, known := price(ADR(p));
+    pr, known := price(SYSTEM.ADR(p));
     if not known or (pr.inp # 1.32) then Out.str("Aprice: a tagged name\n"); return 1; end;
     if cost(pr, {inp: 1000000, cached: 500000, out: 1000000}) # 0.66 + 0.022 + 3.96 then
         Out.str("Aprice: cost\n");
         return 1;
     end;
     p := {model: "mine", params: ["price=2 8", "context_window=4096"]};
-    pr, known := price(ADR(p));
+    pr, known := price(SYSTEM.ADR(p));
     if not known or (pr.cached # 0.2) or (pr.out # 8.0) or (pr.window # 4096) then
         Out.str("Aprice: config's price\n");
         return 1;
     end;
     p := {model: "mine"};
-    _, known := price(ADR(p));
+    _, known := price(SYSTEM.ADR(p));
     if known then Out.str("Aprice: a price made up\n"); return 1; end;
     return 0;
 end;

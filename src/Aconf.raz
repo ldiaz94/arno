@@ -33,7 +33,8 @@
    Depends on Awire, for Prov. Leaves out what each key of the rest of
    arno means. *)
 module Aconf;
-import Awire, Amsg, Buf, Str, Sys, Files, Heap, Out, Strs := Vec([]U8);
+import Awire, Amsg, Buf, Str, Sys, Files, Heap, Mem, Out, Strs := Vec([]const U8);
+import SYSTEM;
 
 type
     Conf* = record
@@ -46,7 +47,7 @@ type
 
 const
     (* the keys the rest of arno reads, which are no provider's param *)
-    Known: [][]U8 = ["worker", "max_steps", "prune", "turn_budget", "mode", "searxng", "test_cmd", "stage",
+    Known: []const []const U8 = ["worker", "max_steps", "prune", "turn_budget", "mode", "searxng", "test_cmd", "stage",
         "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
         "trust", "grant", "context_files", "project_map", "prefetch", "mcp"];
 
@@ -59,14 +60,17 @@ begin
     Strs.init(c^.keys, Heap.heap);
     Strs.init(c^.values, Heap.heap);
     Strs.init(c^.params, Heap.heap);
-    _ := Awire.preset("ollama", ADR(c^.prov));
+    _ := Awire.preset("ollama", SYSTEM.ADR(c^.prov));
 end;
 
 proc dropParams(c: ^Conf);
-var i: INT; p: [][]U8;
+var i: INT; p: [][]const U8;
 begin
     p := Strs.all(c^.params);
-    for i := 0 to LEN(p) - 1 do Str.free(Heap.heap, p[i]); end;
+    (* kept as the []const U8 the provider reads; each is Str.copy's, so freed as it is *)
+    for i := 0 to LEN(p) - 1 do
+        if LEN(p[i]) > 0 then Mem.free(Heap.heap, SYSTEM.PTR(p[i])); end;
+    end;
     Strs.reset(c^.params);
 end;
 
@@ -82,8 +86,8 @@ begin
 end;
 
 (* The value of key, as the file last set it; "" if it doesn't. *)
-proc get*(c: ^Conf; key: []U8): []U8;
-var i: INT; keys: [][]U8;
+proc get*(c: ^Conf; key: []const U8): []const U8;
+var i: INT; keys: [][]const U8;
 begin
     keys := Strs.all(c^.keys);
     for i := LEN(keys) - 1 to 0 by -1 do
@@ -92,7 +96,7 @@ begin
     return "";
 end;
 
-proc warn(c: ^Conf; a, b: []U8);
+proc warn(c: ^Conf; a, b: []const U8);
 begin
     Buf.str(c^.warnings, "config: ");
     Buf.str(c^.warnings, a);
@@ -101,7 +105,7 @@ begin
 end;
 
 (* A param of the provider, its key and value joined by =. *)
-proc param(c: ^Conf; key, value: []U8);
+proc param(c: ^Conf; key, value: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
@@ -113,7 +117,7 @@ begin
 end;
 
 (* model's effort, as the param reasoning_effort@MODEL=level. *)
-proc effort(c: ^Conf; model, level: []U8);
+proc effort(c: ^Conf; model, level: []const U8);
 var key: Buf.Buf;
 begin
     Buf.init(key, Heap.heap);
@@ -125,7 +129,7 @@ end;
 
 (* value, a whole number of 0 or more, into n; or a warning, and n as
    it was. *)
-proc number(c: ^Conf; key, value: []U8; n: ^INT);
+proc number(c: ^Conf; key, value: []const U8; n: ^INT);
 var v: I64; ok: BOOL;
 begin
     v, ok := Str.toInt(value);
@@ -136,7 +140,7 @@ begin
     n^ := INT(v);
 end;
 
-proc known(key: []U8): BOOL;
+proc known(key: []const U8): BOOL;
 var i: INT;
 begin
     for i := 0 to LEN(Known) - 1 do
@@ -146,12 +150,12 @@ begin
 end;
 
 (* One setting, key = value, read into c. *)
-proc setting(c: ^Conf; key, value: []U8);
-var word, rest: []U8; at: INT;
+proc setting(c: ^Conf; key, value: []const U8);
+var word, rest: []const U8; at: INT;
 begin
     match key of
     | "provider":
-        if Awire.preset(value, ADR(c^.prov)) then
+        if Awire.preset(value, SYSTEM.ADR(c^.prov)) then
             dropParams(c);
         else
             warn(c, "unknown provider ", value);
@@ -162,9 +166,9 @@ begin
     | "dialect":
         c^.prov.dialect := Awire.Dialect.openai;
         if value = "anthropic" then c^.prov.dialect := Awire.Dialect.anthropic; end;
-    | "timeout": number(c, key, value, ADR(c^.prov.limit));
-    | "max_retries": number(c, key, value, ADR(c^.prov.retries));
-    | "retry_backoff": number(c, key, value, ADR(c^.prov.backoff));
+    | "timeout": number(c, key, value, SYSTEM.ADR(c^.prov.limit));
+    | "max_retries": number(c, key, value, SYSTEM.ADR(c^.prov.retries));
+    | "retry_backoff": number(c, key, value, SYSTEM.ADR(c^.prov.backoff));
     | "effort":
         (* MODEL:LEVEL ..., a model's name having colons of its own,
            as deepseek-v4.1-flash:cloud *)
@@ -181,8 +185,8 @@ end;
 
 (* text, a configuration file, read into c, made with init: c keeps
    a copy of it, which its settings are slices of. *)
-proc read*(c: ^Conf; text: []U8);
-var line, rest, key, value: []U8; more, eq: BOOL;
+proc read*(c: ^Conf; text: []const U8);
+var line, rest, key, value: []const U8; more, eq: BOOL;
 begin
     Buf.str(c^.text, text);
     rest := Buf.bytes(c^.text);
@@ -205,7 +209,7 @@ end;
 (* c made the configuration in arno's file, or the ollama preset if
    there is none. *)
 proc load*(c: ^Conf);
-var path, text: Buf.Buf; base: []U8;
+var path, text: Buf.Buf; base: []const U8;
 begin
     init(c);
     Buf.init(path, Heap.heap);
@@ -227,7 +231,7 @@ end;
 
 var failed: BOOL;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     Out.str("Aconf: ");
@@ -243,8 +247,8 @@ end;
 proc main*: INT;
 var c: Conf; b: Buf.Buf;
 begin
-    init(ADR(c));
-    read(ADR(c), `
+    init(SYSTEM.ADR(c));
+    read(SYSTEM.ADR(c), `
         # arno's configuration
         temperature = 0.9
         provider = claude
@@ -270,12 +274,12 @@ begin
     Str.join(b, c.prov.params, " ");
     expect("its params, temperature dropped by the provider after it", Buf.bytes(b),
         "reasoning_effort@kimi-k3=high reasoning_effort@deepseek-v4.1-flash:cloud=low anthropic_version=2023-06-01");
-    expect("a key kept for the rest of arno", get(ADR(c), "run"), "tiza man fd");
-    expect("a key not set", get(ADR(c), "worker"), "");
+    expect("a key kept for the rest of arno", get(SYSTEM.ADR(c), "run"), "tiza man fd");
+    expect("a key not set", get(SYSTEM.ADR(c), "worker"), "");
     expect("the warnings", Buf.bytes(c.warnings),
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
-    expect("the effort for a model", Awire.param(ADR(c.prov), "reasoning_effort@kimi-k3"), "high");
-    done(ADR(c));
+    expect("the effort for a model", Awire.param(SYSTEM.ADR(c.prov), "reasoning_effort@kimi-k3"), "high");
+    done(SYSTEM.ADR(c));
     if failed then return 1; end;
     return 0;
 end;

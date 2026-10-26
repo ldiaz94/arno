@@ -17,6 +17,7 @@
    Depends on Buf, Str, Sys and Files. *)
 module Ahistory;
 import Buf, Str, Sys, Files, Heap, Out, Strs := Vec([]U8);
+import SYSTEM;
 
 const
     Max = 1000;   (* entries kept when the file is written again *)
@@ -28,7 +29,7 @@ var
     path: Buf.Buf;       (* the file; "" for none *)
 
 (* s kept, as an entry. *)
-proc keep(s: []U8);
+proc keep(s: []const U8);
 var copy: []U8; ok: BOOL;
 begin
     copy, ok := Str.copy(Heap.heap, s);
@@ -36,7 +37,7 @@ begin
 end;
 
 (* s added to b, escaped as a line of the file. *)
-proc escape(b: ^Buf.Buf; s: []U8);
+proc escape(b: ^Buf.Buf; s: []const U8);
 var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -49,7 +50,7 @@ begin
 end;
 
 (* A line of the file, unescaped, into b. *)
-proc unescape(b: ^Buf.Buf; s: []U8);
+proc unescape(b: ^Buf.Buf; s: []const U8);
 var i: INT;
 begin
     Buf.reset(b^);
@@ -67,8 +68,8 @@ end;
 
 (* The history read from file, which from now on each line sent is
    added to. *)
-proc load*(file: []U8);
-var text, line: Buf.Buf; s, l: []U8; all: [][]U8; i, n: INT;
+proc load*(file: []const U8);
+var text, line: Buf.Buf; s, l: []const U8; all: [][]U8; i, n: INT;
 begin
     Buf.reset(path);
     Buf.str(path, file);
@@ -81,7 +82,7 @@ begin
     while LEN(s) > 0 do
         l, s, _ := Str.cut(s, "\n");
         if LEN(l) = 0 then continue; end;
-        unescape(ADR(line), l);
+        unescape(SYSTEM.ADR(line), l);
         keep(Buf.bytes(line));
     end;
     at := entries.len;
@@ -95,13 +96,13 @@ begin
     at := Max;
     Buf.reset(text);
     all := Strs.all(entries);
-    for i := 0 to Max - 1 do escape(ADR(text), all[i]); end;
+    for i := 0 to Max - 1 do escape(SYSTEM.ADR(text), all[i]); end;
     _ := Files.write(file, Buf.bytes(text));
 end;
 
 (* s, a line sent, added: kept, unless it is the newest already, and
    written to the file. The input is back at the line being typed. *)
-proc add*(s: []U8);
+proc add*(s: []const U8);
 var b: Buf.Buf; fd: INT;
 begin
     at := entries.len;
@@ -111,7 +112,7 @@ begin
     if path.len = 0 then return; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    escape(ADR(b), s);
+    escape(SYSTEM.ADR(b), s);
     fd := Sys.open(Buf.bytes(path), {Sys.Access.writing, Sys.Access.creating, Sys.Access.appending});
     if fd < 0 then return; end;
     _ := Sys.write(fd, Buf.bytes(b));
@@ -128,7 +129,7 @@ end;
    text, and false, with nothing moved, if there is no such entry.
    typed is the input as it is, kept aside if it is the line being
    typed that is left. *)
-proc recall(i: INT; typed: []U8): ([]U8, BOOL);
+proc recall(i: INT; typed: []const U8): ([]const U8, BOOL);
 begin
     if (i < 0) or (i > entries.len) or (i = at) then return "", false; end;
     if at = entries.len then
@@ -141,14 +142,14 @@ begin
 end;
 
 (* The entry before the one shown, and true; false at the oldest. *)
-proc back*(typed: []U8): ([]U8, BOOL);
+proc back*(typed: []const U8): ([]const U8, BOOL);
 begin
     return recall(at - 1, typed);
 end;
 
 (* The entry after the one shown, the line being typed after the
    newest, and true; false if that is shown already. *)
-proc onward*(typed: []U8): ([]U8, BOOL);
+proc onward*(typed: []const U8): ([]const U8, BOOL);
 begin
     return recall(at + 1, typed);
 end;
@@ -156,7 +157,7 @@ end;
 (* The nearest entry before the one shown (dir -1) or after it (dir 1)
    that begins with pre and isn't typed, and true; after the newest,
    the line being typed. False if there is none. *)
-proc prefixed*(typed, pre: []U8; dir: INT): ([]U8, BOOL);
+proc prefixed*(typed, pre: []const U8; dir: INT): ([]const U8, BOOL);
 var i: INT; all: [][]U8;
 begin
     all := Strs.all(entries);
@@ -170,7 +171,7 @@ begin
 end;
 
 (* Where s holds q, ASCII letters' case aside, or -1. *)
-proc findFold(s, q: []U8): INT;
+proc findFold(s, q: []const U8): INT;
 var i: INT;
 begin
     for i := 0 to LEN(s) - LEN(q) do
@@ -183,7 +184,7 @@ end;
    its index, its text, and where q is in it; -1 if there is none, and
    nothing shown. from past the newest is the newest. typed is the
    input as it is. *)
-proc search*(q: []U8; from: INT; typed: []U8): (INT, []U8, INT);
+proc search*(q: []const U8; from: INT; typed: []const U8): (INT, []const U8, INT);
 var i, k: INT; all: [][]U8;
 begin
     all := Strs.all(entries);
@@ -207,7 +208,7 @@ end;
 
 (* The module's test. *)
 
-proc expect(what: []U8; got: []U8; ok: BOOL; want: []U8; failed: ^BOOL);
+proc expect(what: []const U8; got: []const U8; ok: BOOL; want: []const U8; failed: ^BOOL);
 begin
     if ok and (got = want) then return; end;
     Out.str("Ahistory: ");
@@ -219,7 +220,7 @@ begin
 end;
 
 proc main*: INT;
-var failed, ok: BOOL; s: []U8; i, k: INT; b: Buf.Buf;
+var failed, ok: BOOL; s: []const U8; i, k: INT; b: Buf.Buf;
 begin
     _ := Sys.makeDir("build");
     _ := Sys.remove("build/history.test");
@@ -232,25 +233,25 @@ begin
     load("build/history.test");
     if count() # 3 then Out.str("Ahistory: read back\n"); failed := true; end;
     s, ok := back("typing");
-    expect("back", s, ok, "/load x", ADR(failed));
+    expect("back", s, ok, "/load x", SYSTEM.ADR(failed));
     s, ok := back("/load x");
-    expect("back again", s, ok, "two\nlines \\ back", ADR(failed));
+    expect("back again", s, ok, "two\nlines \\ back", SYSTEM.ADR(failed));
     s, ok := onward("edited");
     s, ok := onward("/load x");
-    expect("forward to the draft", s, ok, "typing", ADR(failed));
+    expect("forward to the draft", s, ok, "typing", SYSTEM.ADR(failed));
     s, ok := onward("typing");
     if ok then Out.str("Ahistory: past the draft\n"); failed := true; end;
     s, ok := prefixed("t", "t", -1);
-    expect("prefixed", s, ok, "two\nlines \\ back", ADR(failed));
+    expect("prefixed", s, ok, "two\nlines \\ back", SYSTEM.ADR(failed));
     s, ok := prefixed(s, "t", 1);
-    expect("prefixed back to the draft", s, ok, "t", ADR(failed));
+    expect("prefixed back to the draft", s, ok, "t", SYSTEM.ADR(failed));
     i, s, k := search("ONE", count(), "x");
     if (i # 0) or (k # 0) then Out.str("Ahistory: search\n"); failed := true; end;
     i, s, k := search("lines", count(), "x");
     if (i # 1) or (k # 4) then Out.str("Ahistory: search further\n"); failed := true; end;
     Buf.init(b, Heap.heap);
     _ := Files.read("build/history.test", b);
-    expect("the file", Buf.bytes(b), true, "one\ntwo\\nlines \\\\ back\n/load x\n", ADR(failed));
+    expect("the file", Buf.bytes(b), true, "one\ntwo\\nlines \\\\ back\n/load x\n", SYSTEM.ADR(failed));
     if failed then return 1; end;
     return 0;
 end;

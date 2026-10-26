@@ -34,6 +34,7 @@
    --attach. *)
 module Arno;
 import Asession, Ascreen, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
+import SYSTEM;
 
 const Usage = `
     usage: arno
@@ -54,14 +55,14 @@ end;
 
 var ended: BOOL;   (* the last piece of the model's text ended its line *)
 
-proc show(text: []U8; _arg: ^U8);
+proc show(text: []const U8; _arg: ^U8);
 begin
     Out.str(text);
     Out.flush;
     ended := Str.hasSuffix(text, "\n");
 end;
 
-proc say(a, b, c: []U8);
+proc say(a, b, c: []const U8);
 begin
     _ := Sys.write(Sys.stderr, a);
     _ := Sys.write(Sys.stderr, b);
@@ -77,7 +78,7 @@ begin
 end;
 
 (* s's first line, cut to at most max bytes where a character starts. *)
-proc line(s: []U8; max: INT): []U8;
+proc line(s: []const U8; max: INT): []const U8;
 var n: INT;
 begin
     n := Str.find(s, "\n");
@@ -88,7 +89,7 @@ begin
     return s[0..n];
 end;
 
-proc called(name, args: []U8; _arg: ^U8);
+proc called(name, args: []const U8; _arg: ^U8);
 begin
     breakLine;
     say("\u{25B8} ", name, " ");
@@ -97,7 +98,7 @@ end;
 
 (* A result in a line: a failure's first line, which says why, or how
    many lines came. *)
-proc answered(_name, res: []U8; _arg: ^U8);
+proc answered(_name, res: []const U8; _arg: ^U8);
 var n, i: INT; digits: [20]U8;
 begin
     if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then
@@ -113,7 +114,7 @@ begin
     if n = 1 then say("  ", digits[0..i], " line\n"); else say("  ", digits[0..i], " lines\n"); end;
 end;
 
-proc told(s: []U8; _arg: ^U8);
+proc told(s: []const U8; _arg: ^U8);
 begin
     breakLine;
     say("arno: ", s, "\n");
@@ -124,7 +125,7 @@ var answer: Buf.Buf;   (* the last line read from standard input *)
 (* A line of standard input, without its line feed, into answer; false
    at the end of the input, with nothing read. A ^C while waiting for
    it drops what was typed and waits again. *)
-proc readLine: ([]U8, BOOL);
+proc readLine: ([]const U8, BOOL);
 var c: [1]U8; n: INT;
 begin
     Buf.reset(answer);
@@ -146,8 +147,8 @@ end;
 
 (* The human's answer to question, after detail: one of keys, the first
    byte of a line of standard input; 'n' for any other, or for none. *)
-proc asked(question, detail, keys: []U8; _arg: ^U8): U8;
-var s: []U8;
+proc asked(question, detail, keys: []const U8; _arg: ^U8): U8;
+var s: []const U8;
 begin
     breakLine;
     say(detail, question, " [y/N] ");
@@ -157,8 +158,8 @@ begin
 end;
 
 (* After a no, why: the next line of standard input. *)
-proc why(_arg: ^U8): []U8;
-var s: []U8;
+proc why(_arg: ^U8): []const U8;
+var s: []const U8;
 begin
     say("why not? (Enter skips) ", "", "");
     s, _ := readLine();
@@ -167,7 +168,7 @@ end;
 
 (* What a command says: to standard output; an error to standard
    error. *)
-proc shown(s: []U8; bad: BOOL; _arg: ^U8);
+proc shown(s: []const U8; bad: BOOL; _arg: ^U8);
 begin
     breakLine;
     if bad then
@@ -181,7 +182,7 @@ end;
 
 (* The session: a line at a time, until the input ends or /quit. *)
 proc session(s: ^Asession.Session): INT;
-var text: []U8; tty, more: BOOL;
+var text: []const U8; tty, more: BOOL;
 begin
     tty := Sys.isTerminal(Sys.stdin);
     Asession.prepare(s);
@@ -228,25 +229,25 @@ begin
 
     Astore.sweep;
     if (ARGC() < 2) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
-        Asession.init(ADR(s), Ascreen.front(), Ascreen.show, nil);
+        Asession.init(SYSTEM.ADR(s), Ascreen.front(), Ascreen.show, nil);
         s.changed := Ascreen.changed;
-        if Ascreen.run(ADR(s)) then return 0; end;
+        if Ascreen.run(SYSTEM.ADR(s)) then return 0; end;
         say("arno: the terminal can't be used\n", "", "");
         return 1;
     end;
     Buf.init(answer, Heap.heap);
-    Asession.init(ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
+    Asession.init(SYSTEM.ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
         stopped: interrupted}, shown, nil);
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    if ARGC() < 2 then return session(ADR(s)); end;
-    if (first = 3) and not Asession.resume(ADR(s), Files.arg(2)) then
+    if ARGC() < 2 then return session(SYSTEM.ADR(s)); end;
+    if (first = 3) and not Asession.resume(SYSTEM.ADR(s), Files.arg(2)) then
         say("arno: no conversation ", Files.arg(2), "\n");
         return 1;
     end;
-    Asession.prepare(ADR(s));
+    Asession.prepare(SYSTEM.ADR(s));
     Buf.init(failure, Heap.heap);
-    err := Asession.turn(ADR(s), Str.trim(Buf.bytes(prompt)), ADR(failure));
+    err := Asession.turn(SYSTEM.ADR(s), Str.trim(Buf.bytes(prompt)), SYSTEM.ADR(failure));
     breakLine;
     if err = Awire.Failed then say("arno: ", Buf.bytes(failure), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;

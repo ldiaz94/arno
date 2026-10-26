@@ -48,15 +48,16 @@
 module Agent;
 import Aprompt, Aahead, Aprice, Atools, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Heap, Arena, Rt, Fmt, Out,
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
+import SYSTEM;
 
 type
     (* What the agent tells its front end, and asks of it. Any
        procedure may be nil, and each gets arg. *)
     Front* = record
-        text*: proc(s: []U8; arg: ^U8);            (* a piece of the model's text, as it comes *)
-        call*: proc(name, args: []U8; arg: ^U8);   (* a tool call, about to run *)
-        result*: proc(name, res: []U8; arg: ^U8);  (* its result *)
-        note*: proc(s: []U8; arg: ^U8);            (* what arno says of the turn, a line *)
+        text*: proc(s: []const U8; arg: ^U8);            (* a piece of the model's text, as it comes *)
+        call*: proc(name, args: []const U8; arg: ^U8);   (* a tool call, about to run *)
+        result*: proc(name, res: []const U8; arg: ^U8);  (* its result *)
+        note*: proc(s: []const U8; arg: ^U8);            (* what arno says of the turn, a line *)
         ask*: Atools.Ask;                          (* the human asked; nil if nobody is there *)
         why*: Atools.Why;                          (* after a no, why; nil not to ask *)
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
@@ -71,7 +72,7 @@ type
         prune*: INT;          (* bytes of history before old results are cut; 0 never *)
         budget*: F64;         (* dollars a turn may spend, at list price; 0 for no limit *)
         prefetch*: BOOL;      (* definitions attached to the human's message *)
-        worker*: []U8;        (* the model a worker runs on; "" for no workers *)
+        worker*: []const U8;        (* the model a worker runs on; "" for no workers *)
         mode*: Aprompt.Mode;
         working: BOOL;        (* the turn under way is a worker's *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
@@ -134,13 +135,13 @@ begin
     a^ := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true,
         human: {ask: front.ask, why: front.why, arg: front.arg}};
     Strs.init(a^.reports, Heap.heap);
-    Awire.initClient(ADR(a^.client));
+    Awire.initClient(SYSTEM.ADR(a^.client));
     if not Arena.init(a^.mem, CallMemory) then Rt.stop("arno: out of memory"); end;
     Buf.init(a^.seen, Heap.heap);
     Afence.init;
 end;
 
-proc note(a: ^Agent; s: []U8);
+proc note(a: ^Agent; s: []const U8);
 begin
     if a^.front.note # nil then a^.front.note(s, a^.front.arg); end;
 end;
@@ -153,9 +154,9 @@ end;
 (* What lasts the session found: the context files, as config's
    context_files says (mode), and the project's map, unless map is
    false. *)
-proc prepare*(a: ^Agent; mode: []U8; map: BOOL);
+proc prepare*(a: ^Agent; mode: []const U8; map: BOOL);
 begin
-    Aprompt.load(ADR(a^.prompt), mode, map, ADR(a^.human), a^.front.note);
+    Aprompt.load(SYSTEM.ADR(a^.prompt), mode, map, SYSTEM.ADR(a^.human), a^.front.note);
 end;
 
 (* The system prompt of c's next request, made again in sys: it ends
@@ -163,7 +164,7 @@ end;
 proc system(a: ^Agent; c: ^Astore.Conv; sys: ^Buf.Buf);
 begin
     Buf.reset(sys^);
-    Aprompt.write(ADR(a^.prompt), c, a^.prov, a^.mode, ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
+    Aprompt.write(SYSTEM.ADR(a^.prompt), c, a^.prov, a^.mode, SYSTEM.ADR(a^.mem.base), a^.front.note, a^.front.arg, sys);
     Buf.str(sys^, "\n\n");
     if a^.working then
         Buf.str(sys^, WorkerText);
@@ -175,7 +176,7 @@ begin
 end;
 
 (* A lookup prefetch made, shown as the def call it stands in for. *)
-proc prefetched(name, args, res: []U8; arg: ^U8);
+proc prefetched(name, args, res: []const U8; arg: ^U8);
 var a: ^Agent;
 begin
     a := ^Agent(arg);
@@ -188,11 +189,11 @@ end;
 proc attach(a: ^Agent; c: ^Astore.Conv);
 var m: ^Amsg.Msg; b: Buf.Buf; n: INT;
 begin
-    m := ADR(Msgs.all(c^.msgs)[c^.msgs.len - 1]);
-    Buf.init(b, ADR(a^.mem.base));
+    m := SYSTEM.ADR(Msgs.all(c^.msgs)[c^.msgs.len - 1]);
+    Buf.init(b, SYSTEM.ADR(a^.mem.base));
     Buf.str(b, m^.text);
     n := b.len;
-    Aahead.prefetch(m^.text, ADR(a^.mem.base), prefetched, ^U8(a), ADR(b));
+    Aahead.prefetch(m^.text, SYSTEM.ADR(a^.mem.base), prefetched, ^U8(a), SYSTEM.ADR(b));
     if b.len > n then Amsg.setText(m, Buf.bytes(b)); end;
     Arena.reset(a^.mem);
 end;
@@ -217,7 +218,7 @@ end;
    at a fraction of the price: between cuts the prefix stays put. A
    result already cut is left as it is. *)
 proc prune(a: ^Agent; c: ^Astore.Conv);
-var m: []Amsg.Msg; b: Buf.Buf; t, line, rest: []U8; i, k, steps, n: INT;
+var m: []Amsg.Msg; b: Buf.Buf; t, line, rest: []const U8; i, k, steps, n: INT;
 begin
     m := Msgs.all(c^.msgs);
     steps := 0;
@@ -226,7 +227,7 @@ begin
         if (m[i].role = Amsg.Role.assistant) and (m[i].calls.len > 0) then INC(steps); end;
         DEC(i);
     end;
-    Buf.init(b, ADR(a^.mem.base));
+    Buf.init(b, SYSTEM.ADR(a^.mem.base));
     for k := 0 to i do
         t := m[k].text;
         if (m[k].role # Amsg.Role.tool) or (LEN(t) < 2000) or (Str.find(t, CutMark) >= 0) then continue; end;
@@ -242,7 +243,7 @@ begin
         if LEN(rest) = 0 then continue; end;
         Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
             [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
-        Amsg.setText(ADR(m[k]), Buf.bytes(b));
+        Amsg.setText(SYSTEM.ADR(m[k]), Buf.bytes(b));
     end;
     Arena.reset(a^.mem);
 end;
@@ -250,13 +251,13 @@ end;
 (* The model asked, once, with c's messages; its reply added to them,
    unless the request failed with nothing said. What it cost is
    counted, at the price of the model asked, a worker's or the lead's. *)
-proc ask(a: ^Agent; c: ^Astore.Conv; sys: []U8; why: ^Buf.Buf): ERROR;
+proc ask(a: ^Agent; c: ^Astore.Conv; sys: []const U8; why: ^Buf.Buf): ERROR;
 var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; err: ERROR;
 begin
-    r := {prov: a^.prov, client: ADR(a^.client), system: sys, msgs: Msgs.all(c^.msgs),
+    r := {prov: a^.prov, client: SYSTEM.ADR(a^.client), system: sys, msgs: Msgs.all(c^.msgs),
         tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0), a^.mode in {Aprompt.chat, Aprompt.pair}),
         emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
-    err := Awire.chat(ADR(r), ADR(reply), ADR(u), why);
+    err := Awire.chat(SYSTEM.ADR(r), SYSTEM.ADR(reply), SYSTEM.ADR(u), why);
     INC(a^.used.inp, u.inp);
     INC(a^.used.cached, u.cached);
     INC(a^.used.written, u.written);
@@ -270,7 +271,7 @@ begin
     if (err = nil) or (LEN(reply.text) > 0) then
         Msgs.push(c^.msgs, reply);
     else
-        Amsg.free(ADR(reply));
+        Amsg.free(SYSTEM.ADR(reply));
     end;
     return err;
 end;
@@ -285,7 +286,7 @@ end;
 
 (* Whether the call was made already this turn, by a tool that only
    reads; noted if not. A call to any other tool forgets the rest. *)
-proc again(a: ^Agent; name, args: []U8): BOOL;
+proc again(a: ^Agent; name, args: []const U8): BOOL;
 var key: Buf.Buf; seen: BOOL;
 begin
     if not Atools.readOnly(name) then
@@ -306,7 +307,7 @@ end;
 
 (* Whether a result says its call failed: an error, or not run. A
    call the human declined didn't fail; the model was told no. *)
-proc failed(res: []U8): BOOL;
+proc failed(res: []const U8): BOOL;
 begin
     return Str.hasPrefix(res, "error") or Str.hasPrefix(res, "not run");
 end;
@@ -322,9 +323,9 @@ proc turn*(a: ^Agent; c: ^Astore.Conv; why: ^Buf.Buf): ERROR; forward;
 (* delegate, with the arguments args: the brief made from them, and a
    worker's turn run on it; its report, or why there is none, added to
    out. *)
-proc delegate(a: ^Agent; args: []U8; out: ^Buf.Buf);
+proc delegate(a: ^Agent; args: []const U8; out: ^Buf.Buf);
 var d: Json.Doc; p: Atools.Args; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.Prov; m: ^Amsg.Msg;
-    brief, why: Buf.Buf; files, reports: [][]U8; msgs: []Amsg.Msg; task, report: []U8; i, steps: INT;
+    brief, why: Buf.Buf; files: [][]const U8; reports: [][]U8; msgs: []Amsg.Msg; task, report: []const U8; i, steps: INT;
     err: ERROR;
 begin
     if a^.working then
@@ -335,27 +336,27 @@ begin
         Buf.str(out^, "error: there is no worker model; the human sets one with worker = MODEL in the config");
         return;
     end;
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     Buf.init(brief, Heap.heap);
     defer Buf.done(brief);
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    if not Atools.parse(ADR(d), Heap.heap, args, ADR(p)) then
+    if not Atools.parse(SYSTEM.ADR(d), Heap.heap, args, SYSTEM.ADR(p)) then
         Buf.str(out^, "error: the arguments must be one JSON object, as the tool's schema says");
         return;
     end;
-    task := Str.trim(Atools.str(ADR(p), "task"));
+    task := Str.trim(Atools.str(SYSTEM.ADR(p), "task"));
     if LEN(task) = 0 then
         Buf.str(out^, "error: task is required: what the worker is to do, in full");
         return;
     end;
     Fmt.write(brief, "Task: {}", [Fmt.str(task)]);
-    files := Atools.list(ADR(p), "files");
+    files := Atools.list(SYSTEM.ADR(p), "files");
     if LEN(files) > 0 then Buf.str(brief, "\n\nFiles:"); end;
     for i := 0 to LEN(files) - 1 do Fmt.write(brief, "\n- {}", [Fmt.str(files[i])]); end;
-    if LEN(Str.trim(Atools.str(ADR(p), "done_when"))) > 0 then
-        Fmt.write(brief, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(ADR(p), "done_when")))]);
+    if LEN(Str.trim(Atools.str(SYSTEM.ADR(p), "done_when"))) > 0 then
+        Fmt.write(brief, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(SYSTEM.ADR(p), "done_when")))]);
     end;
     (* what earlier workers of this turn found goes along, so that the
        next one needn't find it again: a worker blind to a survey's
@@ -372,18 +373,18 @@ begin
     Fmt.write(why, "worker {}: {}", [Fmt.str(a^.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
     note(a, Buf.bytes(why));
 
-    Astore.init(ADR(w), "worker");
-    defer Astore.done(ADR(w));
+    Astore.init(SYSTEM.ADR(w), "worker");
+    defer Astore.done(SYSTEM.ADR(w));
     m := Msgs.add(w.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, Buf.bytes(brief));
     prov := a^.prov^;
     prov.model := a^.worker;
     lead := a^.prov;
-    a^.prov := ADR(prov);
+    a^.prov := SYSTEM.ADR(prov);
     a^.working := true;
     Buf.reset(why);
-    err := turn(a, ADR(w), ADR(why));
+    err := turn(a, SYSTEM.ADR(w), SYSTEM.ADR(why));
     a^.working := false;
     a^.prov := lead;
     forget(a);   (* what the worker saw is no call of the lead's *)
@@ -428,9 +429,9 @@ begin
         elsif again(a, calls[i].name, calls[i].args) then
             Buf.str(res, Repeated);
         elsif calls[i].name = "delegate" then
-            delegate(a, calls[i].args, ADR(res));
+            delegate(a, calls[i].args, SYSTEM.ADR(res));
         else
-            Atools.call(calls[i].name, calls[i].args, ADR(a^.human), ADR(a^.mem.base), ADR(res));
+            Atools.call(calls[i].name, calls[i].args, SYSTEM.ADR(a^.human), SYSTEM.ADR(a^.mem.base), SYSTEM.ADR(res));
             Arena.reset(a^.mem);
         end;
         if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(res), a^.front.arg); end;
@@ -448,12 +449,12 @@ end;
    message of the human's that c doesn't keep: what it said, without
    its calls, into reply. The tools are still offered, so that the
    cache holds. *)
-proc once*(a: ^Agent; c: ^Astore.Conv; request: []U8; reply, why: ^Buf.Buf): ERROR;
+proc once*(a: ^Agent; c: ^Astore.Conv; request: []const U8; reply, why: ^Buf.Buf): ERROR;
 var sys: Buf.Buf; m: ^Amsg.Msg; n: INT; err: ERROR;
 begin
     Buf.init(sys, Heap.heap);
     defer Buf.done(sys);
-    system(a, c, ADR(sys));
+    system(a, c, SYSTEM.ADR(sys));
     m := Msgs.add(c^.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, request);
@@ -461,11 +462,11 @@ begin
     err := ask(a, c, Buf.bytes(sys), why);
     (* the request taken out, and with it the reply *)
     if c^.msgs.len > n then
-        m := ADR(Msgs.all(c^.msgs)[n]);
+        m := SYSTEM.ADR(Msgs.all(c^.msgs)[n]);
         Buf.str(reply^, m^.text);
         Amsg.free(m);
     end;
-    Amsg.free(ADR(Msgs.all(c^.msgs)[n - 1]));
+    Amsg.free(SYSTEM.ADR(Msgs.all(c^.msgs)[n - 1]));
     Msgs.resize(c^.msgs, n - 1);
     return err;
 end;
@@ -474,7 +475,7 @@ end;
    doesn't keep, to say where it got to, for the reason why: its reply
    kept without calls. The request is the turn's last one and one more
    step. *)
-proc handBack(a: ^Agent; c: ^Astore.Conv; reason, request: []U8; why: ^Buf.Buf): ERROR;
+proc handBack(a: ^Agent; c: ^Astore.Conv; reason, request: []const U8; why: ^Buf.Buf): ERROR;
 var b: Buf.Buf; m: ^Amsg.Msg; err: ERROR;
 begin
     Buf.init(b, Heap.heap);
@@ -483,7 +484,7 @@ begin
     Buf.str(b, "; asking the model to hand back");
     note(a, Buf.bytes(b));
     Buf.reset(b);
-    err := once(a, c, request, ADR(b), why);
+    err := once(a, c, request, SYSTEM.ADR(b), why);
     if b.len > 0 then
         m := Msgs.add(c^.msgs);
         Amsg.init(m, Amsg.Role.assistant);
@@ -522,7 +523,7 @@ begin
             prune(a, c);
             floor := size(c);
         end;
-        system(a, c, ADR(sys));
+        system(a, c, SYSTEM.ADR(sys));
         err := ask(a, c, Buf.bytes(sys), why);
         if err # nil then break; end;
         calls := Msgs.all(c^.msgs)[c^.msgs.len - 1].calls.len;
@@ -543,17 +544,17 @@ begin
         end;
     end;
     m := Msgs.all(c^.msgs);
-    for i := first to LEN(m) - 1 do Amsg.settle(ADR(m[i])); end;
+    for i := first to LEN(m) - 1 do Amsg.settle(SYSTEM.ADR(m[i])); end;
     return err;
 end;
 
 (* The module's test: prune. *)
 
 proc main*: INT;
-var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT; t: []U8;
+var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT; t: []const U8;
 begin
-    init(ADR(a), ADR(p), {});
-    Astore.init(ADR(c), "test");
+    init(SYSTEM.ADR(a), SYSTEM.ADR(p), {});
+    Astore.init(SYSTEM.ADR(c), "test");
     Buf.init(long, Heap.heap);
     for i := 1 to 100 do Buf.str(long, "a line of a long result, 38 bytes....\n"); end;
     for i := 0 to 5 do
@@ -564,7 +565,7 @@ begin
         Amsg.init(m, Amsg.Role.tool);
         Amsg.setText(m, Buf.bytes(long));
     end;
-    prune(ADR(a), ADR(c));
+    prune(SYSTEM.ADR(a), SYSTEM.ADR(c));
     for i := 0 to 5 do
         t := Msgs.all(c.msgs)[2 * i + 1].text;
         if (i < 2) # Str.hasSuffix(t, "\n[... 2660 more bytes, cut from the history as old; make the call again to see them]") then

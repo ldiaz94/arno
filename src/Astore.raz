@@ -41,8 +41,9 @@
    files the agent keeps beside the conversations (memory, notes, the
    tool cache), and the stage. *)
 module Astore;
-import Amsg, Json, Zone, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8),
+import Amsg, Json, Zone, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8), Args := Vec([]const U8),
     Items := Vec(Item), Order := Sort(Item, before);
+import SYSTEM;
 
 type
     Conv* = record
@@ -74,8 +75,8 @@ var
 
 (* arno's directory, with a slash after it: $XDG_DATA_HOME/arno, or
    ~/.local/share/arno, made if it isn't there. *)
-proc dir*: []U8;
-var base: []U8;
+proc dir*: []const U8;
+var base: []const U8;
 begin
     if where.len > 0 then return Buf.bytes(where); end;
     Buf.init(where, Heap.heap);
@@ -94,7 +95,7 @@ end;
 
 (* path made arno's directory in place of the usual one, as a test
    wants; it must end in a slash, and be there. *)
-proc use*(path: []U8);
+proc use*(path: []const U8);
 begin
     if where.len = 0 then Buf.init(where, Heap.heap); end;
     Buf.reset(where);
@@ -103,8 +104,8 @@ end;
 
 (* arno's cache directory, with a slash after it: $XDG_CACHE_HOME/arno,
    or ~/.cache/arno, made if it isn't there. *)
-proc cache*: []U8;
-var base: []U8;
+proc cache*: []const U8;
+var base: []const U8;
 begin
     if cached.len > 0 then return Buf.bytes(cached); end;
     Buf.init(cached, Heap.heap);
@@ -122,7 +123,7 @@ begin
 end;
 
 (* The path of name in arno's directory, into b. *)
-proc pathOf(name: []U8; b: ^Buf.Buf): []U8;
+proc pathOf(name: []const U8; b: ^Buf.Buf): []const U8;
 begin
     Buf.reset(b^);
     Buf.str(b^, dir());
@@ -144,7 +145,7 @@ begin
     if lockDepth > 1 then return; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    lockFd := Sys.openMode(pathOf("lock", ADR(b)), {Sys.reading, Sys.writing, Sys.creating}, 180H);
+    lockFd := Sys.openMode(pathOf("lock", SYSTEM.ADR(b)), {Sys.reading, Sys.writing, Sys.creating}, 180H);
     if lockFd < 0 then return; end;
     _ := Sys.keepOnExec(lockFd, false);
     _ := Sys.lock(lockFd, true);
@@ -164,7 +165,7 @@ end;
 (* path made to hold data: written whole to path.PID.tmp, then renamed
    over it. The pid keeps two sessions saving one file at once out of
    each other's temporary. *)
-proc replace*(path, data: []U8): ERROR;
+proc replace*(path, data: []const U8): ERROR;
 var tmp: Buf.Buf; digits: [20]U8; n: INT;
 begin
     Buf.init(tmp, Heap.heap);
@@ -188,7 +189,7 @@ end;
 
 (* The text name keeps for root, added to b; "" if it keeps none, or
    the file is missing or broken. *)
-proc keyed*(name, root: []U8; b: ^Buf.Buf): []U8;
+proc keyed*(name, root: []const U8; b: ^Buf.Buf): []const U8;
 var path, text: Buf.Buf; d: Json.Doc; v: Json.Value; start: INT;
 begin
     Buf.init(path, Heap.heap);
@@ -196,18 +197,18 @@ begin
     Buf.init(text, Heap.heap);
     defer Buf.done(text);
     start := b^.len;
-    if Files.load(pathOf(name, ADR(path)), text) # 0 then return ""; end;
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
-    v := Json.member(ADR(d), Json.parse(ADR(d), Buf.bytes(text)), root);
-    if Json.kind(ADR(d), v) # Json.Kind.string then return ""; end;
-    Buf.str(b^, Json.text(ADR(d), v));
+    if Files.load(pathOf(name, SYSTEM.ADR(path)), text) # 0 then return ""; end;
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.member(SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), Buf.bytes(text)), root);
+    if Json.kind(SYSTEM.ADR(d), v) # Json.Kind.string then return ""; end;
+    Buf.str(b^, Json.text(SYSTEM.ADR(d), v));
     return Buf.bytes(b^)[start..b^.len];
 end;
 
 (* name made to keep value for root, the other roots' as they were; an
    empty value drops root. *)
-proc setKeyed*(name, root, value: []U8): ERROR;
+proc setKeyed*(name, root, value: []const U8): ERROR;
 var path, text, out: Buf.Buf; d: Json.Doc; v: Json.Value; i, n: INT;
 begin
     Buf.init(path, Heap.heap);
@@ -216,29 +217,29 @@ begin
     defer Buf.done(text);
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     lock();
     defer unlock();
     v := Json.None;
-    if Files.load(pathOf(name, ADR(path)), text) = 0 then v := Json.parse(ADR(d), Buf.bytes(text)); end;
+    if Files.load(pathOf(name, SYSTEM.ADR(path)), text) = 0 then v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text)); end;
     Buf.add(out, '{');
     n := 0;
-    if Json.kind(ADR(d), v) = Json.Kind.object then
-        for i := 0 to Json.len(ADR(d), v) - 1 do
-            if Json.key(ADR(d), v, i) = root then continue; end;
+    if Json.kind(SYSTEM.ADR(d), v) = Json.Kind.object then
+        for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
+            if Json.key(SYSTEM.ADR(d), v, i) = root then continue; end;
             if n > 0 then Buf.add(out, ','); end;
-            Json.quote(ADR(out), Json.key(ADR(d), v, i));
+            Json.quote(SYSTEM.ADR(out), Json.key(SYSTEM.ADR(d), v, i));
             Buf.add(out, ':');
-            Json.write(ADR(d), ADR(out), Json.item(ADR(d), v, i), {});
+            Json.write(SYSTEM.ADR(d), SYSTEM.ADR(out), Json.item(SYSTEM.ADR(d), v, i), {});
             INC(n);
         end;
     end;
     if LEN(value) > 0 then
         if n > 0 then Buf.add(out, ','); end;
-        Json.quote(ADR(out), root);
+        Json.quote(SYSTEM.ADR(out), root);
         Buf.add(out, ':');
-        Json.quote(ADR(out), value);
+        Json.quote(SYSTEM.ADR(out), value);
     end;
     Buf.add(out, '}');
     return replace(Buf.bytes(path), Buf.bytes(out));
@@ -267,14 +268,14 @@ end;
 (* Whether id may name a conversation: an id comes from outside too, a
    host's, so one that would reach out of arno's directory, by a slash
    or a leading dot, names none. *)
-proc fit(id: []U8): BOOL;
+proc fit(id: []const U8): BOOL;
 begin
     return (LEN(id) > 0) and (id[0] # '.') and (Str.find(id, "/") < 0);
 end;
 
 (* The path of the file of the conversation id, into b, made empty;
    "" if id can't be one. *)
-proc file*(id: []U8; b: ^Buf.Buf): []U8;
+proc file*(id: []const U8; b: ^Buf.Buf): []const U8;
 begin
     Buf.reset(b^);
     if not fit(id) then return ""; end;
@@ -288,8 +289,8 @@ end;
 
 (* The names in the directory path, each kept, into names; none if
    it can't be opened. *)
-proc namesIn(path: []U8; names: ^Strs.Vec);
-var d: Sys.Dir; name: []U8; more: BOOL;
+proc namesIn(path: []const U8; names: ^Strs.Vec);
+var d: Sys.Dir; name: []const U8; more: BOOL;
 begin
     if Sys.openDir(d, path) < 0 then return; end;
     name, more := Sys.nextEntry(d);
@@ -303,7 +304,7 @@ end;
 (* Removes path and all below it. A link is removed as a link, never
    followed, so that one the model left pointing out of the scratch
    costs nothing outside it. *)
-proc wipe(path: []U8);
+proc wipe(path: []const U8);
 var info: Sys.Info; names: Strs.Vec; all: [][]U8; i: INT; e: INT; b: Buf.Buf;
 begin
     info, e := Sys.linkInfo(path);
@@ -315,7 +316,7 @@ begin
     Strs.init(names, Heap.heap);
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    namesIn(path, ADR(names));
+    namesIn(path, SYSTEM.ADR(names));
     all := Strs.all(names);
     for i := 0 to LEN(all) - 1 do
         Buf.reset(b);
@@ -331,7 +332,7 @@ end;
 
 (* The path of the scratch directory of the conversation id, into b,
    not made. *)
-proc scratchPath(id: []U8; b: ^Buf.Buf): []U8;
+proc scratchPath(id: []const U8; b: ^Buf.Buf): []const U8;
 begin
     Buf.reset(b^);
     Buf.str(b^, cache());
@@ -343,7 +344,7 @@ end;
 (* The scratch directory of the conversation id, into b, made if it
    isn't there, so that the path the prompt names exists from the
    start; the directory of them all first. *)
-proc scratch*(id: []U8; b: ^Buf.Buf): []U8;
+proc scratch*(id: []const U8; b: ^Buf.Buf): []const U8;
 begin
     _ := Sys.makeDir(scratchPath("", b));
     _ := Sys.makeDir(scratchPath(id, b));
@@ -351,25 +352,25 @@ begin
 end;
 
 (* The scratch directory of id emptied. *)
-proc clearScratch*(id: []U8);
+proc clearScratch*(id: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    wipe(scratch(id, ADR(b)));
-    _ := scratch(id, ADR(b));
+    wipe(scratch(id, SYSTEM.ADR(b)));
+    _ := scratch(id, SYSTEM.ADR(b));
 end;
 
 (* The scratch directory of old now the one of new, with what is in
    it, as the work goes on under the new id. *)
-proc moveScratch*(old, new: []U8);
+proc moveScratch*(old, new: []const U8);
 var a, b: Buf.Buf;
 begin
     Buf.init(a, Heap.heap);
     defer Buf.done(a);
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    _ := Sys.rename(scratch(old, ADR(a)), scratchPath(new, ADR(b)));
+    _ := Sys.rename(scratch(old, SYSTEM.ADR(a)), scratchPath(new, SYSTEM.ADR(b)));
 end;
 
 (* At start-up, removes the scratch directories left by conversations
@@ -386,11 +387,11 @@ begin
     defer Buf.done(f);
     Buf.str(b, cache());
     Buf.str(b, "scratch/");
-    namesIn(Buf.bytes(b), ADR(names));
+    namesIn(Buf.bytes(b), SYSTEM.ADR(names));
     all := Strs.all(names);
     for i := 0 to LEN(all) - 1 do
-        info, e := Sys.linkInfo(scratchPath(all[i], ADR(b)));
-        if (e = 0) and (Sys.now() - info.mtime > DayNs) and (LEN(file(all[i], ADR(f))) > 0)
+        info, e := Sys.linkInfo(scratchPath(all[i], SYSTEM.ADR(b)));
+        if (e = 0) and (Sys.now() - info.mtime > DayNs) and (LEN(file(all[i], SYSTEM.ADR(f))) > 0)
                 and (Sys.access(Buf.bytes(f), {}) # 0) then
             wipe(Buf.bytes(b));
         end;
@@ -418,7 +419,7 @@ begin
     two(b, tm.second);
     at := b^.len;
     n := 1;
-    while Sys.access(file(Buf.bytes(b^), ADR(path)), {}) = 0 do
+    while Sys.access(file(Buf.bytes(b^), SYSTEM.ADR(path)), {}) = 0 do
         INC(n);
         b^.len := at;
         Fmt.write(b^, "-{}", [Fmt.int(n)]);
@@ -428,7 +429,7 @@ end;
 (* conversations *)
 
 (* c made an empty conversation, with id. *)
-proc init*(c: ^Conv; id: []U8);
+proc init*(c: ^Conv; id: []const U8);
 begin
     c^ := {};
     c^.id := Amsg.keep(id);
@@ -445,7 +446,7 @@ begin
     Str.free(Heap.heap, c^.model);
     Str.free(Heap.heap, c^.system);
     msgs := Msgs.all(c^.msgs);
-    for i := 0 to LEN(msgs) - 1 do Amsg.free(ADR(msgs[i])); end;
+    for i := 0 to LEN(msgs) - 1 do Amsg.free(SYSTEM.ADR(msgs[i])); end;
     Msgs.done(c^.msgs);
     turns := Strs.all(c^.turns);
     for i := 0 to LEN(turns) - 1 do Str.free(Heap.heap, turns[i]); end;
@@ -454,25 +455,25 @@ begin
 end;
 
 (* f, one of c's strings, made a copy of s. *)
-proc put(f: ^[]U8; s: []U8);
+proc put(f: ^[]U8; s: []const U8);
 begin
     Str.free(Heap.heap, f^);
     f^ := Amsg.keep(s);
 end;
 
-proc setTitle*(c: ^Conv; title: []U8);
+proc setTitle*(c: ^Conv; title: []const U8);
 begin
-    put(ADR(c^.title), title);
+    put(SYSTEM.ADR(c^.title), title);
 end;
 
-proc setModel*(c: ^Conv; model: []U8);
+proc setModel*(c: ^Conv; model: []const U8);
 begin
-    put(ADR(c^.model), model);
+    put(SYSTEM.ADR(c^.model), model);
 end;
 
-proc setSystem*(c: ^Conv; system: []U8);
+proc setSystem*(c: ^Conv; system: []const U8);
 begin
-    put(ADR(c^.system), system);
+    put(SYSTEM.ADR(c^.system), system);
 end;
 
 (* The title an untitled conversation is listed by, into b: its first
@@ -481,7 +482,7 @@ end;
    blocks; on one line; 60 bytes of it at most, cut where a character
    starts. *)
 proc autoTitle*(c: ^Conv; b: ^Buf.Buf);
-var msgs: []Amsg.Msg; i, n: INT; s: []U8;
+var msgs: []Amsg.Msg; i, n: INT; s: []const U8;
 begin
     msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do
@@ -511,29 +512,32 @@ begin
     defer Buf.done(path);
     Buf.str(b, `{"title":`);
     Buf.str(path, c^.title);
-    if path.len = 0 then autoTitle(c, ADR(path)); end;
-    Amsg.quote(ADR(b), Buf.bytes(path));
+    if path.len = 0 then autoTitle(c, SYSTEM.ADR(path)); end;
+    Amsg.quote(SYSTEM.ADR(b), Buf.bytes(path));
     if LEN(c^.title) > 0 then
         Buf.str(b, `,"named":true,"model":`);
     else
         Buf.str(b, `,"named":false,"model":`);
     end;
-    Amsg.quote(ADR(b), c^.model);
+    Amsg.quote(SYSTEM.ADR(b), c^.model);
     if LEN(c^.system) > 0 then
         Buf.str(b, `,"system":`);
-        Amsg.quote(ADR(b), c^.system);
+        Amsg.quote(SYSTEM.ADR(b), c^.system);
     end;
     Buf.str(b, `,"messages":[`);
     msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do
         if i > 0 then Buf.add(b, ','); end;
-        Amsg.write(ADR(msgs[i]), ADR(b));
+        Amsg.write(SYSTEM.ADR(msgs[i]), SYSTEM.ADR(b));
     end;
     Buf.add(b, ']');
     turns := Strs.all(c^.turns);
     if LEN(turns) > 0 then
         Buf.str(b, `,"turns":[`);
-        Str.join(b, turns, ",");
+        for i := 0 to LEN(turns) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            Buf.str(b, turns[i]);
+        end;
         Buf.add(b, ']');
     end;
     Buf.add(b, '}');
@@ -547,7 +551,7 @@ end;
 (* c made the conversation saved as id: BadId if there is none,
    Unreadable if its file isn't one. Its title is the one it was given,
    "" if it was untitled. *)
-proc load*(c: ^Conv; id: []U8): ERROR;
+proc load*(c: ^Conv; id: []const U8): ERROR;
 var path, text: Buf.Buf; d: Json.Doc; v, msgs, turns: Json.Value; i: INT; t: Buf.Buf;
 begin
     init(c, id);
@@ -562,50 +566,50 @@ begin
     Buf.str(path, id);
     Buf.str(path, ".json");
     if Files.load(Buf.bytes(path), text) # 0 then return BadId; end;
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
-    v := Json.parse(ADR(d), Buf.bytes(text));
-    msgs := Json.member(ADR(d), v, "messages");
-    if Json.kind(ADR(d), msgs) # Json.Kind.array then return Unreadable; end;
-    for i := 0 to Json.len(ADR(d), msgs) - 1 do
-        try Amsg.read(ADR(d), Json.item(ADR(d), msgs, i), Msgs.add(c^.msgs));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text));
+    msgs := Json.member(SYSTEM.ADR(d), v, "messages");
+    if Json.kind(SYSTEM.ADR(d), msgs) # Json.Kind.array then return Unreadable; end;
+    for i := 0 to Json.len(SYSTEM.ADR(d), msgs) - 1 do
+        try Amsg.read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, i), Msgs.add(c^.msgs));
     end;
-    turns := Json.member(ADR(d), v, "turns");
-    for i := 0 to Json.len(ADR(d), turns) - 1 do
+    turns := Json.member(SYSTEM.ADR(d), v, "turns");
+    for i := 0 to Json.len(SYSTEM.ADR(d), turns) - 1 do
         Buf.reset(t);
-        Amsg.compact(ADR(d), Json.item(ADR(d), turns, i), ADR(t));
+        Amsg.compact(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), turns, i), SYSTEM.ADR(t));
         Strs.push(c^.turns, Amsg.keep(Buf.bytes(t)));
     end;
-    if Json.member(ADR(d), v, "named") = Json.True then
-        c^.title := Amsg.keep(Json.text(ADR(d), Json.member(ADR(d), v, "title")));
+    if Json.member(SYSTEM.ADR(d), v, "named") = Json.True then
+        c^.title := Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "title")));
     end;
-    c^.model := Amsg.keep(Json.text(ADR(d), Json.member(ADR(d), v, "model")));
-    c^.system := Amsg.keep(Json.text(ADR(d), Json.member(ADR(d), v, "system")));
+    c^.model := Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "model")));
+    c^.system := Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "system")));
     return nil;
 end;
 
 (* The conversation saved as id given the title title, "" to take one
    from its first message again, all else as it was. *)
-proc retitle*(id, title: []U8): ERROR;
+proc retitle*(id, title: []const U8): ERROR;
 var c: Conv; err: ERROR;
 begin
-    err := load(ADR(c), id);
-    defer done(ADR(c));
+    err := load(SYSTEM.ADR(c), id);
+    defer done(SYSTEM.ADR(c));
     if err # nil then return err; end;
-    setTitle(ADR(c), title);
-    return save(ADR(c));
+    setTitle(SYSTEM.ADR(c), title);
+    return save(SYSTEM.ADR(c));
 end;
 
 (* The conversation saved as id given its own system prompt, "" for
    arno's, all else as it was. *)
-proc resystem*(id, system: []U8): ERROR;
+proc resystem*(id, system: []const U8): ERROR;
 var c: Conv; err: ERROR;
 begin
-    err := load(ADR(c), id);
-    defer done(ADR(c));
+    err := load(SYSTEM.ADR(c), id);
+    defer done(SYSTEM.ADR(c));
     if err # nil then return err; end;
-    setSystem(ADR(c), system);
-    return save(ADR(c));
+    setSystem(SYSTEM.ADR(c), system);
+    return save(SYSTEM.ADR(c));
 end;
 
 (* the list *)
@@ -625,16 +629,16 @@ begin
     if not Str.hasPrefix(text, `{"title":`) then return false; end;
     end_ := Str.find(text, `,"named":`);
     if end_ < 0 then return false; end;
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
-    v := Json.parse(ADR(d), text[9..end_]);
-    if Json.kind(ADR(d), v) # Json.Kind.string then return false; end;
-    Buf.str(b^, Json.text(ADR(d), v));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), text[9..end_]);
+    if Json.kind(SYSTEM.ADR(d), v) # Json.Kind.string then return false; end;
+    Buf.str(b^, Json.text(SYSTEM.ADR(d), v));
     return true;
 end;
 
 (* s holds t, whatever the case of their ASCII letters. *)
-proc holds(s, t: []U8): BOOL;
+proc holds(s, t: []const U8): BOOL;
 var a, b: Buf.Buf;
 begin
     Buf.init(a, Heap.heap);
@@ -653,8 +657,8 @@ end;
    filter, if it isn't "". /load N and --resume count in this order, so
    1 is the conversation last worked on, not the one last begun. Each
    item's strings are the list's, given back by drop. *)
-proc recent*(max: INT; filter: []U8; list: ^Items.Vec);
-var d: Sys.Dir; name: []U8; more: BOOL; all: Items.Vec; items: []Item; info: Sys.Info; e, i: INT;
+proc recent*(max: INT; filter: []const U8; list: ^Items.Vec);
+var d: Sys.Dir; name: []const U8; more: BOOL; all: Items.Vec; items: []Item; info: Sys.Info; e, i: INT;
     path, text, title, both: Buf.Buf;
 begin
     Items.init(list^, Heap.heap);
@@ -672,7 +676,7 @@ begin
     name, more := Sys.nextEntry(d);
     while more do
         if Str.hasSuffix(name, ".json") then
-            info, e := Sys.info(pathOf(name, ADR(path)));
+            info, e := Sys.info(pathOf(name, SYSTEM.ADR(path)));
             if e = 0 then Items.push(all, {id: Amsg.keep(name[0..LEN(name) - 5]), updated: info.mtime}); end;
         end;
         name, more := Sys.nextEntry(d);
@@ -686,8 +690,8 @@ begin
         Buf.reset(both);
         Buf.str(both, items[i].id);
         Buf.str(both, ".json");
-        if (list^.len < max) and (Files.load(pathOf(Buf.bytes(both), ADR(path)), text) = 0)
-                and titleOf(Buf.bytes(text), ADR(title)) then
+        if (list^.len < max) and (Files.load(pathOf(Buf.bytes(both), SYSTEM.ADR(path)), text) = 0)
+                and titleOf(Buf.bytes(text), SYSTEM.ADR(title)) then
             Buf.reset(both);
             Buf.str(both, Buf.bytes(title));
             Buf.add(both, ' ');
@@ -722,7 +726,7 @@ const Test = "build/store/";
 
 var failed: BOOL;
 
-proc fail(what: []U8);
+proc fail(what: []const U8);
 begin
     Out.str("Astore: ");
     Out.str(what);
@@ -730,7 +734,7 @@ begin
     failed := true;
 end;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     fail(what);
@@ -742,7 +746,7 @@ begin
 end;
 
 (* The text of the file saved as id, into b. *)
-proc saved(id: []U8; b: ^Buf.Buf): []U8;
+proc saved(id: []const U8; b: ^Buf.Buf): []const U8;
 var path: Buf.Buf;
 begin
     Buf.init(path, Heap.heap);
@@ -757,7 +761,7 @@ end;
 
 (* Test made, and emptied of what an earlier run left. *)
 proc fresh;
-var d: Sys.Dir; name: []U8; more: BOOL; path: Buf.Buf;
+var d: Sys.Dir; name: []const U8; more: BOOL; path: Buf.Buf;
 begin
     _ := Sys.makeDir("build");
     _ := Sys.makeDir(Test);
@@ -767,23 +771,23 @@ begin
     if Sys.openDir(d, Test) < 0 then fail("the test's directory"); return; end;
     name, more := Sys.nextEntry(d);
     while more do
-        _ := Sys.remove(pathOf(name, ADR(path)));
+        _ := Sys.remove(pathOf(name, SYSTEM.ADR(path)));
         name, more := Sys.nextEntry(d);
     end;
     Sys.closeDir(d);
 end;
 
 (* A conversation of one user message, text, saved as id. *)
-proc said(id, text: []U8);
+proc said(id, text: []const U8);
 var c: Conv; m: ^Amsg.Msg;
 begin
-    init(ADR(c), id);
-    defer done(ADR(c));
-    setModel(ADR(c), "m");
+    init(SYSTEM.ADR(c), id);
+    defer done(SYSTEM.ADR(c));
+    setModel(SYSTEM.ADR(c), "m");
     m := Msgs.add(c.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, text);
-    if save(ADR(c)) # nil then fail("save"); end;
+    if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
 end;
 
 (* Whether a file save wrote, now, is was, the one the Pascal arno
@@ -791,8 +795,8 @@ end;
    title is taken again at each save, and that arno, before it cut
    the attachments out, took them in; and from "model" on for the
    first few, from before it wrote named at all. *)
-proc same(now, was: []U8; untitled: BOOL): BOOL;
-var n, w: INT; from: []U8;
+proc same(now, was: []const U8; untitled: BOOL): BOOL;
+var n, w: INT; from: []const U8;
 begin
     if not untitled then return now = was; end;
     from := `,"named":`;
@@ -804,8 +808,8 @@ end;
 
 (* Each of paths, a conversation the Pascal arno saved, loaded from
    where it is and saved in Test: the same bytes. *)
-proc compat(paths: [][]U8);
-var i, slash: INT; c: Conv; err: ERROR; from, id: []U8; was, now: Buf.Buf;
+proc compat(paths: []const []const U8);
+var i, slash: INT; c: Conv; err: ERROR; from, id: []const U8; was, now: Buf.Buf;
 begin
     Buf.init(was, Heap.heap);
     Buf.init(now, Heap.heap);
@@ -816,22 +820,22 @@ begin
         from := paths[i][0..slash + 1];
         id := paths[i][slash + 1..LEN(paths[i]) - 5];
         use(from);
-        err := load(ADR(c), id);
+        err := load(SYSTEM.ADR(c), id);
         if err = nil then
-            _ := saved(id, ADR(was));
+            _ := saved(id, SYSTEM.ADR(was));
             use(Test);
-            if save(ADR(c)) # nil then fail("save"); end;
-            if not same(saved(id, ADR(now)), Buf.bytes(was), LEN(c.title) = 0) then fail(paths[i]); end;
+            if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
+            if not same(saved(id, SYSTEM.ADR(now)), Buf.bytes(was), LEN(c.title) = 0) then fail(paths[i]); end;
         elsif err # Unreadable then
             fail(paths[i]);
         end;
-        done(ADR(c));
+        done(SYSTEM.ADR(c));
     end;
     use(Test);
 end;
 
 proc main*: INT;
-var c, back: Conv; b: Buf.Buf; m: ^Amsg.Msg; list: Items.Vec; items: []Item; args: Strs.Vec; i: INT;
+var c, back: Conv; b: Buf.Buf; m: ^Amsg.Msg; list: Items.Vec; items: []Item; args: Args.Vec; i: INT;
     long: Buf.Buf;
 begin
     fresh;
@@ -841,8 +845,8 @@ begin
     defer Buf.done(long);
 
     (* an untitled conversation: its title from its first message, as typed *)
-    init(ADR(c), "20261016-120000");
-    setModel(ADR(c), "deepseek-v4.1-flash");
+    init(SYSTEM.ADR(c), "20261016-120000");
+    setModel(SYSTEM.ADR(c), "deepseek-v4.1-flash");
     m := Msgs.add(c.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, "look at\nthis\n\n<file path=\"a.txt\">...</file>");
@@ -850,35 +854,35 @@ begin
     Amsg.init(m, Amsg.Role.assistant);
     Amsg.setText(m, "I see.");
     Strs.push(c.turns, Amsg.keep(`{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}`));
-    if save(ADR(c)) # nil then fail("save"); end;
-    expect("an untitled conversation's file", saved("20261016-120000", ADR(b)),
+    if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
+    expect("an untitled conversation's file", saved("20261016-120000", SYSTEM.ADR(b)),
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}],"turns":[{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}]}`);
-    if load(ADR(back), "20261016-120000") # nil then fail("load"); end;
+    if load(SYSTEM.ADR(back), "20261016-120000") # nil then fail("load"); end;
     expect("an untitled conversation's title, read back", back.title, "");
     expect("its model", back.model, "deepseek-v4.1-flash");
     if (back.msgs.len # 2) or (back.turns.len # 1) then fail("its messages and turns"); end;
-    done(ADR(back));
+    done(SYSTEM.ADR(back));
 
     (* titled, with a system prompt of its own *)
-    setTitle(ADR(c), "a look");
-    setSystem(ADR(c), "Be brief.");
+    setTitle(SYSTEM.ADR(c), "a look");
+    setSystem(SYSTEM.ADR(c), "Be brief.");
     Strs.reset(c.turns);
-    if save(ADR(c)) # nil then fail("save"); end;
-    expect("a titled conversation's file", saved("20261016-120000", ADR(b)),
+    if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
+    expect("a titled conversation's file", saved("20261016-120000", SYSTEM.ADR(b)),
         `{"title":"a look","named":true,"model":"deepseek-v4.1-flash","system":"Be brief.","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}]}`);
-    if load(ADR(back), "20261016-120000") # nil then fail("load"); end;
+    if load(SYSTEM.ADR(back), "20261016-120000") # nil then fail("load"); end;
     expect("its title, read back", back.title, "a look");
     expect("its system prompt, read back", back.system, "Be brief.");
-    done(ADR(back));
-    done(ADR(c));
+    done(SYSTEM.ADR(back));
+    done(SYSTEM.ADR(c));
 
     if retitle("20261016-120000", "") # nil then fail("retitle"); end;
     if resystem("20261016-120000", "") # nil then fail("resystem"); end;
-    expect("retitled and its system prompt dropped", saved("20261016-120000", ADR(b)),
+    expect("retitled and its system prompt dropped", saved("20261016-120000", SYSTEM.ADR(b)),
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}]}`);
@@ -887,7 +891,7 @@ begin
     for i := 1 to 59 do Buf.add(long, 'a'); end;
     Buf.str(long, "é and more");
     said("20261016-120001", Buf.bytes(long));   (* saved within a tick of 120002, below *)
-    if not Str.hasPrefix(saved("20261016-120001", ADR(b)), `{"title":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","named":false`) then
+    if not Str.hasPrefix(saved("20261016-120001", SYSTEM.ADR(b)), `{"title":"` + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + `","named":false`) then
         fail("a title cut inside a character");
         Out.str(Buf.bytes(b));
         Out.ln;
@@ -898,7 +902,7 @@ begin
     Sys.sleep(20);   (* past the file system's tick, so that the times differ *)
     if retitle("20261016-120000", "") # nil then fail("retitle"); end;
     _ := Files.write(Test + "notes.json", `{"/home/luis/r":["a note"]}`);
-    recent(10, "", ADR(list));
+    recent(10, "", SYSTEM.ADR(list));
     items := Items.all(list);
     if LEN(items) # 3 then fail("the list's length"); end;
     if LEN(items) = 3 then
@@ -907,18 +911,18 @@ begin
         expect("the list's second, changed at once with the third but begun later", items[1].id,
             "20261016-120002");
     end;
-    drop(ADR(list));
-    recent(10, "BUG", ADR(list));
+    drop(SYSTEM.ADR(list));
+    recent(10, "BUG", SYSTEM.ADR(list));
     if list.len # 1 then fail("a filter"); end;
-    drop(ADR(list));
-    recent(1, "", ADR(list));
+    drop(SYSTEM.ADR(list));
+    recent(1, "", SYSTEM.ADR(list));
     if list.len # 1 then fail("max"); end;
-    drop(ADR(list));
+    drop(SYSTEM.ADR(list));
 
-    if load(ADR(back), "../escape") # BadId then fail("an id out of the directory"); end;
-    done(ADR(back));
-    if load(ADR(back), "notes") # Unreadable then fail("a file that isn't a conversation"); end;
-    done(ADR(back));
+    if load(SYSTEM.ADR(back), "../escape") # BadId then fail("an id out of the directory"); end;
+    done(SYSTEM.ADR(back));
+    if load(SYSTEM.ADR(back), "notes") # Unreadable then fail("a file that isn't a conversation"); end;
+    done(SYSTEM.ADR(back));
 
     (* the lock, taken twice, given twice *)
     lock;
@@ -929,23 +933,23 @@ begin
     if lockFd >= 0 then fail("the lock, kept"); end;
 
     Buf.reset(b);
-    newId(ADR(b));
+    newId(SYSTEM.ADR(b));
     if (b.len # 15) or (Buf.bytes(b)[8] # '-') or not Str.hasPrefix(Buf.bytes(b), "20") then
         fail("a new id");
     end;
 
-    Strs.init(args, Heap.heap);
-    for i := 1 to ARGC() - 1 do Strs.push(args, Files.arg(i)); end;
-    compat(Strs.all(args));
+    Args.init(args, Heap.heap);
+    for i := 1 to ARGC() - 1 do Args.push(args, Files.arg(i)); end;
+    compat(Args.all(args));
     (* a text kept for each project, the others' left as they were *)
     Buf.reset(b);
     if (setKeyed("tests.json", "/a", "make check") # nil) or (setKeyed("tests.json", "/b", "x") # nil) or
-        (setKeyed("tests.json", "/a", "make test") # nil) or (keyed("tests.json", "/a", ADR(b)) # "make test") then
+        (setKeyed("tests.json", "/a", "make test") # nil) or (keyed("tests.json", "/a", SYSTEM.ADR(b)) # "make test") then
         fail("a keyed text set again");
     end;
     Buf.reset(b);
-    if (setKeyed("tests.json", "/b", "") # nil) or (keyed("tests.json", "/b", ADR(b)) # "") or
-        (keyed("tests.json", "/a", ADR(b)) # "make test") or (keyed("nothing.json", "/a", ADR(b)) # "") then
+    if (setKeyed("tests.json", "/b", "") # nil) or (keyed("tests.json", "/b", SYSTEM.ADR(b)) # "") or
+        (keyed("tests.json", "/a", SYSTEM.ADR(b)) # "make test") or (keyed("nothing.json", "/a", SYSTEM.ADR(b)) # "") then
         fail("a keyed text dropped");
     end;
     if failed then return 1; end;

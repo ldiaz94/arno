@@ -27,40 +27,41 @@
    Depends on rnet's Http and Conn and rjson's Json, with no TLS. *)
 module Astub;
 import Http, Conn, Json, Buf, Str, Sys, Files, Fmt, Out, Heap;
+import SYSTEM;
 
 var reply, text: Buf.Buf;
 
 (* data: lines of a reply, as OpenAI streams them *)
-proc event(json: []U8);
+proc event(json: []const U8);
 begin
     Buf.str(reply, "data: ");
     Buf.str(reply, json);
     Buf.add(reply, '\n');
 end;
 
-proc said(text: []U8);
+proc said(text: []const U8);
 begin
     Buf.str(reply, `data: {"choices":[{"delta":{"content":`);
-    Json.quote(ADR(reply), text);
+    Json.quote(SYSTEM.ADR(reply), text);
     Buf.str(reply, "}}]}\n");
 end;
 
 (* A call of the tool name with args, args JSON text. *)
-proc call(name, args: []U8);
+proc call(name, args: []const U8);
 begin
     Buf.str(reply, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function",`);
     Buf.str(reply, `"function":{"name":`);
-    Json.quote(ADR(reply), name);
+    Json.quote(SYSTEM.ADR(reply), name);
     Buf.str(reply, `,"arguments":`);
-    Json.quote(ADR(reply), args);
+    Json.quote(SYSTEM.ADR(reply), args);
     Buf.str(reply, "}}]}}]}\n");
 end;
 
 (* The reply to a request whose human's last message was asked, with
    the last message last of the role role, as the module's comment
    says; false if asked asks for no call. *)
-proc tool(asked, role, last: []U8): BOOL;
-var verb, rest, name, args: []U8; ok: BOOL;
+proc tool(asked, role, last: []const U8): BOOL;
+var verb, rest, name, args: []const U8; ok: BOOL;
 begin
     verb, rest, ok := Str.cut(asked, " ");
     if not ok or (verb # "call") and (verb # "always") then return false; end;
@@ -77,11 +78,13 @@ begin
 end;
 
 proc answer(const req: Http.Message; var res: Http.Message; _arg: ^U8);
-var d: Json.Doc; v, msgs, m: Json.Value; n, k, i: INT; last, role, asked: []U8; digits: [20]U8;
+var text: Buf.Buf; d: Json.Doc; v, msgs, m: Json.Value; n, k, i: INT; last, role, asked: []const U8; digits: [20]U8;
 begin
     Buf.reset(reply);
-    if not Json.init(ADR(d), Heap.heap) then res.status := 500; return; end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then res.status := 500; return; end;
+    defer Json.done(SYSTEM.ADR(d));
+    Buf.init(text, Heap.heap);   (* parsing changes its text, so the request's body is copied *)
+    defer Buf.done(text);
     if req.target = "/page" then
         _ := Http.add(res, "Content-Type", "text/html; charset=utf-8");
         res.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
@@ -98,16 +101,17 @@ begin
         res.body := Buf.bytes(reply);
         return;
     end;
-    v := Json.parse(ADR(d), req.body);
-    msgs := Json.member(ADR(d), v, "messages");
-    n := Json.len(ADR(d), msgs);
-    if (req.target # "/v1/chat/completions") or (Json.kind(ADR(d), msgs) # Json.Kind.array) then
+    Buf.str(text, req.body);
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text));
+    msgs := Json.member(SYSTEM.ADR(d), v, "messages");
+    n := Json.len(SYSTEM.ADR(d), msgs);
+    if (req.target # "/v1/chat/completions") or (Json.kind(SYSTEM.ADR(d), msgs) # Json.Kind.array) then
         res.status := 404;
         return;
     end;
-    m := Json.item(ADR(d), msgs, n - 1);
-    last := Json.text(ADR(d), Json.member(ADR(d), m, "content"));
-    role := Json.text(ADR(d), Json.member(ADR(d), m, "role"));
+    m := Json.item(SYSTEM.ADR(d), msgs, n - 1);
+    last := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "content"));
+    role := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "role"));
     if last = "fail" then
         res.status := 500;
         res.body := `{"error":{"message":"the stub fails, as asked"}}`;
@@ -115,14 +119,14 @@ begin
     end;
     asked := "";
     for i := n - 1 to 0 by -1 do
-        m := Json.item(ADR(d), msgs, i);
-        if Json.text(ADR(d), Json.member(ADR(d), m, "role")) = "user" then
-            asked := Json.text(ADR(d), Json.member(ADR(d), m, "content"));
+        m := Json.item(SYSTEM.ADR(d), msgs, i);
+        if Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "role")) = "user" then
+            asked := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "content"));
             break;
         end;
     end;
     if asked = "system" then
-        said(Json.text(ADR(d), Json.member(ADR(d), Json.item(ADR(d), msgs, 0), "content")));
+        said(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, 0), "content")));
     elsif not tool(asked, role, last) then
         digits, k := Str.fromInt(n);
         said(digits[0..k]);

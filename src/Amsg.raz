@@ -28,6 +28,7 @@
    and a conversation's order and turns are the agent's. *)
 module Amsg;
 import Json, Buf, Str, Heap, Rt, Out, Files, Calls := Vec(Call), Strs := Vec([]U8);
+import SYSTEM;
 
 type
     Role* = (user, assistant, tool);
@@ -56,10 +57,10 @@ const
 
     (* the keys OpenAI-compatible servers put a model's thinking under:
        Ollama's, and Moonshot's, vLLM's and DeepSeek's *)
-    ThinkKeys*: [][]U8 = ["reasoning", "reasoning_content"];
+    ThinkKeys*: []const []const U8 = ["reasoning", "reasoning_content"];
 
 (* s, copied into a block of its own from Heap; "" stays "". *)
-proc keep*(s: []U8): []U8;
+proc keep*(s: []const U8): []U8;
 var c: []U8; ok: BOOL;
 begin
     c, ok := Str.copy(Heap.heap, s);
@@ -101,14 +102,14 @@ begin
 end;
 
 (* m's text made a copy of text, in place of what it was. *)
-proc setText*(m: ^Msg; text: []U8);
+proc setText*(m: ^Msg; text: []const U8);
 begin
     Str.free(Heap.heap, m^.text);
     m^.text := keep(text);
 end;
 
 (* A tool call, its strings copied, added to m's. *)
-proc addCall*(m: ^Msg; id, name, args, extra: []U8);
+proc addCall*(m: ^Msg; id, name, args, extra: []const U8);
 var c: ^Call;
 begin
     c := Calls.add(m^.calls);
@@ -130,12 +131,12 @@ var i: INT; calls: []Call;
 begin
     Str.free(Heap.heap, m^.think);
     Str.free(Heap.heap, m^.thinkKey);
-    m^.think := "";
-    m^.thinkKey := "";
+    m^.think := [];
+    m^.thinkKey := [];
     calls := Calls.all(m^.calls);
     for i := 0 to LEN(calls) - 1 do
         Str.free(Heap.heap, calls[i].extra);
-        calls[i].extra := "";
+        calls[i].extra := [];
     end;
 end;
 
@@ -143,7 +144,7 @@ end;
    a double quote, a backslash, a line feed, a carriage return and a
    tab by their escapes, every other byte below a space as \u00xx, and
    the rest as it is. *)
-proc quote*(b: ^Buf.Buf; s: []U8);
+proc quote*(b: ^Buf.Buf; s: []const U8);
 const Hex = "0123456789abcdef";
 var i, from: INT; c: U8;
 begin
@@ -269,7 +270,7 @@ var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    compact(d, v, ADR(b));
+    compact(d, v, SYSTEM.ADR(b));
     return keep(Buf.bytes(b));   (* made before b is given back *)
 end;
 
@@ -278,7 +279,7 @@ end;
    blocks; a call's arguments a string, or an object, which some
    servers send, kept as its text. *)
 proc read*(d: ^Json.Doc; v: Json.Value; m: ^Msg): ERROR;
-var role: Role; i: INT; content, part, calls, call, args, extra: Json.Value; think: []U8; c: ^Call;
+var role: Role; i: INT; content, part, calls, call, args, extra: Json.Value; think: []const U8; c: ^Call;
 begin
     match Json.text(d, Json.member(d, v, "role")) of
     | "user": role := user;
@@ -335,7 +336,7 @@ end;
 
 var failed: BOOL;
 
-proc fail(what: []U8);
+proc fail(what: []const U8);
 begin
     Out.str("Amsg: ");
     Out.str(what);
@@ -345,22 +346,22 @@ end;
 
 (* The messages of text, a JSON array, read and written back as an
    array; false if they don't read. *)
-proc again(text: []U8; b: ^Buf.Buf): BOOL;
+proc again(text: []const U8; b: ^Buf.Buf): BOOL;
 var d: Json.Doc; v: Json.Value; m: Msg; i: INT; copy: Buf.Buf;
 begin
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     Buf.init(copy, Heap.heap);   (* parsing rewrites its text *)
     defer Buf.done(copy);
     Buf.str(copy, text);
-    v := Json.parse(ADR(d), Buf.bytes(copy));
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(copy));
     if v = Json.None then return false; end;
     Buf.add(b^, '[');
-    for i := 0 to Json.len(ADR(d), v) - 1 do
-        if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then return false; end;
+    for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
+        if read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), SYSTEM.ADR(m)) # nil then return false; end;
         if i > 0 then Buf.add(b^, ','); end;
-        write(ADR(m), b);
-        free(ADR(m));
+        write(SYSTEM.ADR(m), b);
+        free(SYSTEM.ADR(m));
     end;
     Buf.add(b^, ']');
     return true;
@@ -378,7 +379,7 @@ const Shapes = `[{"role":"user","content":"a \"quote\", a back\\slash, é, a tab
 
 (* The messages array of a conversation the Pascal arno saved, written
    back by write, must stand in the file as it is. *)
-proc conversation(path: []U8);
+proc conversation(path: []const U8);
 var text, b, copy: Buf.Buf; d: Json.Doc; v: Json.Value; m: Msg; i: INT;
 begin
     Buf.init(text, Heap.heap);
@@ -389,18 +390,18 @@ begin
     defer Buf.done(copy);
     if not Files.read(path, text) then fail(path); return; end;
     Buf.str(copy, Buf.bytes(text));
-    if not Json.init(ADR(d), Heap.heap) then Rt.stop("no memory"); end;
-    defer Json.done(ADR(d));
-    v := Json.parse(ADR(d), Buf.bytes(copy));
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("no memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(copy));
     if v = Json.None then fail(path); return; end;
-    v := Json.member(ADR(d), v, "messages");
+    v := Json.member(SYSTEM.ADR(d), v, "messages");
     if v = Json.None then return; end;   (* not a conversation: stage.json, tests.json *)
     Buf.str(b, `"messages":[`);
-    for i := 0 to Json.len(ADR(d), v) - 1 do
-        if read(ADR(d), Json.item(ADR(d), v, i), ADR(m)) # nil then fail(path); return; end;
+    for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
+        if read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), SYSTEM.ADR(m)) # nil then fail(path); return; end;
         if i > 0 then Buf.add(b, ','); end;
-        write(ADR(m), ADR(b));
-        free(ADR(m));
+        write(SYSTEM.ADR(m), SYSTEM.ADR(b));
+        free(SYSTEM.ADR(m));
     end;
     Buf.add(b, ']');
     if Str.find(Buf.bytes(text), Buf.bytes(b)) < 0 then fail(path); end;
@@ -411,7 +412,7 @@ var b: Buf.Buf; m: Msg; i: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    if not again(Shapes, ADR(b)) then fail("the shapes don't read");
+    if not again(Shapes, SYSTEM.ADR(b)) then fail("the shapes don't read");
     elsif Buf.bytes(b) # Shapes then
         fail("the shapes, written back, differ:");
         Out.str(Buf.bytes(b));
@@ -419,15 +420,15 @@ begin
     end;
 
     (* settle drops the thinking and the extra_content, nothing else *)
-    init(ADR(m), assistant);
-    setText(ADR(m), "done");
+    init(SYSTEM.ADR(m), assistant);
+    setText(SYSTEM.ADR(m), "done");
     m.think := keep("why");
     m.thinkKey := keep("reasoning");
-    addCall(ADR(m), "c", "find", `{"glob":"*.raz"}`, `{"x":1}`);
-    settle(ADR(m));
+    addCall(SYSTEM.ADR(m), "c", "find", `{"glob":"*.raz"}`, `{"x":1}`);
+    settle(SYSTEM.ADR(m));
     Buf.reset(b);
-    write(ADR(m), ADR(b));
-    free(ADR(m));
+    write(SYSTEM.ADR(m), SYSTEM.ADR(b));
+    free(SYSTEM.ADR(m));
     if Buf.bytes(b) # `{"role":"assistant","content":"done","tool_calls":[{"id":"c","type":"function",` +
             `"function":{"name":"find","arguments":"{\"glob\":\"*.raz\"}"}}]}` then
         fail("settle");

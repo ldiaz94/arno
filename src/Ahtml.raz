@@ -23,6 +23,7 @@
    stays as written. *)
 module Ahtml;
 import Afind, Buf, Str, Heap, Out;
+import SYSTEM;
 
 const
     (* the elements whose text isn't shown *)
@@ -44,7 +45,7 @@ const
 
 type
     Entity = record
-        name: []U8;
+        name: []const U8;
         c: I32;
     end;
 
@@ -98,7 +99,7 @@ begin
 end;
 
 (* Text, its blanks run together unless in pre. *)
-proc flow(p: ^Page; s: []U8);
+proc flow(p: ^Page; s: []const U8);
 var i: INT;
 begin
     if p^.hidden > 0 then return; end;
@@ -116,7 +117,7 @@ end;
 
 (* s with its character references made the characters they stand for,
    in b. *)
-proc decode(s: []U8; b: ^Buf.Buf): []U8;
+proc decode(s: []const U8; b: ^Buf.Buf): []const U8;
 var i, j, k: INT; c: I32; v: U64; d: I64; ok: BOOL; e: [4]U8; n: INT;
 begin
     Buf.reset(b^);
@@ -162,8 +163,8 @@ begin
 end;
 
 (* A tag, start or end, called name, small, laid out. *)
-proc tag(p: ^Page; name: []U8; ending: BOOL);
-var t: []U8;
+proc tag(p: ^Page; name: []const U8; ending: BOOL);
+var t: []const U8;
 begin
     if Afind.listed(name, Hidden) then
         if not ending then INC(p^.hidden); elsif p^.hidden > 0 then DEC(p^.hidden); end;
@@ -198,7 +199,7 @@ end;
 
 (* Where the tag starting at s[i], a <, ends: just after its >, past
    the quoted values of its attributes, which may hold a >. *)
-proc tagEnd(s: []U8; i: INT): INT;
+proc tagEnd(s: []const U8; i: INT): INT;
 var q: U8;
 begin
     q := 0;
@@ -216,7 +217,7 @@ begin
 end;
 
 (* Where, case aside, sub next starts in s at or after i, or LEN(s). *)
-proc findFold(s, sub: []U8; i: INT): INT;
+proc findFold(s, sub: []const U8; i: INT): INT;
 begin
     while i + LEN(sub) <= LEN(s) do
         if Str.eqFold(s[i..i + LEN(sub)], sub) then return i; end;
@@ -227,7 +228,7 @@ end;
 
 (* The charset a Content-Type names, or a meta tag near the page's
    start: its value, without quotes; "" for none. *)
-proc charsetOf(s: []U8): []U8;
+proc charsetOf(s: []const U8): []const U8;
 var i, j: INT;
 begin
     i := findFold(s, "charset=", 0);
@@ -241,14 +242,14 @@ end;
 
 (* Whether s is a page whose bytes are Latin-1, or Windows-1252, which
    pages that say Latin-1 nearly always are. *)
-proc latin(charset: []U8): BOOL;
+proc latin(charset: []const U8): BOOL;
 begin
     return Str.eqFold(charset, "iso-8859-1") or Str.eqFold(charset, "latin1") or
         Str.eqFold(charset, "windows-1252") or Str.eqFold(charset, "cp1252") or Str.eqFold(charset, "us-ascii");
 end;
 
 (* s, Windows-1252, made UTF-8 in b. *)
-proc fromLatin(s: []U8; b: ^Buf.Buf): []U8;
+proc fromLatin(s: []const U8; b: ^Buf.Buf): []const U8;
 var i, n: INT; c: I32; e: [4]U8;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -268,8 +269,8 @@ end;
 (* The text of body, an HTML page, added to out: its title, a blank
    line, and the rest; "(no text)" if there is none. ctype is its
    Content-Type, which may name its charset. *)
-proc text*(body, ctype: []U8; out: ^Buf.Buf);
-var p: Page; ent, bytes: Buf.Buf; s, name, charset: []U8; i, j, k, from: INT; ending: BOOL;
+proc text*(body, ctype: []const U8; out: ^Buf.Buf);
+var p: Page; ent, bytes: Buf.Buf; s, charset: []const U8; name: []U8; i, j, k, from: INT; ending: BOOL;
 begin
     Buf.init(ent, Heap.heap);
     defer Buf.done(ent);
@@ -282,7 +283,7 @@ begin
         if k > 2048 then k := 2048; end;
         charset := charsetOf(s[0..k]);
     end;
-    if latin(charset) then s := fromLatin(s, ADR(bytes)); end;
+    if latin(charset) then s := fromLatin(s, SYSTEM.ADR(bytes)); end;
     from := out^.len;
     p := {out: out, start: out^.len, title: -1};
     i := 0;
@@ -290,7 +291,7 @@ begin
         if s[i] # '<' then
             j := i;
             while (j < LEN(s)) and (s[j] # '<') do INC(j); end;
-            flow(ADR(p), decode(s[i..j], ADR(ent)));
+            flow(SYSTEM.ADR(p), decode(s[i..j], SYSTEM.ADR(ent)));
             i := j;
         elsif Str.hasPrefix(s[i..LEN(s)], "<!--") then
             j := Str.find(s[i + 4..LEN(s)], "-->");
@@ -304,7 +305,7 @@ begin
             k := j;
             while (k < LEN(s)) and nameChar(s[k]) do INC(k); end;
             if k = j then
-                flow(ADR(p), "<");   (* a < that starts no tag is text *)
+                flow(SYSTEM.ADR(p), "<");   (* a < that starts no tag is text *)
                 INC(i);
                 continue;
             end;
@@ -312,7 +313,7 @@ begin
             Buf.str(ent, s[j..k]);
             name := Buf.bytes(ent);
             Str.lower(name);
-            tag(ADR(p), name, ending);
+            tag(SYSTEM.ADR(p), name, ending);
             i := tagEnd(s, k);
             if not ending and Afind.listed(name, Raw) then
                 (* script and style hold text, < and all, to their end tag *)
@@ -320,7 +321,7 @@ begin
                 Buf.str(bytes, "</");
                 Buf.str(bytes, name);
                 j := findFold(s, Buf.bytes(bytes), i);
-                tag(ADR(p), name, true);
+                tag(SYSTEM.ADR(p), name, true);
                 i := tagEnd(s, j);
             end;
         end;
@@ -333,11 +334,11 @@ end;
 
 var failed: BOOL;
 
-proc expect(what, html, ctype, want: []U8);
+proc expect(what, html, ctype, want: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
-    text(html, ctype, ADR(b));
+    text(html, ctype, SYSTEM.ADR(b));
     if Buf.bytes(b) = want then return; end;
     Out.str("Ahtml: ");
     Out.str(what);

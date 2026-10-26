@@ -47,15 +47,16 @@
    editor's buffers, which come with the peers. *)
 module Atools;
 import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
-    Strs := Vec([]U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
+    Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
+import SYSTEM;
 
 type
     (* What the human answers to question, shown detail first (a diff;
        "" for none): one of the bytes of keys, or 0 if there is nobody
        to ask. *)
-    Ask* = proc(question, detail, keys: []U8; arg: ^U8): U8;
+    Ask* = proc(question, detail, keys: []const U8; arg: ^U8): U8;
     (* After a no, why: a line, "" for none; good until the next call. *)
-    Why* = proc(arg: ^U8): []U8;
+    Why* = proc(arg: ^U8): []const U8;
 
     (* How the human is asked; ask nil if nobody is there, why nil if
        they aren't asked why. *)
@@ -67,7 +68,7 @@ type
 
     (* One command of a call of run: the program and its arguments. *)
     Cmd = record
-        args: [][]U8;
+        args: [][]const U8;
     end;
 
     (* A change the human declined: the call, as key gives it, and what
@@ -252,7 +253,7 @@ const
 (* Whether the tool called name only reads: a call to one made twice
    in a turn is refused the second time, as nothing it saw has
    changed. *)
-proc readOnly*(name: []U8): BOOL;
+proc readOnly*(name: []const U8): BOOL;
 begin
     match name of
     | "read", "find", "grep", "def", "outline", "git": return true;
@@ -262,15 +263,25 @@ end;
 
 (* Arguments *)
 
+(* s, copied into mem, for what is parsed in it, as parsing rewrites its
+   text. *)
+proc scratch(mem: ^Mem.Allocator; s: []const U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(mem, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
 (* The argument key as a string; "" if it isn't one. *)
-proc str*(a: ^Args; key: []U8): []U8;
+proc str*(a: ^Args; key: []const U8): []const U8;
 begin
     return Json.text(a^.d, Json.member(a^.d, a^.v, key));
 end;
 
 (* s with a leading ~, alone or before a '/', made $HOME, in a's
    memory if it changes. Never ~user. *)
-proc home(a: ^Args; s: []U8): []U8;
+proc home(a: ^Args; s: []const U8): []const U8;
 var b: Buf.Buf;
 begin
     if (s # "~") and not Str.hasPrefix(s, "~/") then return s; end;
@@ -281,7 +292,7 @@ begin
 end;
 
 (* The argument key as a path: a string, ~ made $HOME. *)
-proc path*(a: ^Args; key: []U8): []U8;
+proc path*(a: ^Args; key: []const U8): []const U8;
 begin
     return home(a, str(a, key));
 end;
@@ -289,8 +300,8 @@ end;
 (* The argument key as the path of a directory to look in: ".", if it
    isn't given, and without the /s at its end, so that "src/" and "src"
    are one. *)
-proc dir(a: ^Args; key: []U8): []U8;
-var s: []U8;
+proc dir(a: ^Args; key: []const U8): []const U8;
+var s: []const U8;
 begin
     s := path(a, key);
     if LEN(s) = 0 then return "."; end;
@@ -299,7 +310,7 @@ begin
 end;
 
 (* The argument key as a flag: true, or the string "true". *)
-proc flag(a: ^Args; key: []U8): BOOL;
+proc flag(a: ^Args; key: []const U8): BOOL;
 var v: Json.Value;
 begin
     v := Json.member(a^.d, a^.v, key);
@@ -310,14 +321,14 @@ end;
    sends git's list in three shapes: an array; the array's own JSON
    text, as a string, which split at its blanks would make a subcommand
    of '["diff",'; and the words as one string, "diff --stat". *)
-proc list*(a: ^Args; key: []U8): [][]U8;
-var l: Strs.Vec; v, w: Json.Value; s, word: []U8; i: INT;
+proc list*(a: ^Args; key: []const U8): [][]const U8;
+var l: Strs.Vec; v, w: Json.Value; s, word: []const U8; i: INT;
 begin
     Strs.init(l, a^.mem);
     v := Json.member(a^.d, a^.v, key);
     s := Json.text(a^.d, v);
     if (Json.kind(a^.d, v) = Json.Kind.string) and Str.hasPrefix(Str.trimLeft(s), "[") then
-        w := Json.parse(a^.d, Json.copy(a^.d, s));
+        w := Json.parse(a^.d, scratch(a^.mem, s));
         if Json.kind(a^.d, w) = Json.Kind.array then v := w; end;
     end;
     if Json.kind(a^.d, v) = Json.Kind.array then
@@ -336,7 +347,7 @@ end;
 
 (* The argument key as a number, from a number or a string that holds
    one, as models send both; def if it is neither. *)
-proc int*(a: ^Args; key: []U8; def: INT): INT;
+proc int*(a: ^Args; key: []const U8; def: INT): INT;
 var n: I64; ok: BOOL;
 begin
     n, ok := Str.toInt(str(a, key));
@@ -346,14 +357,14 @@ end;
 
 (* text parsed into a, in d, with what a keeps from mem: false if it is no object, nor a string
    whose text is one. *)
-proc parse*(d: ^Json.Doc; mem: ^Mem.Allocator; text: []U8; a: ^Args): BOOL;
+proc parse*(d: ^Json.Doc; mem: ^Mem.Allocator; text: []const U8; a: ^Args): BOOL;
 var v: Json.Value;
 begin
     a^.d := d;
     a^.mem := mem;
     if LEN(Str.trim(text)) = 0 then text := "{}"; end;
-    v := Json.parse(d, Json.copy(d, text));   (* parsing rewrites its text *)
-    if Json.kind(d, v) = Json.Kind.string then v := Json.parse(d, Json.text(d, v)); end;
+    v := Json.parse(d, scratch(mem, text));
+    if Json.kind(d, v) = Json.Kind.string then v := Json.parse(d, scratch(mem, Json.text(d, v))); end;
     a^.v := v;
     return Json.kind(d, v) = Json.Kind.object;
 end;
@@ -365,7 +376,7 @@ end;
    the directory that holds it: a model that reads one file of a
    library reads its neighbours next. Never / or the home directory,
    though: a yes to ~/.bashrc is not one to all of ~. *)
-proc fence(name, path: []U8; h: ^Human; out: ^Buf.Buf): BOOL;
+proc fence(name, path: []const U8; h: ^Human; out: ^Buf.Buf): BOOL;
 var p, room, home, q: Buf.Buf; i: Sys.Info; e: INT;
 begin
     if (LEN(path) = 0) or Afence.inside(path) then return true; end;
@@ -377,8 +388,8 @@ begin
     defer Buf.done(home);
     Buf.init(q, Heap.heap);
     defer Buf.done(q);
-    Afence.resolve(path, ADR(p));
-    Afence.resolve(Sys.env("HOME"), ADR(home));
+    Afence.resolve(path, SYSTEM.ADR(p));
+    Afence.resolve(Sys.env("HOME"), SYSTEM.ADR(home));
     Buf.str(room, Buf.bytes(p));
     i, e := Sys.info(Buf.bytes(p));
     if (e # 0) or not i.dir then
@@ -424,7 +435,7 @@ end;
    a tab can't be taken for the file's own blanks once the number is
    dropped. *)
 proc read(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var text: Buf.Buf; s, p: []U8; i: Sys.Info; e, at, j, k, n, first, count: INT; digits: [20]U8;
+var text: Buf.Buf; s, p: []const U8; i: Sys.Info; e, at, j, k, n, first, count: INT; digits: [20]U8;
 begin
     p := path(a, "path");
     i, e := Sys.info(p);
@@ -489,8 +500,8 @@ begin
 end;
 
 (* find, grep, def or outline, the tool name, run with a. *)
-proc look(name: []U8; a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var d, s: []U8;
+proc look(name: []const U8; a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d, s: []const U8;
 begin
     d := dir(a, "path");
     if name = "find" then
@@ -523,7 +534,7 @@ end;
    options that choose or shape the list get past it. A log not
    limited is limited to 50 commits. *)
 proc git(a: ^Args; out: ^Buf.Buf);
-var args: [][]U8; argv: Strs.Vec; sub, x, o: []U8; i: INT; limited: BOOL;
+var args: [][]const U8; argv: Strs.Vec; sub, x, o: []const U8; i: INT; limited: BOOL;
 begin
     args := list(a, "args");
     if LEN(args) = 0 then
@@ -583,10 +594,10 @@ var
     runsEnv: Buf.Buf;  (* the variables run may set, config's run_env *)
     trust: Buf.Buf;    (* those run starts without asking: config's trust, and each answered always *)
     trustRun: INT;     (* trust's length from config, before the answers *)
-    testCmd: []U8;     (* config's test_cmd, for a project with none of its own *)
+    testCmd: []const U8;     (* config's test_cmd, for a project with none of its own *)
 
 (* list, words parted by blanks, into b with a blank at either end. *)
-proc words(b: ^Buf.Buf; list: []U8);
+proc words(b: ^Buf.Buf; list: []const U8);
 begin
     Buf.init(b^, Heap.heap);
     Buf.add(b^, ' ');
@@ -598,12 +609,12 @@ end;
    the variables it may set and the programs trusted; check's test
    command for a project without one of its own. test is kept, the
    others copied. *)
-proc commands*(run, ro, env, trusted, test: []U8);
+proc commands*(run, ro, env, trusted, test: []const U8);
 begin
-    words(ADR(runs), run);
-    words(ADR(runsRO), ro);
-    words(ADR(runsEnv), env);
-    words(ADR(trust), trusted);
+    words(SYSTEM.ADR(runs), run);
+    words(SYSTEM.ADR(runsRO), ro);
+    words(SYSTEM.ADR(runsEnv), env);
+    words(SYSTEM.ADR(trust), trusted);
     trustRun := trust.len;
     testCmd := test;
 end;
@@ -612,8 +623,8 @@ end;
    it, in tests.json, or else config's test_cmd; "" for none. It is
    always one the human typed, never one a project brings, as check
    runs it without asking. *)
-proc testFor*(b: ^Buf.Buf): []U8;
-var s: []U8;
+proc testFor*(b: ^Buf.Buf): []const U8;
+var s: []const U8;
 begin
     s := Astore.keyed("tests.json", Afence.zone, b);
     if LEN(s) = 0 then
@@ -627,7 +638,7 @@ end;
    --exec-batch, or -x or -X alone or in a cluster of short flags (-Hx).
    In a cluster, a flag that takes a value takes the rest of the word
    as it (-tx is the type executable), so the scan stops there. *)
-proc fdRuns(x: []U8): BOOL;
+proc fdRuns(x: []const U8): BOOL;
 var i: INT;
 begin
     if Str.hasPrefix(x, "--") then return Str.hasPrefix(x, "--exec"); end;
@@ -649,7 +660,7 @@ end;
    needs. fd runs any program for -x and -X. And a path glued to an
    option (-o../x) hides it from the fence, which judges words; after
    an = it is seen, and so is a path as a word of its own. *)
-proc refusedArg(prog, x: []U8; out: ^Buf.Buf): BOOL;
+proc refusedArg(prog, x: []const U8; out: ^Buf.Buf): BOOL;
 begin
     if not Str.hasPrefix(x, "-") then return false; end;
     if prog = "man" then
@@ -667,7 +678,7 @@ end;
 (* ARNO_SCRATCH=, the scratch directory, from mem: the variable run and
    check give each program, so a script can name the scratch without
    knowing the conversation. *)
-proc scratchVar(mem: ^Mem.Allocator): []U8;
+proc scratchVar(mem: ^Mem.Allocator): []const U8;
 var b: Buf.Buf;
 begin
     Buf.init(b, mem);
@@ -690,8 +701,8 @@ end;
    The variables of env must be among run_env's: a model once ran a
    test suite 22 times only to see a program's colours under one. *)
 proc runTool(a: ^Args; h: ^Human; out: ^Buf.Buf);
-var args: [][]U8; cmds: Cmds.Vec; c: []Cmd; env: Strs.Vec; ask, lines, line, q: Buf.Buf; e, v: Json.Value;
-    x, why: []U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
+var args: [][]const U8; cmds: Cmds.Vec; c: []Cmd; env: Strs.Vec; ask, lines, line, q: Buf.Buf; e, v: Json.Value;
+    x, why: []const U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
 begin
     Strs.init(env, a^.mem);
     e := Json.member(a^.d, a^.v, "env");
@@ -791,7 +802,7 @@ begin
         Buf.str(out^, "exit ");
         j := {args: c[k].args, env: Strs.all(env), detach: true};
         Buf.init(line, a^.mem);
-        status, _ := Arun.start(ADR(j), MaxOut + 1, ADR(line));
+        status, _ := Arun.start(SYSTEM.ADR(j), MaxOut + 1, SYSTEM.ADR(line));
         if (status = 127) and (line.len = 0) or (status < 0) then
             out^.len := start;
             Fmt.write(out^, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
@@ -815,17 +826,17 @@ end;
    where a build's or a test's summary and the error that matters
    are. *)
 proc check(mem: ^Mem.Allocator; out: ^Buf.Buf);
-var b, got: Buf.Buf; cmd: []U8; j: Arun.Job; status: INT; cut: BOOL;
+var b, got: Buf.Buf; cmd: []const U8; j: Arun.Job; status: INT; cut: BOOL;
 begin
     Buf.init(b, mem);
     Buf.init(got, mem);
-    cmd := testFor(ADR(b));
+    cmd := testFor(SYSTEM.ADR(b));
     if LEN(cmd) = 0 then
         Buf.str(out^, "error: no test command for this project; ask the human to run /test COMMAND once");
         return;
     end;
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
-    status, cut := Arun.start(ADR(j), MaxOut - 1000, ADR(got));
+    status, cut := Arun.start(SYSTEM.ADR(j), MaxOut - 1000, SYSTEM.ADR(got));
     if status = 0 then
         Fmt.write(out^, "passed: {}", [Fmt.str(cmd)]);
     else
@@ -843,8 +854,8 @@ end;
 (* Whether the human approves question, shown detail first. If not,
    what is added to out says so: the reason, if they give one, after
    "declined by user", and that nothing was changed. *)
-proc approve(h: ^Human; question, detail: []U8; out: ^Buf.Buf): BOOL;
-var why: []U8;
+proc approve(h: ^Human; question, detail: []const U8; out: ^Buf.Buf): BOOL;
+var why: []const U8;
 begin
     if h^.ask = nil then
         Buf.str(out^, "declined: there is nobody to approve the change. Nothing was changed.");
@@ -863,7 +874,7 @@ begin
 end;
 
 (* The lines of s, the last counted if it has no line feed. *)
-proc lines(s: []U8): INT;
+proc lines(s: []const U8): INT;
 var n, i: INT;
 begin
     n := 0;
@@ -876,8 +887,8 @@ end;
 
 (* Each line of s, at most max of them, added to b after mark, as a
    diff marks what goes and what comes. *)
-proc marked(b: ^Buf.Buf; mark: U8; s: []U8; max: INT);
-var line, rest: []U8; n: INT;
+proc marked(b: ^Buf.Buf; mark: U8; s: []const U8; max: INT);
+var line, rest: []const U8; n: INT;
 begin
     rest := s;
     n := 0;
@@ -895,7 +906,7 @@ begin
 end;
 
 (* The times sub occurs in s, none overlapping. *)
-proc count(s, sub: []U8): INT;
+proc count(s, sub: []const U8): INT;
 var n, i, at: INT;
 begin
     n := 0;
@@ -911,7 +922,7 @@ end;
 
 (* The directories path is in made, as mkdir -p makes them: false if
    one can't be. *)
-proc makeDirs(path: []U8): BOOL;
+proc makeDirs(path: []const U8): BOOL;
 var i, e: INT;
 begin
     for i := 1 to LEN(path) - 1 do
@@ -924,8 +935,8 @@ begin
 end;
 
 (* s's lines pushed on l, without their line feeds. *)
-proc split(s: []U8; l: ^Strs.Vec);
-var line: []U8;
+proc split(s: []const U8; l: ^Strs.Vec);
+var line: []const U8;
 begin
     while LEN(s) > 0 do
         line, s, _ := Str.cut(s, "\n");
@@ -934,7 +945,7 @@ begin
 end;
 
 (* The blanks and tabs a line starts with. *)
-proc blanks(s: []U8): INT;
+proc blanks(s: []const U8): INT;
 var n: INT;
 begin
     n := 0;
@@ -948,13 +959,13 @@ end;
    Lines are compared whole, so old that starts or ends inside a line
    never matches here. A model told only "not found" tends to send the
    same edit again. *)
-proc nearMiss(old, path, s: []U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var o, f: Strs.Vec; ol, fl: [][]U8; n, i, k, at, hits, first: INT;
+proc nearMiss(old, path, s: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var o, f: Strs.Vec; ol, fl: [][]const U8; n, i, k, at, hits, first: INT;
 begin
     Strs.init(o, mem);
     Strs.init(f, mem);
-    split(old, ADR(o));
-    split(s, ADR(f));
+    split(old, SYSTEM.ADR(o));
+    split(s, SYSTEM.ADR(f));
     ol := Strs.all(o);
     fl := Strs.all(f);
     n := LEN(ol);
@@ -996,7 +1007,7 @@ end;
    all; or, with old empty, the file made, holding new. Written in
    place, so that the file's mode and its links survive. *)
 proc edit(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var p, old, new, s: []U8; text, diff, q, b: Buf.Buf; i: Sys.Info; e, n, at: INT; all: BOOL;
+var p, old, new, s: []const U8; text, diff, q, b: Buf.Buf; i: Sys.Info; e, n, at: INT; all: BOOL;
 begin
     p := path(a, "path");
     old := str(a, "old");
@@ -1048,9 +1059,9 @@ begin
         else
             Fmt.write(q, "apply edit to {}, in {} places?", [Fmt.str(p), Fmt.int(n)]);
         end;
-        marked(ADR(diff), '-', old, MaxFile);
+        marked(SYSTEM.ADR(diff), '-', old, MaxFile);
     end;
-    marked(ADR(diff), '+', new, MaxFile);
+    marked(SYSTEM.ADR(diff), '+', new, MaxFile);
     if not Afence.ours(p) and not approve(h, Buf.bytes(q), Buf.bytes(diff), out) then return; end;
     if LEN(old) = 0 then
         Buf.str(b, new);
@@ -1077,7 +1088,7 @@ end;
 (* Whether path is a file that move and remove may take; if not, why
    is added to out. A directory is refused: removing one is the one
    mistake here that could take a whole tree with it. *)
-proc movable(p: []U8; out: ^Buf.Buf): BOOL;
+proc movable(p: []const U8; out: ^Buf.Buf): BOOL;
 var i: Sys.Info; e: INT;
 begin
     i, e := Sys.info(p);
@@ -1097,7 +1108,7 @@ end;
    wasn't shown. A rename, so that a move across file systems fails and
    says so. *)
 proc move(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var p, dest: []U8; q: Buf.Buf; e: INT;
+var p, dest: []const U8; q: Buf.Buf; e: INT;
 begin
     p := path(a, "path");
     dest := path(a, "to");
@@ -1130,7 +1141,7 @@ end;
    holds, as an edit that empties it would show it, so that a slip of
    the path is seen for what it is. *)
 proc remove(a: ^Args; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var p, s: []U8; text, diff, q: Buf.Buf; e: INT;
+var p, s: []const U8; text, diff, q: Buf.Buf; e: INT;
 begin
     p := path(a, "path");
     if not movable(p, out) then return; end;
@@ -1143,7 +1154,7 @@ begin
         if Str.find(s, "\x00") >= 0 then
             Buf.str(diff, "(binary)\n");
         else
-            marked(ADR(diff), '-', Buf.bytes(text), MaxShown);
+            marked(SYSTEM.ADR(diff), '-', Buf.bytes(text), MaxShown);
         end;
     end;
     Fmt.write(q, "remove {}?", [Fmt.str(p)]);
@@ -1156,7 +1167,7 @@ begin
     Fmt.write(out^, "ok: removed {}", [Fmt.str(p)]);
 end;
 
-proc keep(s: []U8): []U8;
+proc keep(s: []const U8): []U8;
 var c: []U8; ok: BOOL;
 begin
     c, ok := Str.copy(Heap.heap, s);
@@ -1174,7 +1185,7 @@ var
 
 (* search through the SearXNG at url, as config's searxng says; "" for
    none, when search isn't offered. *)
-proc search*(url: []U8);
+proc search*(url: []const U8);
 begin
     Str.free(Heap.heap, searx);
     searx := keep(url);
@@ -1183,7 +1194,7 @@ end;
 
 (* s added to b with every byte but a letter, a digit and -._~
    written %XX, as a URL's query wants it. *)
-proc escape(b: ^Buf.Buf; s: []U8);
+proc escape(b: ^Buf.Buf; s: []const U8);
 var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
@@ -1197,11 +1208,11 @@ end;
 (* The page at url read, its body into body, at most MaxPage bytes of
    it: its Content-Type, or why it can't be. A page that never comes
    mustn't hold the turn: WebWait seconds is all it gets. *)
-proc page(url: []U8; mem: ^Mem.Allocator; body: ^Buf.Buf): ([]U8, ERROR);
+proc page(url: []const U8; mem: ^Mem.Allocator; body: ^Buf.Buf): ([]const U8, ERROR);
 var req, res: Http.Message; r: ^Http.Reader; n: INT; err: ERROR;
 begin
     if not webbed then
-        Awire.initClient(ADR(web));
+        Awire.initClient(SYSTEM.ADR(web));
         webbed := true;
     end;
     web.deadline := Sys.clock() + I64(WebWait) * 1000000000;
@@ -1237,8 +1248,8 @@ begin
     Buf.init(body, mem);
     Buf.str(url, searx);
     Buf.str(url, "/search?format=json&q=");
-    escape(ADR(url), str(a, "query"));
-    _, err := page(Buf.bytes(url), mem, ADR(body));
+    escape(SYSTEM.ADR(url), str(a, "query"));
+    _, err := page(Buf.bytes(url), mem, SYSTEM.ADR(body));
     if err = Failed then
         Fmt.write(out^, "error: search failed: {}", [Fmt.str(Buf.bytes(body))]);
         return;
@@ -1246,21 +1257,21 @@ begin
         Fmt.write(out^, "error: search failed: {}", [Fmt.str(MSG(err))]);
         return;
     end;
-    if not Json.init(ADR(d), mem) then return; end;
-    v := Json.parse(ADR(d), Buf.bytes(body));
-    r := Json.member(ADR(d), v, "results");
-    if Json.kind(ADR(d), r) # Json.Kind.array then
+    if not Json.init(SYSTEM.ADR(d), mem) then return; end;
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(body));
+    r := Json.member(SYSTEM.ADR(d), v, "results");
+    if Json.kind(SYSTEM.ADR(d), r) # Json.Kind.array then
         i := body.len;
         if i > 200 then i := 200; end;
         Fmt.write(out^, "error: a bad reply from SearXNG: {}", [Fmt.str(Buf.bytes(body)[0..i])]);
         return;
     end;
-    for i := 0 to Json.len(ADR(d), r) - 1 do
+    for i := 0 to Json.len(SYSTEM.ADR(d), r) - 1 do
         if i = MaxResults then break; end;
-        x := Json.item(ADR(d), r, i);
-        Fmt.write(out^, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "title"))),
-            Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "url"))),
-            Fmt.str(Json.text(ADR(d), Json.member(ADR(d), x, "content")))]);
+        x := Json.item(SYSTEM.ADR(d), r, i);
+        Fmt.write(out^, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "title"))),
+            Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "url"))),
+            Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "content")))]);
     end;
     if out^.len = 0 then Buf.str(out^, "no results"); end;
 end;
@@ -1270,7 +1281,7 @@ end;
    is refused, as read refuses a binary file: its Content-Type can't be
    trusted to say so. *)
 proc fetch(a: ^Args; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var body: Buf.Buf; url, kind, s: []U8; err: ERROR;
+var body: Buf.Buf; url, kind, s: []const U8; err: ERROR;
 begin
     url := str(a, "url");
     if not Str.hasPrefix(url, "http://") and not Str.hasPrefix(url, "https://") then
@@ -1278,7 +1289,7 @@ begin
         return;
     end;
     Buf.init(body, mem);
-    kind, err := page(url, mem, ADR(body));
+    kind, err := page(url, mem, SYSTEM.ADR(body));
     if err = Failed then
         Fmt.write(out^, "error: {}", [Fmt.str(Buf.bytes(body))]);
         return;
@@ -1317,7 +1328,7 @@ begin
         | "delegate": if not lead then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": if LEN(Str.trim(Buf.bytes(runs))) = 0 then continue; end;
-        | "check": if LEN(testFor(ADR(b))) = 0 then continue; end;
+        | "check": if LEN(testFor(SYSTEM.ADR(b))) = 0 then continue; end;
         | else:
         end;
         Tools.push(offer, Offered[i]);
@@ -1334,7 +1345,7 @@ var refused: Refusals.Vec;   (* the changes the human declined this run, from He
    less in the model's JSON is still the same change. edit's old must
    match the file, so a change declined, then made another way, can't
    come back unchanged unless the file is as it was. *)
-proc key(name: []U8; a: ^Args; b: ^Buf.Buf);
+proc key(name: []const U8; a: ^Args; b: ^Buf.Buf);
 begin
     Buf.str(b^, name);
     Buf.add(b^, 1);
@@ -1343,7 +1354,7 @@ end;
 
 (* What the human said when they declined the change key, "" if they
    haven't. *)
-proc said(key: []U8): []U8;
+proc said(key: []const U8): []const U8;
 var r: []Refusal; i: INT;
 begin
     r := Refusals.all(refused);
@@ -1379,8 +1390,8 @@ end;
    the words on disk judged, as git does: fd's patterns were asked
    about every time and caught nothing. A program run won't start is
    judged not at all, as asking for it would be asking for nothing. *)
-proc fenced(name: []U8; a: ^Args; h: ^Human; out: ^Buf.Buf): BOOL;
-var args: [][]U8; prog, x: []U8; i: INT; first: BOOL;
+proc fenced(name: []const U8; a: ^Args; h: ^Human; out: ^Buf.Buf): BOOL;
+var args: [][]const U8; prog, x: []const U8; i: INT; first: BOOL;
 begin
     match name of
     | "read", "edit", "remove": return fence(name, path(a, "path"), h, out);
@@ -1413,7 +1424,7 @@ end;
 
 (* s added to b made valid UTF-8, each byte that starts no character
    made U+FFFD. *)
-proc clean*(b: ^Buf.Buf; s: []U8);
+proc clean*(b: ^Buf.Buf; s: []const U8);
 var i, n: INT; c: I32;
 begin
     if Str.valid(s) then Buf.str(b^, s); return; end;
@@ -1429,16 +1440,16 @@ end;
    added to out: what the tool gave, cut at MaxOut and made valid
    UTF-8. h is how the human is asked; mem is for the call's own work,
    which out mustn't point into. *)
-proc call*(name, args: []U8; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
-var d: Json.Doc; a: Args; res, k: Buf.Buf; s: []U8; i, cut: INT; change, ok: BOOL;
+proc call*(name, args: []const U8; h: ^Human; mem: ^Mem.Allocator; out: ^Buf.Buf);
+var d: Json.Doc; a: Args; res, k: Buf.Buf; s: []const U8; i, cut: INT; change, ok: BOOL;
 begin
-    if not Json.init(ADR(d), mem) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(ADR(d));
+    if not Json.init(SYSTEM.ADR(d), mem) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
     Buf.init(res, mem);
     Buf.init(k, mem);
     change := (name = "edit") or (name = "move") or (name = "remove");
-    ok := parse(ADR(d), mem, args, ADR(a));
-    if ok and change then key(name, ADR(a), ADR(k)); end;
+    ok := parse(SYSTEM.ADR(d), mem, args, SYSTEM.ADR(a));
+    if ok and change then key(name, SYSTEM.ADR(a), SYSTEM.ADR(k)); end;
     if not ok then
         Buf.str(res, "error: the arguments must be one JSON object, as the tool's schema says; got: ");
         cut := LEN(args);
@@ -1448,30 +1459,30 @@ begin
         Buf.str(res, "not run: the human already declined this very change (");
         Buf.str(res, said(Buf.bytes(k)));
         Buf.str(res, "). Change it as they said, or ask them.");
-    elsif not fenced(name, ADR(a), h, ADR(res)) then
+    elsif not fenced(name, SYSTEM.ADR(a), h, SYSTEM.ADR(res)) then
         (* res says why *)
     elsif name = "read" then
-        read(ADR(a), mem, ADR(res));
+        read(SYSTEM.ADR(a), mem, SYSTEM.ADR(res));
     elsif (name = "find") or (name = "grep") or (name = "def") or (name = "outline") then
-        look(name, ADR(a), mem, ADR(res));
+        look(name, SYSTEM.ADR(a), mem, SYSTEM.ADR(res));
     elsif name = "git" then
-        git(ADR(a), ADR(res));
+        git(SYSTEM.ADR(a), SYSTEM.ADR(res));
     elsif name = "run" then
-        runTool(ADR(a), h, ADR(res));
+        runTool(SYSTEM.ADR(a), h, SYSTEM.ADR(res));
     elsif name = "check" then
-        check(mem, ADR(res));
+        check(mem, SYSTEM.ADR(res));
     elsif name = "edit" then
-        edit(ADR(a), h, mem, ADR(res));
+        edit(SYSTEM.ADR(a), h, mem, SYSTEM.ADR(res));
     elsif name = "move" then
-        move(ADR(a), h, mem, ADR(res));
+        move(SYSTEM.ADR(a), h, mem, SYSTEM.ADR(res));
     elsif name = "remove" then
-        remove(ADR(a), h, mem, ADR(res));
+        remove(SYSTEM.ADR(a), h, mem, SYSTEM.ADR(res));
     elsif name = "note" then
-        Aahead.note(str(ADR(a), "text"), mem, ADR(res));
+        Aahead.note(str(SYSTEM.ADR(a), "text"), mem, SYSTEM.ADR(res));
     elsif (name = "search") and (LEN(searx) > 0) then
-        searchWeb(ADR(a), mem, ADR(res));
+        searchWeb(SYSTEM.ADR(a), mem, SYSTEM.ADR(res));
     elsif name = "fetch" then
-        fetch(ADR(a), mem, ADR(res));
+        fetch(SYSTEM.ADR(a), mem, SYSTEM.ADR(res));
     elsif name = "delegate" then
         Buf.str(res, "error: there are no workers here");
     else
@@ -1502,9 +1513,9 @@ end;
 
 (* The module's test, in build/tools, which it makes. *)
 
-var failed: BOOL; answer: U8; asked: INT; because, shown: []U8;
+var failed: BOOL; answer: U8; asked: INT; because, shown: []const U8;
 
-proc expect(what, got, want: []U8);
+proc expect(what, got, want: []const U8);
 begin
     if got = want then return; end;
     Out.str("Atools: ");
@@ -1517,31 +1528,31 @@ begin
     failed := true;
 end;
 
-proc human(_question, detail, _keys: []U8; _arg: ^U8): U8;
+proc human(_question, detail, _keys: []const U8; _arg: ^U8): U8;
 begin
     INC(asked);
     shown := keep(detail);
     return answer;
 end;
 
-proc reason(_arg: ^U8): []U8;
+proc reason(_arg: ^U8): []const U8;
 begin
     return because;
 end;
 
 var mem: Arena.Arena;
 
-proc run(name, args: []U8; ask: Ask): []U8;
+proc run(name, args: []const U8; ask: Ask): []const U8;
 var b: Buf.Buf; h: Human;
 begin
     Buf.init(b, Heap.heap);
     h := {ask: ask, why: reason};
-    call(name, args, ADR(h), ADR(mem.base), ADR(b));
+    call(name, args, SYSTEM.ADR(h), SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
     Arena.reset(mem);
     return Buf.bytes(b);
 end;
 
-proc holds(path, want: []U8);
+proc holds(path, want: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
@@ -1550,7 +1561,7 @@ begin
 end;
 
 proc main*: INT;
-var dir, s: []U8; long, store: Buf.Buf; i: INT;
+var dir, s: []const U8; long, store: Buf.Buf; i: INT;
 begin
     Arun.child();
     if not Arena.init(mem, 1 shl 26) then return 1; end;

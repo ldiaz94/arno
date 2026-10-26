@@ -32,6 +32,7 @@
    Files. *)
 module Aattach;
 import Amsg, Aahead, Arun, Buf, Str, Sys, Files, Heap, Fmt, Out, Strs := Vec([]U8), Names := Sort([]U8, before);
+import SYSTEM;
 
 const
     Tag = "\n\n<file path=\"";
@@ -50,8 +51,8 @@ end;
 
 (* An image's type, by its name's extension, case aside: image/png and
    the like, or "" if it isn't one arno sends. *)
-proc mime*(path: []U8): []U8;
-var i: INT; ext: []U8;
+proc mime*(path: []const U8): []const U8;
+var i: INT; ext: []const U8;
 begin
     i := Str.findLast(path, ".");
     if i < 0 then return ""; end;
@@ -64,7 +65,7 @@ begin
 end;
 
 (* s in base64, added to b. *)
-proc base64*(b: ^Buf.Buf; s: []U8);
+proc base64*(b: ^Buf.Buf; s: []const U8);
 var i, n: INT; w: U32;
 begin
     i := 0;
@@ -85,8 +86,8 @@ end;
 (* The names in the directory dir, sorted, each on a line of its own, a
    directory's with a slash after it, added to out; false if dir can't
    be read. *)
-proc listing*(dir: []U8; out: ^Buf.Buf): BOOL;
-var d: Sys.Dir; names: Strs.Vec; all: [][]U8; name: []U8; more: BOOL; i: INT; path: Buf.Buf; info: Sys.Info;
+proc listing*(dir: []const U8; out: ^Buf.Buf): BOOL;
+var d: Sys.Dir; names: Strs.Vec; all: [][]U8; name: []const U8; more: BOOL; i: INT; path: Buf.Buf; info: Sys.Info;
     err: INT;
 begin
     if Sys.openDir(d, dir) < 0 then return false; end;
@@ -115,7 +116,7 @@ begin
 end;
 
 (* Lines a to b of s, counted from 1. *)
-proc slice(s: []U8; a, b: INT): []U8;
+proc slice(s: []const U8; a, b: INT): []const U8;
 var i, n, start: INT;
 begin
     n := 1;
@@ -136,8 +137,8 @@ begin
 end;
 
 (* lines, N or N-M, as the first line and the last. *)
-proc range(lines: []U8): (INT, INT);
-var a, b: []U8; x, y: I64; ok, okA, okB: BOOL;
+proc range(lines: []const U8): (INT, INT);
+var a, b: []const U8; x, y: I64; ok, okA, okB: BOOL;
 begin
     a, b, ok := Str.cut(lines, "-");
     x, okA := Str.toInt(a);
@@ -151,15 +152,15 @@ end;
 (* What path, its lines lines or all of it, brings, added to out after a
    blank line as a block: a file's text, or a directory's listing;
    false, and nothing added, if it brings nothing. *)
-proc bring(path, lines: []U8; out: ^Buf.Buf): BOOL;
-var text: Buf.Buf; info: Sys.Info; err, a, b: INT; s: []U8;
+proc bring(path, lines: []const U8; out: ^Buf.Buf): BOOL;
+var text: Buf.Buf; info: Sys.Info; err, a, b: INT; s: []const U8;
 begin
     info, err := Sys.info(path);
     if err # 0 then return false; end;
     Buf.init(text, Heap.heap);
     defer Buf.done(text);
     if info.dir then
-        if (LEN(lines) > 0) or not listing(path, ADR(text)) then return false; end;
+        if (LEN(lines) > 0) or not listing(path, SYSTEM.ADR(text)) then return false; end;
         Buf.str(out^, "\n\n");
         Aahead.block(out, path, "", Buf.bytes(text));
         return true;
@@ -180,8 +181,8 @@ end;
 
 (* The image file path as a data: URL, added to b; false, and nothing
    added, if it isn't an image or can't be read. *)
-proc image*(path: []U8; b: ^Buf.Buf): BOOL;
-var raw: Buf.Buf; m: []U8;
+proc image*(path: []const U8; b: ^Buf.Buf): BOOL;
+var raw: Buf.Buf; m: []const U8;
 begin
     m := mime(path);
     if LEN(m) = 0 then return false; end;
@@ -200,7 +201,7 @@ begin
 end;
 
 (* Whether text[i] is an @ that starts a reference. *)
-proc starts*(text: []U8; i: INT): BOOL;
+proc starts*(text: []const U8; i: INT): BOOL;
 begin
     return (text[i] = '@') and ((i = 0) or blank(text[i - 1]) or (text[i - 1] = '('));
 end;
@@ -208,7 +209,7 @@ end;
 (* The quoted reference at text[i], @"path" and maybe :N or :N-M after
    it: its path and lines, and where it ends; false if the quote isn't
    closed on its line, or holds nothing. *)
-proc quoted(text: []U8; i: INT): ([]U8, []U8, INT, BOOL);
+proc quoted(text: []const U8; i: INT): ([]const U8, []const U8, INT, BOOL);
 var k, j: INT;
 begin
     k := i + 2;
@@ -228,8 +229,8 @@ begin
 end;
 
 (* Whether s is lines: N or N-M. *)
-proc isLines(s: []U8): BOOL;
-var a, b: []U8; ok, okA, okB: BOOL;
+proc isLines(s: []const U8): BOOL;
+var a, b: []const U8; ok, okA, okB: BOOL;
 begin
     a, b, ok := Str.cut(s, "-");
     _, okA := Str.toInt(a);
@@ -239,7 +240,7 @@ end;
 
 (* An unquoted reference's text split into its path and its lines, what
    follows its last colon if that is N or N-M. *)
-proc split(ref: []U8): ([]U8, []U8);
+proc split(ref: []const U8): ([]const U8, []const U8);
 var i: INT;
 begin
     i := Str.findLast(ref, ":");
@@ -249,7 +250,7 @@ end;
 
 (* What one reference brings to m, the text going out and the images to
    m's: true if it brought something, or was brought already. *)
-proc take(m: ^Amsg.Msg; path, lines: []U8; seen: ^Strs.Vec; out: ^Buf.Buf): BOOL;
+proc take(m: ^Amsg.Msg; path, lines: []const U8; seen: ^Strs.Vec; out: ^Buf.Buf): BOOL;
 var key, url: Buf.Buf; s: [][]U8; i: INT;
 begin
     Buf.init(key, Heap.heap);
@@ -262,7 +263,7 @@ begin
     end;
     Buf.init(url, Heap.heap);
     defer Buf.done(url);
-    if (LEN(lines) = 0) and image(path, ADR(url)) then
+    if (LEN(lines) = 0) and image(path, SYSTEM.ADR(url)) then
         Strs.push(m^.images, Amsg.keep(Buf.bytes(url)));
     elsif not bring(path, lines, out) then
         return false;
@@ -273,8 +274,8 @@ end;
 
 (* m's text made text and what its references bring, and its images
    those they name. *)
-proc expand*(m: ^Amsg.Msg; text: []U8);
-var out: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []U8; ok: BOOL;
+proc expand*(m: ^Amsg.Msg; text: []const U8);
+var out: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []const U8; ok: BOOL;
 begin
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
@@ -286,7 +287,7 @@ begin
         if (i + 1 < LEN(text)) and (text[i + 1] = '"') then
             path, lines, j, ok := quoted(text, i);
             if ok then
-                _ := take(m, path, lines, ADR(seen), ADR(out));
+                _ := take(m, path, lines, SYSTEM.ADR(seen), SYSTEM.ADR(out));
                 i := j;
                 continue;
             end;
@@ -296,7 +297,7 @@ begin
         ref := text[i + 1..j];
         while true do
             path, lines := split(ref);
-            if (LEN(path) = 0) or take(m, path, lines, ADR(seen), ADR(out)) then break; end;
+            if (LEN(path) = 0) or take(m, path, lines, SYSTEM.ADR(seen), SYSTEM.ADR(out)) then break; end;
             (* the punctuation at its end may be the sentence's *)
             if (LEN(ref) = 0) or (Str.find(",.;:)?!", ref[LEN(ref) - 1..LEN(ref)]) < 0) then break; end;
             ref := ref[0..LEN(ref) - 1];
@@ -309,7 +310,7 @@ begin
 end;
 
 (* A user's message as the human typed it, its attachments taken off. *)
-proc shown*(text: []U8): []U8;
+proc shown*(text: []const U8): []const U8;
 var i: INT;
 begin
     i := Str.find(text, Tag);
@@ -322,11 +323,11 @@ end;
 (* The clipboard's image saved to a file of its own, its path into
    path; false, with why there is none in a few words into why. *)
 proc paste*(path, why: ^Buf.Buf): BOOL;
-var got: Buf.Buf; st: INT; s, base: []U8; digits: [20]U8; n: INT;
+var got: Buf.Buf; st: INT; s, base: []const U8; digits: [20]U8; n: INT;
 begin
     Buf.init(got, Heap.heap);
     defer Buf.done(got);
-    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, SYSTEM.ADR(got));
     s := Buf.bytes(got);
     if (st = 127) or (st < 0) then Buf.str(why^, "pasting an image needs xclip"); return false; end;
     if Str.find(s, "display") >= 0 then Buf.str(why^, "no X display to take the clipboard from"); return false; end;
@@ -343,7 +344,7 @@ begin
         return false;
     end;
     Buf.reset(got);
-    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, SYSTEM.ADR(got));
     if (st # 0) or not Str.hasPrefix(Buf.bytes(got), Png) then
         Buf.str(why^, "the clipboard's image couldn't be read");
         return false;
@@ -381,7 +382,7 @@ end;
 
 (* The module's test. *)
 
-proc expect(what, got, want: []U8; failed: ^BOOL);
+proc expect(what, got, want: []const U8; failed: ^BOOL);
 begin
     if got = want then return; end;
     Fmt.print("Aattach: {}: got\n{}\nwant\n{}\n", [Fmt.str(what), Fmt.str(got), Fmt.str(want)]);
@@ -399,23 +400,23 @@ begin
     _ := Files.write("build/attach/bin", "x\x00y");
     _ := Files.write("build/attach/p.png", "\x89PNG");
     Buf.init(b, Heap.heap);
-    base64(ADR(b), "Man");
-    base64(ADR(b), "Ma");
-    base64(ADR(b), "M");
-    expect("base64", Buf.bytes(b), "TWFuTWE=TQ==", ADR(failed));
-    Amsg.init(ADR(m), Amsg.Role.user);
-    expand(ADR(m), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again");
+    base64(SYSTEM.ADR(b), "Man");
+    base64(SYSTEM.ADR(b), "Ma");
+    base64(SYSTEM.ADR(b), "M");
+    expect("base64", Buf.bytes(b), "TWFuTWE=TQ==", SYSTEM.ADR(failed));
+    Amsg.init(SYSTEM.ADR(m), Amsg.Role.user);
+    expand(SYSTEM.ADR(m), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again");
     expect("lines, once", m.text, "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again\n\n" +
-        "<file path=\"build/attach/a.txt\" lines=\"2-3\">\ntwo\nthree\n</file>", ADR(failed));
-    expect("shown", shown(m.text), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again", ADR(failed));
-    expand(ADR(m), "(@\"build/attach/a dir/b.txt\":1) @build/attach/a.txt. me@x.org @build/attach/bin @nothing");
+        "<file path=\"build/attach/a.txt\" lines=\"2-3\">\ntwo\nthree\n</file>", SYSTEM.ADR(failed));
+    expect("shown", shown(m.text), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again", SYSTEM.ADR(failed));
+    expand(SYSTEM.ADR(m), "(@\"build/attach/a dir/b.txt\":1) @build/attach/a.txt. me@x.org @build/attach/bin @nothing");
     expect("quoted, and a sentence's stop", m.text,
         "(@\"build/attach/a dir/b.txt\":1) @build/attach/a.txt. me@x.org @build/attach/bin @nothing\n\n" +
         "<file path=\"build/attach/a dir/b.txt\" lines=\"1\">\nbee\n</file>\n\n" +
-        "<file path=\"build/attach/a.txt\">\none\ntwo\nthree\n</file>", ADR(failed));
-    expand(ADR(m), "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png");
+        "<file path=\"build/attach/a.txt\">\none\ntwo\nthree\n</file>", SYSTEM.ADR(failed));
+    expand(SYSTEM.ADR(m), "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png");
     expect("a listing", m.text, "@build/attach/a\\ dir @\"build/attach/a dir\" @build/attach/p.png\n\n" +
-        "<file path=\"build/attach/a dir\">\nb.txt\n</file>", ADR(failed));
+        "<file path=\"build/attach/a dir\">\nb.txt\n</file>", SYSTEM.ADR(failed));
     if (m.images.len # 1) or (Strs.all(m.images)[0] # "data:image/png;base64,iVBORw==") then
         Out.str("Aattach: an image\n");
         failed := true;

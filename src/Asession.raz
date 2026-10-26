@@ -34,10 +34,11 @@
 module Asession;
 import Agent, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Arun, Amsg, Buf, Str, Sys, Files, Fmt,
     Heap, Arena, Math, Rt, Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
+import SYSTEM;
 
 type
     (* What arno says of a command to the human: s, an error if bad. *)
-    Show* = proc(s: []U8; bad: BOOL; arg: ^U8);
+    Show* = proc(s: []const U8; bad: BOOL; arg: ^U8);
     (* The conversation is c from now on, to be shown from its start. *)
     Changed* = proc(c: ^Astore.Conv; arg: ^U8);
 
@@ -65,7 +66,7 @@ var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    Afence.useScratch(Astore.scratch(s^.conv.id, ADR(b)));
+    Afence.useScratch(Astore.scratch(s^.conv.id, SYSTEM.ADR(b)));
 end;
 
 (* s made the session the config sets up, telling front of turns and
@@ -75,7 +76,7 @@ proc init*(s: ^Session; front: Agent.Front; show: Show; arg: ^U8);
 var id: Buf.Buf; n: I64; i: INT; ok: BOOL;
 begin
     s^ := {show: show, arg: arg};
-    Aconf.load(ADR(s^.conf));
+    Aconf.load(SYSTEM.ADR(s^.conf));
     if not Arena.init(s^.mem, 1 shl 28) then Rt.stop("arno: out of memory"); end;
     Buf.init(s^.out, Heap.heap);
     Buf.init(s^.listed, Heap.heap);
@@ -83,23 +84,23 @@ begin
     if s^.conf.warnings.len > 0 then show(Str.trimRight(Buf.bytes(s^.conf.warnings)), true, arg); end;
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
-    Astore.newId(ADR(id));
-    Astore.init(ADR(s^.conv), Buf.bytes(id));
-    Agent.init(ADR(s^.agent), ADR(s^.conf.prov), front);
+    Astore.newId(SYSTEM.ADR(id));
+    Astore.init(SYSTEM.ADR(s^.conv), Buf.bytes(id));
+    Agent.init(SYSTEM.ADR(s^.agent), SYSTEM.ADR(s^.conf.prov), front);
     useScratch(s);
-    n, ok := Str.toInt(Aconf.get(ADR(s^.conf), "max_steps"));
+    n, ok := Str.toInt(Aconf.get(SYSTEM.ADR(s^.conf), "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;
-    n, ok := Str.toInt(Aconf.get(ADR(s^.conf), "prune"));
+    n, ok := Str.toInt(Aconf.get(SYSTEM.ADR(s^.conf), "prune"));
     if ok and (n >= 0) then s^.agent.prune := INT(n); end;
-    s^.agent.budget, _ := Math.toReal(Aconf.get(ADR(s^.conf), "turn_budget"));
-    s^.agent.prefetch := Aconf.get(ADR(s^.conf), "prefetch") # "no";
-    s^.agent.worker := Aconf.get(ADR(s^.conf), "worker");
+    s^.agent.budget, _ := Math.toReal(Aconf.get(SYSTEM.ADR(s^.conf), "turn_budget"));
+    s^.agent.prefetch := Aconf.get(SYSTEM.ADR(s^.conf), "prefetch") # "no";
+    s^.agent.worker := Aconf.get(SYSTEM.ADR(s^.conf), "worker");
     for i := 0 to LEN(Aprompt.Modes) - 1 do
-        if Aprompt.Modes[i].name = Aconf.get(ADR(s^.conf), "mode") then s^.agent.mode := Aprompt.Mode(i); end;
+        if Aprompt.Modes[i].name = Aconf.get(SYSTEM.ADR(s^.conf), "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
-    Atools.search(Aconf.get(ADR(s^.conf), "searxng"));
-    Atools.commands(Aconf.get(ADR(s^.conf), "run"), Aconf.get(ADR(s^.conf), "run_ro"),
-        Aconf.get(ADR(s^.conf), "run_env"), Aconf.get(ADR(s^.conf), "trust"), Aconf.get(ADR(s^.conf), "test_cmd"));
+    Atools.search(Aconf.get(SYSTEM.ADR(s^.conf), "searxng"));
+    Atools.commands(Aconf.get(SYSTEM.ADR(s^.conf), "run"), Aconf.get(SYSTEM.ADR(s^.conf), "run_ro"),
+        Aconf.get(SYSTEM.ADR(s^.conf), "run_env"), Aconf.get(SYSTEM.ADR(s^.conf), "trust"), Aconf.get(SYSTEM.ADR(s^.conf), "test_cmd"));
 end;
 
 (* What lasts the session found: the context files, as config's
@@ -108,19 +109,19 @@ end;
    sure to run: asking about context files is for a human who will be
    answered. *)
 proc prepare*(s: ^Session);
-var mode: []U8;
+var mode: []const U8;
 begin
-    mode := Aconf.get(ADR(s^.conf), "context_files");
+    mode := Aconf.get(SYSTEM.ADR(s^.conf), "context_files");
     if LEN(mode) = 0 then mode := "ask"; end;
-    Agent.prepare(ADR(s^.agent), mode, Aconf.get(ADR(s^.conf), "project_map") # "no");
+    Agent.prepare(SYSTEM.ADR(s^.agent), mode, Aconf.get(SYSTEM.ADR(s^.conf), "project_map") # "no");
 end;
 
-proc say(s: ^Session; text: []U8);
+proc say(s: ^Session; text: []const U8);
 begin
     s^.show(text, false, s^.arg);
 end;
 
-proc fail(s: ^Session; text: []U8);
+proc fail(s: ^Session; text: []const U8);
 begin
     s^.show(text, true, s^.arg);
 end;
@@ -128,8 +129,8 @@ end;
 (* s's conversation saved; said if it can't be. *)
 proc save(s: ^Session);
 begin
-    Astore.setModel(ADR(s^.conv), s^.conf.prov.model);
-    if Astore.save(ADR(s^.conv)) # nil then
+    Astore.setModel(SYSTEM.ADR(s^.conv), s^.conf.prov.model);
+    if Astore.save(SYSTEM.ADR(s^.conv)) # nil then
         Buf.reset(s^.out);
         Fmt.write(s^.out, "the conversation can't be saved in {}", [Fmt.str(Astore.dir())]);
         fail(s, Buf.bytes(s^.out));
@@ -141,14 +142,14 @@ end;
 proc changed(s: ^Session);
 begin
     s^.agent.held := 0;
-    if s^.changed # nil then s^.changed(ADR(s^.conv), s^.arg); end;
+    if s^.changed # nil then s^.changed(SYSTEM.ADR(s^.conv), s^.arg); end;
 end;
 
 (* c made s's conversation, the one it had given back, and what was
    granted and declined for that one forgotten. *)
 proc switch(s: ^Session; c: ^Astore.Conv);
 begin
-    Astore.done(ADR(s^.conv));
+    Astore.done(SYSTEM.ADR(s^.conv));
     s^.conv := c^;
     useScratch(s);
     Afence.forget;
@@ -162,7 +163,7 @@ end;
 proc answer(s: ^Session; why: ^Buf.Buf): ERROR;
 var err: ERROR;
 begin
-    err := Agent.turn(ADR(s^.agent), ADR(s^.conv), why);
+    err := Agent.turn(SYSTEM.ADR(s^.agent), SYSTEM.ADR(s^.conv), why);
     save(s);
     return err;
 end;
@@ -170,7 +171,7 @@ end;
 (* A turn of s's conversation, on the human's message text and what its
    @paths bring: Agent.turn's error, why saying why it failed. The
    conversation is saved after. *)
-proc turn*(s: ^Session; text: []U8; why: ^Buf.Buf): ERROR;
+proc turn*(s: ^Session; text: []const U8; why: ^Buf.Buf): ERROR;
 var m: ^Amsg.Msg;
 begin
     m := Msgs.add(s^.conv.msgs);
@@ -180,7 +181,7 @@ begin
 end;
 
 (* A turn's failure, err, shown: why says why it failed. *)
-proc failed(s: ^Session; err: ERROR; why: []U8);
+proc failed(s: ^Session; err: ERROR; why: []const U8);
 begin
     if err = Awire.Failed then fail(s, why); end;
     if err = Awire.Stopped then fail(s, "stopped"); end;
@@ -188,13 +189,13 @@ end;
 
 (* The id of the conversation arg names, into id: a number from /list,
    or an id; else the last changed whose title or id holds arg. *)
-proc find(arg: []U8; id: ^Buf.Buf): BOOL;
+proc find(arg: []const U8; id: ^Buf.Buf): BOOL;
 var list: Items.Vec; n: I64; ok: BOOL;
 begin
     n, ok := Str.toInt(arg);
-    Astore.recent(Listed, "", ADR(list));
+    Astore.recent(Listed, "", SYSTEM.ADR(list));
     if ok and (n >= 1) and (n <= list.len) then Buf.str(id^, Items.all(list)[n - 1].id); end;
-    Astore.drop(ADR(list));
+    Astore.drop(SYSTEM.ADR(list));
     if id^.len > 0 then return true; end;
     if LEN(arg) = 0 then return false; end;
     if Sys.access(Astore.file(arg, id), {}) = 0 then
@@ -203,25 +204,25 @@ begin
         return true;
     end;
     Buf.reset(id^);
-    Astore.recent(1, arg, ADR(list));
+    Astore.recent(1, arg, SYSTEM.ADR(list));
     if list.len > 0 then Buf.str(id^, Items.all(list)[0].id); end;
-    Astore.drop(ADR(list));
+    Astore.drop(SYSTEM.ADR(list));
     return id^.len > 0;
 end;
 
 (* The conversation arg names, as find finds it, made s's: /load, and
    arno --resume. false if there is none. *)
-proc resume*(s: ^Session; arg: []U8): BOOL;
+proc resume*(s: ^Session; arg: []const U8): BOOL;
 var id: Buf.Buf; c: Astore.Conv;
 begin
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
-    if not find(arg, ADR(id)) then return false; end;
-    if Astore.load(ADR(c), Buf.bytes(id)) # nil then
-        Astore.done(ADR(c));
+    if not find(arg, SYSTEM.ADR(id)) then return false; end;
+    if Astore.load(SYSTEM.ADR(c), Buf.bytes(id)) # nil then
+        Astore.done(SYSTEM.ADR(c));
         return false;
     end;
-    switch(s, ADR(c));
+    switch(s, SYSTEM.ADR(c));
     return true;
 end;
 
@@ -273,9 +274,9 @@ var id: Buf.Buf; c: Astore.Conv;
 begin
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
-    Astore.newId(ADR(id));
-    Astore.init(ADR(c), Buf.bytes(id));
-    switch(s, ADR(c));
+    Astore.newId(SYSTEM.ADR(id));
+    Astore.init(SYSTEM.ADR(c), Buf.bytes(id));
+    switch(s, SYSTEM.ADR(c));
     say(s, "a new conversation");
 end;
 
@@ -287,7 +288,7 @@ begin
     m := Msgs.all(s^.conv.msgs);
     keep := 1;
     while (keep < LEN(m)) and (m[keep].role # Amsg.Role.user) do INC(keep); end;
-    for i := keep to LEN(m) - 1 do Amsg.free(ADR(m[i])); end;
+    for i := keep to LEN(m) - 1 do Amsg.free(SYSTEM.ADR(m[i])); end;
     Msgs.resize(s^.conv.msgs, keep);
     save(s);
     changed(s);
@@ -303,7 +304,7 @@ end;
    first and left as it is, so that a bad summary costs nothing, and
    /load takes it back. The summary is the human's first message, and
    CompactAck the reply, as every provider wants turns to alternate. *)
-proc compact(s: ^Session; focus: []U8);
+proc compact(s: ^Session; focus: []const U8);
 var ask, sum, why, id, title: Buf.Buf; c: Astore.Conv; m: ^Amsg.Msg; msgs: []Amsg.Msg; before, i, n: INT;
     err: ERROR;
 begin
@@ -313,15 +314,15 @@ begin
     before := 0;
     for i := 0 to n - 1 do INC(before, LEN(msgs[i].text)); end;
     save(s);
-    Buf.init(ask, ADR(s^.mem.base));
-    Buf.init(sum, ADR(s^.mem.base));
-    Buf.init(why, ADR(s^.mem.base));
-    Buf.init(id, ADR(s^.mem.base));
-    Buf.init(title, ADR(s^.mem.base));
+    Buf.init(ask, SYSTEM.ADR(s^.mem.base));
+    Buf.init(sum, SYSTEM.ADR(s^.mem.base));
+    Buf.init(why, SYSTEM.ADR(s^.mem.base));
+    Buf.init(id, SYSTEM.ADR(s^.mem.base));
+    Buf.init(title, SYSTEM.ADR(s^.mem.base));
     Buf.str(ask, Agent.CompactAsk);
     if LEN(focus) > 0 then Fmt.write(ask, " Pay particular attention to: {}.", [Fmt.str(focus)]); end;
-    err := Agent.once(ADR(s^.agent), ADR(s^.conv), Buf.bytes(ask), ADR(sum), ADR(why));
-    Astore.newId(ADR(id));
+    err := Agent.once(SYSTEM.ADR(s^.agent), SYSTEM.ADR(s^.conv), Buf.bytes(ask), SYSTEM.ADR(sum), SYSTEM.ADR(why));
+    Astore.newId(SYSTEM.ADR(id));
     if err = Awire.Stopped then
         fail(s, "stopped; history unchanged");
     elsif err # nil then
@@ -331,11 +332,11 @@ begin
         fail(s, "the summary came back empty; history unchanged");
     else
         Buf.str(title, s^.conv.title);
-        if title.len = 0 then Astore.autoTitle(ADR(s^.conv), ADR(title)); end;
+        if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
         if not Str.hasSuffix(Buf.bytes(title), " (compacted)") then Buf.str(title, " (compacted)"); end;
-        Astore.init(ADR(c), Buf.bytes(id));
-        Astore.setTitle(ADR(c), Buf.bytes(title));
-        Astore.setSystem(ADR(c), s^.conv.system);
+        Astore.init(SYSTEM.ADR(c), Buf.bytes(id));
+        Astore.setTitle(SYSTEM.ADR(c), Buf.bytes(title));
+        Astore.setSystem(SYSTEM.ADR(c), s^.conv.system);
         m := Msgs.add(c.msgs);
         Amsg.init(m, Amsg.Role.user);
         Buf.reset(ask);
@@ -347,7 +348,7 @@ begin
         Fmt.write(s^.out, "compacted {} messages ({} KB) into a summary ({} KB); the full history is kept as {}",
             [Fmt.int(n), Fmt.int(before div 1024), Fmt.int(sum.len div 1024), Fmt.str(s^.conv.id)]);
         Astore.moveScratch(s^.conv.id, c.id);
-        Astore.done(ADR(s^.conv));
+        Astore.done(SYSTEM.ADR(s^.conv));
         s^.conv := c;
         useScratch(s);
         save(s);
@@ -356,11 +357,11 @@ begin
     end;
 end;
 
-proc list(word: []U8; out: ^Buf.Buf);
+proc list(word: []const U8; out: ^Buf.Buf);
 var l: Items.Vec; items: []Astore.Item; i: INT;
 begin
-    Astore.recent(Listed, word, ADR(l));
-    defer Astore.drop(ADR(l));
+    Astore.recent(Listed, word, SYSTEM.ADR(l));
+    defer Astore.drop(SYSTEM.ADR(l));
     items := Items.all(l);
     for i := 0 to LEN(items) - 1 do
         if i > 0 then Buf.add(out^, '\n'); end;
@@ -370,7 +371,7 @@ begin
     if LEN(items) = 0 then Buf.str(out^, "nothing saved"); end;
 end;
 
-proc load(s: ^Session; arg: []U8);
+proc load(s: ^Session; arg: []const U8);
 var title: Buf.Buf;
 begin
     if not resume(s, arg) then
@@ -378,9 +379,9 @@ begin
         fail(s, Buf.bytes(s^.out));
         return;
     end;
-    Buf.init(title, ADR(s^.mem.base));
+    Buf.init(title, SYSTEM.ADR(s^.mem.base));
     Buf.str(title, s^.conv.title);
-    if title.len = 0 then Astore.autoTitle(ADR(s^.conv), ADR(title)); end;
+    if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
     Fmt.write(s^.out, "loaded {}: {}, {} messages",
         [Fmt.str(s^.conv.id), Fmt.str(Buf.bytes(title)), Fmt.int(s^.conv.msgs.len)]);
     say(s, Buf.bytes(s^.out));
@@ -388,20 +389,20 @@ end;
 
 (* The conversation arg names as JSON, its file as it is; the current
    one, saved first, if arg is "". *)
-proc export(s: ^Session; arg: []U8);
+proc export(s: ^Session; arg: []const U8);
 var id, path: Buf.Buf;
 begin
-    Buf.init(id, ADR(s^.mem.base));
-    Buf.init(path, ADR(s^.mem.base));
+    Buf.init(id, SYSTEM.ADR(s^.mem.base));
+    Buf.init(path, SYSTEM.ADR(s^.mem.base));
     if LEN(arg) = 0 then
         save(s);
         Buf.str(id, s^.conv.id);
-    elsif not find(arg, ADR(id)) then
+    elsif not find(arg, SYSTEM.ADR(id)) then
         Fmt.write(s^.out, "no conversation {}", [Fmt.str(arg)]);
         fail(s, Buf.bytes(s^.out));
         return;
     end;
-    if Files.load(Astore.file(Buf.bytes(id), ADR(path)), s^.out) # 0 then
+    if Files.load(Astore.file(Buf.bytes(id), SYSTEM.ADR(path)), s^.out) # 0 then
         Fmt.write(s^.out, "no conversation {}", [Fmt.str(Buf.bytes(id))]);
         fail(s, Buf.bytes(s^.out));
         return;
@@ -409,9 +410,9 @@ begin
     say(s, Buf.bytes(s^.out));
 end;
 
-proc rename(s: ^Session; title: []U8);
+proc rename(s: ^Session; title: []const U8);
 begin
-    Astore.setTitle(ADR(s^.conv), title);
+    Astore.setTitle(SYSTEM.ADR(s^.conv), title);
     save(s);
     if LEN(title) = 0 then say(s, "title cleared"); return; end;
     Fmt.write(s^.out, "renamed: {}", [Fmt.str(title)]);
@@ -419,7 +420,7 @@ begin
 end;
 
 (* /system: text is the rest of the line as typed. *)
-proc system(s: ^Session; text: []U8);
+proc system(s: ^Session; text: []const U8);
 begin
     if (LEN(text) = 0) and (LEN(s^.conv.system) = 0) then
         Fmt.write(s^.out, "arno's own system prompt:\n\n{}", [Fmt.str(Aprompt.Own)]);
@@ -427,18 +428,18 @@ begin
         Fmt.write(s^.out, "this conversation's own system prompt (/system - for arno's):\n\n{}",
             [Fmt.str(s^.conv.system)]);
     elsif text = "-" then
-        Astore.setSystem(ADR(s^.conv), "");
+        Astore.setSystem(SYSTEM.ADR(s^.conv), "");
         save(s);
         Buf.str(s^.out, "system prompt: arno's own, from the next turn");
     else
-        Astore.setSystem(ADR(s^.conv), text);
+        Astore.setSystem(SYSTEM.ADR(s^.conv), text);
         save(s);
         Buf.str(s^.out, "system prompt: this conversation's own, from the next turn");
     end;
     say(s, Buf.bytes(s^.out));
 end;
 
-proc mode(s: ^Session; name: []U8);
+proc mode(s: ^Session; name: []const U8);
 var i: INT;
 begin
     for i := 0 to LEN(Aprompt.Modes) - 1 do
@@ -454,14 +455,14 @@ end;
 
 (* name kept as s's named, the provider's model or name: what it named
    before is given back. *)
-proc keep(s: ^Session; name: []U8): []U8;
+proc keep(s: ^Session; name: []const U8): []U8;
 begin
     Str.free(Heap.heap, s^.named);
     s^.named := Amsg.keep(name);
     return s^.named;
 end;
 
-proc model(s: ^Session; name: []U8);
+proc model(s: ^Session; name: []const U8);
 begin
     if LEN(name) > 0 then s^.conf.prov.model := keep(s, name); end;
     Fmt.write(s^.out, "model: {}", [Fmt.str(s^.conf.prov.model)]);
@@ -470,7 +471,7 @@ end;
 
 (* The models of s's provider, a line each: those its server told
    /models, or arno's own list of them. *)
-proc models*(s: ^Session): []U8;
+proc models*(s: ^Session): []const U8;
 begin
     if Buf.bytes(s^.listedOf) = s^.conf.prov.name then return Buf.bytes(s^.listed); end;
     return Awire.known(s^.conf.prov.name);
@@ -481,10 +482,10 @@ end;
 proc listModels(s: ^Session);
 var why: Buf.Buf; p: ^Awire.Prov;
 begin
-    p := ADR(s^.conf.prov);
+    p := SYSTEM.ADR(s^.conf.prov);
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    if Awire.models(p, ADR(s^.out), ADR(why)) = nil then
+    if Awire.models(p, SYSTEM.ADR(s^.out), SYSTEM.ADR(why)) = nil then
         Buf.reset(s^.listed);
         Buf.str(s^.listed, Buf.bytes(s^.out));
         Buf.reset(s^.listedOf);
@@ -504,10 +505,10 @@ end;
 
 (* /provider: one of Awire's presets, with none of the config's params,
    which were the other provider's. *)
-proc provider(s: ^Session; name: []U8);
+proc provider(s: ^Session; name: []const U8);
 var p: ^Awire.Prov;
 begin
-    p := ADR(s^.conf.prov);
+    p := SYSTEM.ADR(s^.conf.prov);
     if (LEN(name) > 0) and not Awire.preset(keep(s, name), p) then
         Fmt.write(s^.out, "unknown; try {}", [Fmt.str(Awire.Presets)]);
         fail(s, Buf.bytes(s^.out));
@@ -562,7 +563,7 @@ begin
     n, exact := context(s);
     if not exact then Buf.add(b^, '~'); end;
     tokens(b, n);
-    pr, _ := Aprice.price(ADR(s^.conf.prov));
+    pr, _ := Aprice.price(SYSTEM.ADR(s^.conf.prov));
     if pr.window > 0 then
         Buf.add(b^, '/');
         tokens(b, pr.window);
@@ -577,9 +578,9 @@ end;
    narrow terminal. Large is 60% of the model's window where that is
    known, else 20 messages or 50 KB of text. *)
 proc status*(s: ^Session; b: ^Buf.Buf);
-var a: ^Agent.Agent; pr: Aprice.Price; n: I64; title: Buf.Buf; t: []U8; i: INT; full: BOOL;
+var a: ^Agent.Agent; pr: Aprice.Price; n: I64; title: Buf.Buf; t: []const U8; i: INT; full: BOOL;
 begin
-    a := ADR(s^.agent);
+    a := SYSTEM.ADR(s^.agent);
     Fmt.write(b^, "arno \u{B7} {} \u{B7} {} @ {} \u{B7} ctx ", [Fmt.str(Aprompt.Modes[INT(a^.mode)].name),
         Fmt.str(s^.conf.prov.model), Fmt.str(s^.conf.prov.name)]);
     meter(s, b);
@@ -595,7 +596,7 @@ begin
         end;
     end;
     n, _ := context(s);
-    pr, _ := Aprice.price(ADR(s^.conf.prov));
+    pr, _ := Aprice.price(SYSTEM.ADR(s^.conf.prov));
     if pr.window > 0 then
         full := n * 10 >= pr.window * 6;
     else
@@ -605,7 +606,7 @@ begin
     Buf.init(title, Heap.heap);
     defer Buf.done(title);
     Buf.str(title, s^.conv.title);
-    if title.len = 0 then Astore.autoTitle(ADR(s^.conv), ADR(title)); end;
+    if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
     t := Buf.bytes(title);
     if LEN(t) = 0 then return; end;
     Buf.str(b^, " \u{B7} ");
@@ -622,7 +623,7 @@ end;
 proc usage(s: ^Session; out: ^Buf.Buf);
 var a: ^Agent.Agent; pr: Aprice.Price; priced: BOOL;
 begin
-    a := ADR(s^.agent);
+    a := SYSTEM.ADR(s^.agent);
     Buf.str(out^, "context   ");
     meter(s, out);
     Buf.str(out^, " tokens\n");
@@ -635,7 +636,7 @@ begin
         money(out, a^.spent);
         if a^.unpriced > 0 then Fmt.write(out^, ", and {} requests with no known price", [Fmt.int(a^.unpriced)]); end;
     end;
-    pr, priced := Aprice.price(ADR(s^.conf.prov));
+    pr, priced := Aprice.price(SYSTEM.ADR(s^.conf.prov));
     if priced then
         Fmt.write(out^, "\nprice     {}: ", [Fmt.str(s^.conf.prov.model)]);
         price(out, pr.inp);
@@ -652,35 +653,35 @@ end;
 
 (* /remember: arg is the fact, after "#" and its tags, which commas
    part, if it starts with a #. *)
-proc remember(s: ^Session; arg: []U8);
-var tags, fact: []U8;
+proc remember(s: ^Session; arg: []const U8);
+var tags, fact: []const U8;
 begin
     tags := "";
     fact := arg;
     if Str.hasPrefix(arg, "#") then tags, fact := Str.field(arg[1..LEN(arg)]); end;
     fact := Str.trim(fact);
     if LEN(fact) = 0 then fail(s, "usage: /remember [#tag,tag,...] fact text"); return; end;
-    Amemory.remember(fact, tags, ADR(s^.mem.base));
-    Aprompt.remembered(ADR(s^.agent.prompt));
+    Amemory.remember(fact, tags, SYSTEM.ADR(s^.mem.base));
+    Aprompt.remembered(SYSTEM.ADR(s^.agent.prompt));
     Fmt.write(s^.out, "remembered: {}", [Fmt.str(fact)]);
     say(s, Buf.bytes(s^.out));
 end;
 
-proc forget(s: ^Session; word: []U8);
+proc forget(s: ^Session; word: []const U8);
 var n: INT;
 begin
     if LEN(word) = 0 then fail(s, "usage: /forget TAG|WORD"); return; end;
-    n := Amemory.forget(word, ADR(s^.mem.base));
-    Aprompt.remembered(ADR(s^.agent.prompt));
+    n := Amemory.forget(word, SYSTEM.ADR(s^.mem.base));
+    Aprompt.remembered(SYSTEM.ADR(s^.agent.prompt));
     Fmt.write(s^.out, "forgot {}", [Fmt.int(n)]);
     say(s, Buf.bytes(s^.out));
 end;
 
-proc notes(s: ^Session; arg: []U8);
-var verb, what: []U8;
+proc notes(s: ^Session; arg: []const U8);
+var verb, what: []const U8;
 begin
     if LEN(arg) = 0 then
-        Aahead.listNotes(ADR(s^.mem.base), ADR(s^.out));
+        Aahead.listNotes(SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out));
         if s^.out.len = 0 then Fmt.write(s^.out, "no notes for {}", [Fmt.str(Afence.zone)]); end;
         say(s, Buf.bytes(s^.out));
         return;
@@ -688,7 +689,7 @@ begin
     verb, what := Str.field(arg);
     what := Str.trim(what);
     if (verb # "forget") or (LEN(what) = 0) then fail(s, "usage: /notes [forget N|WORD]"); return; end;
-    if Aahead.forgetNotes(what, ADR(s^.mem.base), ADR(s^.out)) = 0 then
+    if Aahead.forgetNotes(what, SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out)) = 0 then
         Fmt.write(s^.out, "no note {}", [Fmt.str(what)]);
         fail(s, Buf.bytes(s^.out));
         return;
@@ -700,17 +701,17 @@ end;
    set to arg, for this project, in tests.json. A failure is put to the
    model as a turn, with the end of the output: the human runs the
    tests to have what failed fixed. *)
-proc test(s: ^Session; arg: []U8);
-var b, got, output, why: Buf.Buf; cmd: []U8; j: Arun.Job; m: ^Amsg.Msg; status: INT; cut: BOOL;
+proc test(s: ^Session; arg: []const U8);
+var b, got, output, why: Buf.Buf; cmd: []const U8; j: Arun.Job; m: ^Amsg.Msg; status: INT; cut: BOOL;
 begin
-    Buf.init(b, ADR(s^.mem.base));
-    Buf.init(got, ADR(s^.mem.base));
-    Buf.init(output, ADR(s^.mem.base));
-    Buf.init(why, ADR(s^.mem.base));
+    Buf.init(b, SYSTEM.ADR(s^.mem.base));
+    Buf.init(got, SYSTEM.ADR(s^.mem.base));
+    Buf.init(output, SYSTEM.ADR(s^.mem.base));
+    Buf.init(why, SYSTEM.ADR(s^.mem.base));
     cmd := arg;
     if LEN(cmd) = 0 then
-        cmd := Atools.testFor(ADR(b));
-    elsif cmd # Astore.keyed("tests.json", Afence.zone, ADR(b)) then
+        cmd := Atools.testFor(SYSTEM.ADR(b));
+    elsif cmd # Astore.keyed("tests.json", Afence.zone, SYSTEM.ADR(b)) then
         if Astore.setKeyed("tests.json", Afence.zone, cmd) # nil then
             fail(s, "tests.json can't be written");
             return;
@@ -721,7 +722,7 @@ begin
     end;
     if LEN(cmd) = 0 then fail(s, "usage: /test COMMAND, or set test_cmd in config"); return; end;
     j := {args: ["sh", "-c", cmd], detach: true, tail: true};
-    status, cut := Arun.start(ADR(j), MaxTest, ADR(got));
+    status, cut := Arun.start(SYSTEM.ADR(j), MaxTest, SYSTEM.ADR(got));
     if status = 0 then
         Fmt.write(s^.out, "tests passed: {}", [Fmt.str(cmd)]);
         say(s, Buf.bytes(s^.out));
@@ -731,26 +732,26 @@ begin
     Fmt.write(b, "Tests failed (`{}`, exit {}). What should I fix?\n\n", [Fmt.str(cmd), Fmt.int(status)]);
     if cut then Buf.str(output, "[...]\n"); end;
     Buf.str(output, Buf.bytes(got));
-    Aahead.block(ADR(b), cmd, "", Buf.bytes(output));
+    Aahead.block(SYSTEM.ADR(b), cmd, "", Buf.bytes(output));
     m := Msgs.add(s^.conv.msgs);
     Amsg.init(m, Amsg.Role.user);
     Amsg.setText(m, Buf.bytes(b));
-    failed(s, answer(s, ADR(why)), Buf.bytes(why));
+    failed(s, answer(s, SYSTEM.ADR(why)), Buf.bytes(why));
 end;
 
 (* A command, line, which starts with a /. *)
-proc command(s: ^Session; line: []U8);
-var name, arg: []U8;
+proc command(s: ^Session; line: []const U8);
+var name, arg: []const U8;
 begin
     name, arg := Str.field(line);
     arg := Str.trim(arg);
     Buf.reset(s^.out);
     match name of
-    | "/help": help(ADR(s^.out)); say(s, Buf.bytes(s^.out));
+    | "/help": help(SYSTEM.ADR(s^.out)); say(s, Buf.bytes(s^.out));
     | "/new": renew(s);
     | "/clear": clear(s);
     | "/compact": compact(s, arg);
-    | "/list": list(arg, ADR(s^.out)); say(s, Buf.bytes(s^.out));
+    | "/list": list(arg, SYSTEM.ADR(s^.out)); say(s, Buf.bytes(s^.out));
     | "/load": load(s, arg);
     | "/export": export(s, arg);
     | "/rename": rename(s, arg);
@@ -759,12 +760,12 @@ begin
     | "/model": model(s, arg);
     | "/models": listModels(s);
     | "/provider": provider(s, arg);
-    | "/tools": tools(s, ADR(s^.out)); say(s, Buf.bytes(s^.out));
-    | "/usage": usage(s, ADR(s^.out)); say(s, Buf.bytes(s^.out));
+    | "/tools": tools(s, SYSTEM.ADR(s^.out)); say(s, Buf.bytes(s^.out));
+    | "/usage": usage(s, SYSTEM.ADR(s^.out)); say(s, Buf.bytes(s^.out));
     | "/remember": remember(s, arg);
     | "/forget": forget(s, arg);
     | "/my-memory":
-        Amemory.facts(arg, ADR(s^.mem.base), ADR(s^.out));
+        Amemory.facts(arg, SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out));
         if s^.out.len = 0 then Buf.str(s^.out, "nothing remembered"); end;
         say(s, Buf.bytes(s^.out));
     | "/notes": notes(s, arg);
@@ -777,7 +778,7 @@ end;
 (* A line the human typed: a command, or a message to the model, whose
    turn's failure is shown. false for /quit or /exit, which end the
    session. *)
-proc line*(s: ^Session; text: []U8): BOOL;
+proc line*(s: ^Session; text: []const U8): BOOL;
 var why: Buf.Buf; err: ERROR;
 begin
     text := Str.trim(text);
@@ -786,7 +787,7 @@ begin
     if text[0] = '/' then command(s, text); return true; end;
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    err := turn(s, text, ADR(why));
+    err := turn(s, text, SYSTEM.ADR(why));
     failed(s, err, Buf.bytes(why));
     return true;
 end;
