@@ -324,7 +324,7 @@ proc turn*(a: ^Agent; c: ^Astore.Conv; why: ^Buf.Buf): ERROR; forward;
    worker's turn run on it; its report, or why there is none, added to
    out. *)
 proc delegate(a: ^Agent; args: []const U8; out: ^Buf.Buf);
-var d: Json.Doc; p: Atools.Args; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.Prov; m: ^Amsg.Msg;
+var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.Prov; m: ^Amsg.Msg;
     brief, why: Buf.Buf; files: [][]const U8; reports: [][]U8; msgs: []Amsg.Msg; task, report: []const U8; i, steps: INT;
     err: ERROR;
 begin
@@ -342,7 +342,11 @@ begin
     defer Buf.done(brief);
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    if not Atools.parse(SYSTEM.ADR(d), Heap.heap, args, SYSTEM.ADR(p)) then
+    (* the arguments are parsed in memory of the delegation's own, as the
+       worker's turn resets the call's arena and task is wanted after it *)
+    if not Arena.init(argMem, CallMemory) then Rt.stop("arno: out of memory"); end;
+    defer Arena.done(argMem);
+    if not Atools.parse(SYSTEM.ADR(d), SYSTEM.ADR(argMem.base), args, SYSTEM.ADR(p)) then
         Buf.str(out^, "error: the arguments must be one JSON object, as the tool's schema says");
         return;
     end;
