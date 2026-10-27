@@ -306,7 +306,7 @@ begin
     end;
     for i := 0 to seen.len - 1 do Str.free(Heap.heap, Strs.all(seen)[i]); end;
     Strs.done(seen);
-    Amsg.setText(m, Buf.bytes(out));
+    Amsg.setText(m^, Buf.bytes(out));
 end;
 
 (* A user's message as the human typed it, its attachments taken off. *)
@@ -327,7 +327,7 @@ var got: Buf.Buf; st: INT; s, base: []const U8; digits: [20]U8; n: INT;
 begin
     Buf.init(got, Heap.heap);
     defer Buf.done(got);
-    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, SYSTEM.ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], 65536, got);
     s := Buf.bytes(got);
     if (st = 127) or (st < 0) then Buf.str(why^, "pasting an image needs xclip"); return false; end;
     if Str.find(s, "display") >= 0 then Buf.str(why^, "no X display to take the clipboard from"); return false; end;
@@ -344,7 +344,7 @@ begin
         return false;
     end;
     Buf.reset(got);
-    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, SYSTEM.ADR(got));
+    st := Arun.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], MaxImage, got);
     if (st # 0) or not Str.hasPrefix(Buf.bytes(got), Png) then
         Buf.str(why^, "the clipboard's image couldn't be read");
         return false;
@@ -404,7 +404,7 @@ begin
     base64(SYSTEM.ADR(b), "Ma");
     base64(SYSTEM.ADR(b), "M");
     expect("base64", Buf.bytes(b), "TWFuTWE=TQ==", SYSTEM.ADR(failed));
-    Amsg.init(SYSTEM.ADR(m), Amsg.Role.user);
+    Amsg.init(m, Amsg.Role.user);
     expand(SYSTEM.ADR(m), "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again");
     expect("lines, once", m.text, "see @build/attach/a.txt:2-3, and @build/attach/a.txt:2-3 again\n\n" +
         "<file path=\"build/attach/a.txt\" lines=\"2-3\">\ntwo\nthree\n</file>", SYSTEM.ADR(failed));

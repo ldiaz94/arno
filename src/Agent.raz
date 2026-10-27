@@ -135,7 +135,7 @@ begin
     a^ := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true,
         human: {ask: front.ask, why: front.why, arg: front.arg}};
     Strs.init(a^.reports, Heap.heap);
-    Awire.initClient(SYSTEM.ADR(a^.client));
+    Awire.initClient(a^.client);
     if not Arena.init(a^.mem, CallMemory) then Rt.stop("arno: out of memory"); end;
     Buf.init(a^.seen, Heap.heap);
     Afence.init;
@@ -194,7 +194,7 @@ begin
     Buf.str(b, m^.text);
     n := b.len;
     Aahead.prefetch(m^.text, SYSTEM.ADR(a^.mem.base), prefetched, ^U8(a), SYSTEM.ADR(b));
-    if b.len > n then Amsg.setText(m, Buf.bytes(b)); end;
+    if b.len > n then Amsg.setText(m^, Buf.bytes(b)); end;
     Arena.reset(a^.mem);
 end;
 
@@ -243,7 +243,7 @@ begin
         if LEN(rest) = 0 then continue; end;
         Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
             [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
-        Amsg.setText(SYSTEM.ADR(m[k]), Buf.bytes(b));
+        Amsg.setText(m[k], Buf.bytes(b));
     end;
     Arena.reset(a^.mem);
 end;
@@ -257,7 +257,7 @@ begin
     r := {prov: a^.prov, client: SYSTEM.ADR(a^.client), system: sys, msgs: Msgs.all(c^.msgs),
         tools: Atools.offered(not a^.working and (LEN(a^.worker) > 0), a^.mode in {Aprompt.chat, Aprompt.pair}),
         emit: a^.front.text, arg: a^.front.arg, stopped: a^.front.stopped};
-    err := Awire.chat(SYSTEM.ADR(r), SYSTEM.ADR(reply), SYSTEM.ADR(u), why);
+    err := Awire.chat(r, reply, u, why^);
     INC(a^.used.inp, u.inp);
     INC(a^.used.cached, u.cached);
     INC(a^.used.written, u.written);
@@ -271,7 +271,7 @@ begin
     if (err = nil) or (LEN(reply.text) > 0) then
         Msgs.push(c^.msgs, reply);
     else
-        Amsg.free(SYSTEM.ADR(reply));
+        Amsg.free(reply);
     end;
     return err;
 end;
@@ -380,8 +380,8 @@ begin
     Astore.init(SYSTEM.ADR(w), "worker");
     defer Astore.done(SYSTEM.ADR(w));
     m := Msgs.add(w.msgs);
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, Buf.bytes(brief));
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, Buf.bytes(brief));
     prov := a^.prov^;
     prov.model := a^.worker;
     lead := a^.prov;
@@ -441,10 +441,10 @@ begin
         if a^.front.result # nil then a^.front.result(calls[i].name, Buf.bytes(res), a^.front.arg); end;
         if failed(Buf.bytes(res)) then INC(bad); end;
         m := Msgs.add(c^.msgs);
-        Amsg.init(m, Amsg.Role.tool);
+        Amsg.init(m^, Amsg.Role.tool);
         m^.callId := Amsg.keep(calls[i].id);
         m^.tool := Amsg.keep(calls[i].name);
-        Amsg.setText(m, Buf.bytes(res));
+        Amsg.setText(m^, Buf.bytes(res));
     end;
     return bad;
 end;
@@ -460,17 +460,17 @@ begin
     defer Buf.done(sys);
     system(a, c, SYSTEM.ADR(sys));
     m := Msgs.add(c^.msgs);
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, request);
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, request);
     n := c^.msgs.len;
     err := ask(a, c, Buf.bytes(sys), why);
     (* the request taken out, and with it the reply *)
     if c^.msgs.len > n then
         m := SYSTEM.ADR(Msgs.all(c^.msgs)[n]);
         Buf.str(reply^, m^.text);
-        Amsg.free(m);
+        Amsg.free(m^);
     end;
-    Amsg.free(SYSTEM.ADR(Msgs.all(c^.msgs)[n - 1]));
+    Amsg.free(Msgs.all(c^.msgs)[n - 1]);
     Msgs.resize(c^.msgs, n - 1);
     return err;
 end;
@@ -491,8 +491,8 @@ begin
     err := once(a, c, request, SYSTEM.ADR(b), why);
     if b.len > 0 then
         m := Msgs.add(c^.msgs);
-        Amsg.init(m, Amsg.Role.assistant);
-        Amsg.setText(m, Buf.bytes(b));
+        Amsg.init(m^, Amsg.Role.assistant);
+        Amsg.setText(m^, Buf.bytes(b));
     end;
     return err;
 end;
@@ -548,7 +548,7 @@ begin
         end;
     end;
     m := Msgs.all(c^.msgs);
-    for i := first to LEN(m) - 1 do Amsg.settle(SYSTEM.ADR(m[i])); end;
+    for i := first to LEN(m) - 1 do Amsg.settle(m[i]); end;
     return err;
 end;
 
@@ -563,11 +563,11 @@ begin
     for i := 1 to 100 do Buf.str(long, "a line of a long result, 38 bytes....\n"); end;
     for i := 0 to 5 do
         m := Msgs.add(c.msgs);
-        Amsg.init(m, Amsg.Role.assistant);
-        Amsg.addCall(m, "c", "read", "{}", "");
+        Amsg.init(m^, Amsg.Role.assistant);
+        Amsg.addCall(m^, "c", "read", "{}", "");
         m := Msgs.add(c.msgs);
-        Amsg.init(m, Amsg.Role.tool);
-        Amsg.setText(m, Buf.bytes(long));
+        Amsg.init(m^, Amsg.Role.tool);
+        Amsg.setText(m^, Buf.bytes(long));
     end;
     prune(SYSTEM.ADR(a), SYSTEM.ADR(c));
     for i := 0 to 5 do

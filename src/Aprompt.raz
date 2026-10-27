@@ -199,7 +199,7 @@ proc take(f: ^Found; path: []const U8; depth: INT);
 var r, text, p: Buf.Buf; refs: Strs.Vec; s, nice: []const U8; seen, l: [][]const U8; i: Sys.Info; e, k: INT;
 begin
     Buf.init(r, f^.mem);
-    Afence.resolve(path, SYSTEM.ADR(r));
+    Afence.resolve(path, r);
     seen := Strs.all(f^.seen);
     for k := 0 to LEN(seen) - 1 do
         if seen[k] = Buf.bytes(r) then return; end;
@@ -273,7 +273,7 @@ begin
     Buf.str(b, f^.home);
     Buf.str(b, "/.claude");
     Strs.push(l^, Buf.bytes(b));
-    Afence.resolve(".", SYSTEM.ADR(wd));
+    Afence.resolve(".", wd);
     d := Buf.bytes(wd);
     if Afence.within(d, f^.home) and (d # f^.home) then
         while d # f^.home do
@@ -298,7 +298,7 @@ begin
     Buf.reset(p^.context);
     if mode = "no" then return; end;
     Buf.init(b, mem);
-    Afence.resolve(home, SYSTEM.ADR(b));
+    Afence.resolve(home, b);
     f := {mem: mem, home: Buf.bytes(b)};
     Strs.init(f.seen, mem);
     Buf.init(f.names, mem);

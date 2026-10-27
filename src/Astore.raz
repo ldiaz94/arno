@@ -446,7 +446,7 @@ begin
     Str.free(Heap.heap, c^.model);
     Str.free(Heap.heap, c^.system);
     msgs := Msgs.all(c^.msgs);
-    for i := 0 to LEN(msgs) - 1 do Amsg.free(SYSTEM.ADR(msgs[i])); end;
+    for i := 0 to LEN(msgs) - 1 do Amsg.free(msgs[i]); end;
     Msgs.done(c^.msgs);
     turns := Strs.all(c^.turns);
     for i := 0 to LEN(turns) - 1 do Str.free(Heap.heap, turns[i]); end;
@@ -513,22 +513,22 @@ begin
     Buf.str(b, `{"title":`);
     Buf.str(path, c^.title);
     if path.len = 0 then autoTitle(c, SYSTEM.ADR(path)); end;
-    Amsg.quote(SYSTEM.ADR(b), Buf.bytes(path));
+    Amsg.quote(b, Buf.bytes(path));
     if LEN(c^.title) > 0 then
         Buf.str(b, `,"named":true,"model":`);
     else
         Buf.str(b, `,"named":false,"model":`);
     end;
-    Amsg.quote(SYSTEM.ADR(b), c^.model);
+    Amsg.quote(b, c^.model);
     if LEN(c^.system) > 0 then
         Buf.str(b, `,"system":`);
-        Amsg.quote(SYSTEM.ADR(b), c^.system);
+        Amsg.quote(b, c^.system);
     end;
     Buf.str(b, `,"messages":[`);
     msgs := Msgs.all(c^.msgs);
     for i := 0 to LEN(msgs) - 1 do
         if i > 0 then Buf.add(b, ','); end;
-        Amsg.write(SYSTEM.ADR(msgs[i]), SYSTEM.ADR(b));
+        Amsg.write(msgs[i], b);
     end;
     Buf.add(b, ']');
     turns := Strs.all(c^.turns);
@@ -572,12 +572,12 @@ begin
     msgs := Json.member(SYSTEM.ADR(d), v, "messages");
     if Json.kind(SYSTEM.ADR(d), msgs) # Json.Kind.array then return Unreadable; end;
     for i := 0 to Json.len(SYSTEM.ADR(d), msgs) - 1 do
-        try Amsg.read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, i), Msgs.add(c^.msgs));
+        try Amsg.read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, i), Msgs.add(c^.msgs)^);
     end;
     turns := Json.member(SYSTEM.ADR(d), v, "turns");
     for i := 0 to Json.len(SYSTEM.ADR(d), turns) - 1 do
         Buf.reset(t);
-        Amsg.compact(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), turns, i), SYSTEM.ADR(t));
+        Amsg.compact(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), turns, i), t);
         Strs.push(c^.turns, Amsg.keep(Buf.bytes(t)));
     end;
     if Json.member(SYSTEM.ADR(d), v, "named") = Json.True then
@@ -785,8 +785,8 @@ begin
     defer done(SYSTEM.ADR(c));
     setModel(SYSTEM.ADR(c), "m");
     m := Msgs.add(c.msgs);
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, text);
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, text);
     if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
 end;
 
@@ -848,11 +848,11 @@ begin
     init(SYSTEM.ADR(c), "20261016-120000");
     setModel(SYSTEM.ADR(c), "deepseek-v4.1-flash");
     m := Msgs.add(c.msgs);
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, "look at\nthis\n\n<file path=\"a.txt\">...</file>");
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, "look at\nthis\n\n<file path=\"a.txt\">...</file>");
     m := Msgs.add(c.msgs);
-    Amsg.init(m, Amsg.Role.assistant);
-    Amsg.setText(m, "I see.");
+    Amsg.init(m^, Amsg.Role.assistant);
+    Amsg.setText(m^, "I see.");
     Strs.push(c.turns, Amsg.keep(`{"at":"2026-10-16 12:00","steps":1,"cost":0.0012}`));
     if save(SYSTEM.ADR(c)) # nil then fail("save"); end;
     expect("an untitled conversation's file", saved("20261016-120000", SYSTEM.ADR(b)),

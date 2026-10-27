@@ -314,16 +314,16 @@ end;
 
 (* A reply's line, as markdown, into text and looks; fence says whether
    a block of code is open, before and after. *)
-proc markdown(line: []const U8; fence: ^BOOL);
+proc markdown(line: []const U8; var fence: BOOL);
 var h, i: INT; bold, quoted: BOOL; l: Look;
 begin
     start();
     if Str.hasPrefix(Str.trimLeft(line), "```") then
-        fence^ := not fence^;
+        fence := not fence;
         add(line, dim);
         return;
     end;
-    if fence^ then add(line, block); return; end;
+    if fence then add(line, block); return; end;
     h := 0;
     while (h < LEN(line)) and (line[h] = '#') do INC(h); end;
     if (h > 0) and (h < LEN(line)) and (line[h] = ' ') then
@@ -392,14 +392,14 @@ end;
 (* A call's line: open or not, its name and arguments, cut to leave
    room for what came of it: running, its result if it is a line, or
    how many lines came; a failure in red. *)
-proc header(e: ^Entry; w: INT);
+proc header(const e: Entry; w: INT);
 var sum: Buf.Buf; res: []const U8; n: INT; l: Look;
 begin
     Buf.init(sum, Heap.heap);
     defer Buf.done(sum);
-    res := Str.trim(Buf.bytes(e^.res));
+    res := Str.trim(Buf.bytes(e.res));
     n := count(res);
-    if not e^.done then
+    if not e.done then
         Buf.str(sum, "running\u{2026}");
     elsif n <= 1 then
         Buf.str(sum, res);
@@ -409,10 +409,10 @@ begin
     l := dim;
     if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then l := red; end;
     start();
-    if e^.open then add("\u{25BE} ", hunk); else add("\u{25B8} ", hunk); end;
-    add(Buf.bytes(e^.text), hunk);
+    if e.open then add("\u{25BE} ", hunk); else add("\u{25B8} ", hunk); end;
+    add(Buf.bytes(e.text), hunk);
     add(" ", hunk);
-    flat(Buf.bytes(e^.args), hunk);
+    flat(Buf.bytes(e.args), hunk);
     n := w - 2 - TuiScreen.columns(Buf.bytes(sum));
     if n < w div 2 then n := w div 2; end;
     fit(n);
@@ -455,11 +455,11 @@ begin
         fence := false;
         repeat
             line, s, ok := Str.cut(s, "\n");
-            markdown(line, SYSTEM.ADR(fence));
+            markdown(line, fence);
             wrap(ReplyBar, dim, w - 2);
         until not ok;
     | tool:
-        header(e, w - 2);
+        header(e^, w - 2);
         if not e^.open then return; end;
         lines(Buf.bytes(e^.args), Gutter, dim, dim, w - 6);
         if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;

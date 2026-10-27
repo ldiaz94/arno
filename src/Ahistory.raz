@@ -37,30 +37,30 @@ begin
 end;
 
 (* s added to b, escaped as a line of the file. *)
-proc escape(b: ^Buf.Buf; s: []const U8);
+proc escape(var b: Buf.Buf; s: []const U8);
 var i: INT;
 begin
     for i := 0 to LEN(s) - 1 do
-        if s[i] = '\\' then Buf.str(b^, "\\\\");
-        elsif s[i] = '\n' then Buf.str(b^, "\\n");
-        else Buf.add(b^, s[i]);
+        if s[i] = '\\' then Buf.str(b, "\\\\");
+        elsif s[i] = '\n' then Buf.str(b, "\\n");
+        else Buf.add(b, s[i]);
         end;
     end;
-    Buf.add(b^, '\n');
+    Buf.add(b, '\n');
 end;
 
 (* A line of the file, unescaped, into b. *)
-proc unescape(b: ^Buf.Buf; s: []const U8);
+proc unescape(var b: Buf.Buf; s: []const U8);
 var i: INT;
 begin
-    Buf.reset(b^);
+    Buf.reset(b);
     i := 0;
     while i < LEN(s) do
         if (s[i] = '\\') and (i + 1 < LEN(s)) then
             INC(i);
-            if s[i] = 'n' then Buf.add(b^, '\n'); else Buf.add(b^, s[i]); end;
+            if s[i] = 'n' then Buf.add(b, '\n'); else Buf.add(b, s[i]); end;
         else
-            Buf.add(b^, s[i]);
+            Buf.add(b, s[i]);
         end;
         INC(i);
     end;
@@ -82,7 +82,7 @@ begin
     while LEN(s) > 0 do
         l, s, _ := Str.cut(s, "\n");
         if LEN(l) = 0 then continue; end;
-        unescape(SYSTEM.ADR(line), l);
+        unescape(line, l);
         keep(Buf.bytes(line));
     end;
     at := entries.len;
@@ -96,7 +96,7 @@ begin
     at := Max;
     Buf.reset(text);
     all := Strs.all(entries);
-    for i := 0 to Max - 1 do escape(SYSTEM.ADR(text), all[i]); end;
+    for i := 0 to Max - 1 do escape(text, all[i]); end;
     _ := Files.write(file, Buf.bytes(text));
 end;
 
@@ -112,7 +112,7 @@ begin
     if path.len = 0 then return; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    escape(SYSTEM.ADR(b), s);
+    escape(b, s);
     fd := Sys.open(Buf.bytes(path), {Sys.Access.writing, Sys.Access.creating, Sys.Access.appending});
     if fd < 0 then return; end;
     _ := Sys.write(fd, Buf.bytes(b));
@@ -208,7 +208,7 @@ end;
 
 (* The module's test. *)
 
-proc expect(what: []const U8; got: []const U8; ok: BOOL; want: []const U8; failed: ^BOOL);
+proc expect(what: []const U8; got: []const U8; ok: BOOL; want: []const U8; var failed: BOOL);
 begin
     if ok and (got = want) then return; end;
     Out.str("Ahistory: ");
@@ -216,7 +216,7 @@ begin
     Out.str(": got ");
     Out.str(got);
     Out.str("\n");
-    failed^ := true;
+    failed := true;
 end;
 
 proc main*: INT;
@@ -233,25 +233,25 @@ begin
     load("build/history.test");
     if count() # 3 then Out.str("Ahistory: read back\n"); failed := true; end;
     s, ok := back("typing");
-    expect("back", s, ok, "/load x", SYSTEM.ADR(failed));
+    expect("back", s, ok, "/load x", failed);
     s, ok := back("/load x");
-    expect("back again", s, ok, "two\nlines \\ back", SYSTEM.ADR(failed));
+    expect("back again", s, ok, "two\nlines \\ back", failed);
     s, ok := onward("edited");
     s, ok := onward("/load x");
-    expect("forward to the draft", s, ok, "typing", SYSTEM.ADR(failed));
+    expect("forward to the draft", s, ok, "typing", failed);
     s, ok := onward("typing");
     if ok then Out.str("Ahistory: past the draft\n"); failed := true; end;
     s, ok := prefixed("t", "t", -1);
-    expect("prefixed", s, ok, "two\nlines \\ back", SYSTEM.ADR(failed));
+    expect("prefixed", s, ok, "two\nlines \\ back", failed);
     s, ok := prefixed(s, "t", 1);
-    expect("prefixed back to the draft", s, ok, "t", SYSTEM.ADR(failed));
+    expect("prefixed back to the draft", s, ok, "t", failed);
     i, s, k := search("ONE", count(), "x");
     if (i # 0) or (k # 0) then Out.str("Ahistory: search\n"); failed := true; end;
     i, s, k := search("lines", count(), "x");
     if (i # 1) or (k # 4) then Out.str("Ahistory: search further\n"); failed := true; end;
     Buf.init(b, Heap.heap);
     _ := Files.read("build/history.test", b);
-    expect("the file", Buf.bytes(b), true, "one\ntwo\\nlines \\\\ back\n/load x\n", SYSTEM.ADR(failed));
+    expect("the file", Buf.bytes(b), true, "one\ntwo\\nlines \\\\ back\n/load x\n", failed);
     if failed then return 1; end;
     return 0;
 end;

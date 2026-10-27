@@ -388,8 +388,8 @@ begin
     defer Buf.done(home);
     Buf.init(q, Heap.heap);
     defer Buf.done(q);
-    Afence.resolve(path, SYSTEM.ADR(p));
-    Afence.resolve(Sys.env("HOME"), SYSTEM.ADR(home));
+    Afence.resolve(path, p);
+    Afence.resolve(Sys.env("HOME"), home);
     Buf.str(room, Buf.bytes(p));
     i, e := Sys.info(Buf.bytes(p));
     if (e # 0) or not i.dir then
@@ -491,7 +491,7 @@ begin
                 Buf.add(out^, ']');
                 return;
             end;
-            Afind.numbered(out, n, s[at..j]);
+            Afind.numbered(out^, n, s[at..j]);
         end;
         INC(n);
         at := j + 1;
@@ -507,14 +507,14 @@ begin
     if name = "find" then
         s := str(a, "name");
         if LEN(s) = 0 then s := "*"; end;
-        Afind.find(d, s, out);
+        Afind.find(d, s, out^);
     elsif name = "grep" then
-        Afind.grep(d, str(a, "pattern"), str(a, "glob"), flag(a, "ignore_case"), int(a, "context", 0), mem, out);
+        Afind.grep(d, str(a, "pattern"), str(a, "glob"), flag(a, "ignore_case"), int(a, "context", 0), mem, out^);
     elsif name = "outline" then
-        Afind.outline(d, MaxOut, mem, out);
+        Afind.outline(d, MaxOut, mem, out^);
     elsif LEN(Str.trim(str(a, "name"))) = 0 then
         Buf.str(out^, "error: give the name to look up");
-    elsif Afind.defs(d, str(a, "name"), mem, out) >= Afind.MaxDefs then
+    elsif Afind.defs(d, str(a, "name"), mem, out^) >= Afind.MaxDefs then
         Buf.str(out^, "[stopped at 10 definitions; give a path]");
     elsif out^.len = 0 then
         Buf.str(out^, "no definition of ");
@@ -578,7 +578,7 @@ begin
         Strs.push(argv, "-n");
         Strs.push(argv, "50");
     end;
-    i := Arun.run(Strs.all(argv), MaxOut + 1, out);
+    i := Arun.run(Strs.all(argv), MaxOut + 1, out^);
     if (i = 127) and (out^.len = 0) or (i < 0) then
         Buf.str(out^, "error: git can't be run");
     elsif out^.len = 0 then
@@ -802,7 +802,7 @@ begin
         Buf.str(out^, "exit ");
         j := {args: c[k].args, env: Strs.all(env), detach: true};
         Buf.init(line, a^.mem);
-        status, _ := Arun.start(SYSTEM.ADR(j), MaxOut + 1, SYSTEM.ADR(line));
+        status, _ := Arun.start(j, MaxOut + 1, line);
         if (status = 127) and (line.len = 0) or (status < 0) then
             out^.len := start;
             Fmt.write(out^, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
@@ -836,7 +836,7 @@ begin
         return;
     end;
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
-    status, cut := Arun.start(SYSTEM.ADR(j), MaxOut - 1000, SYSTEM.ADR(got));
+    status, cut := Arun.start(j, MaxOut - 1000, got);
     if status = 0 then
         Fmt.write(out^, "passed: {}", [Fmt.str(cmd)]);
     else
@@ -1212,7 +1212,7 @@ proc page(url: []const U8; mem: ^Mem.Allocator; body: ^Buf.Buf): ([]const U8, ER
 var req, res: Http.Message; r: ^Http.Reader; n: INT; err: ERROR;
 begin
     if not webbed then
-        Awire.initClient(SYSTEM.ADR(web));
+        Awire.initClient(web);
         webbed := true;
     end;
     web.deadline := Sys.clock() + I64(WebWait) * 1000000000;

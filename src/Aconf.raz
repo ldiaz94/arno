@@ -60,7 +60,7 @@ begin
     Strs.init(c^.keys, Heap.heap);
     Strs.init(c^.values, Heap.heap);
     Strs.init(c^.params, Heap.heap);
-    _ := Awire.preset("ollama", SYSTEM.ADR(c^.prov));
+    _ := Awire.preset("ollama", c^.prov);
 end;
 
 proc dropParams(c: ^Conf);
@@ -155,7 +155,7 @@ var word, rest: []const U8; at: INT;
 begin
     match key of
     | "provider":
-        if Awire.preset(value, SYSTEM.ADR(c^.prov)) then
+        if Awire.preset(value, c^.prov) then
             dropParams(c);
         else
             warn(c, "unknown provider ", value);
@@ -278,7 +278,7 @@ begin
     expect("a key not set", get(SYSTEM.ADR(c), "worker"), "");
     expect("the warnings", Buf.bytes(c.warnings),
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
-    expect("the effort for a model", Awire.param(SYSTEM.ADR(c.prov), "reasoning_effort@kimi-k3"), "high");
+    expect("the effort for a model", Awire.param(c.prov, "reasoning_effort@kimi-k3"), "high");
     done(SYSTEM.ADR(c));
     if failed then return 1; end;
     return 0;

@@ -77,23 +77,23 @@ type
 (* Walking *)
 
 (* w made to walk the files under path, or the file path. *)
-proc open*(w: ^Walk; path: []const U8);
+proc open*(var w: Walk; path: []const U8);
 begin
-    Rwalk.init(SYSTEM.ADR(w^.w), Heap.heap, path, {});
+    Rwalk.init(SYSTEM.ADR(w.w), Heap.heap, path, {});
 end;
 
 (* The next file of the walk, its path as a program writes it, without
    the "./" a walk from "." puts before each; false when there are no
    more. *)
-proc next*(w: ^Walk): ([]const U8, BOOL);
+proc next*(var w: Walk): ([]const U8, BOOL);
 var p: []const U8; i: Sys.Info; e: INT;
 begin
-    while Rwalk.next(SYSTEM.ADR(w^.w), SYSTEM.ADR(w^.e)) do
-        p := w^.e.path;
-        if w^.e.kind = Rwalk.symlink then
+    while Rwalk.next(SYSTEM.ADR(w.w), SYSTEM.ADR(w.e)) do
+        p := w.e.path;
+        if w.e.kind = Rwalk.symlink then
             i, e := Sys.info(p);
             if (e # 0) or not i.file or not Afence.inside(p) then continue; end;
-        elsif w^.e.kind # Rwalk.file then
+        elsif w.e.kind # Rwalk.file then
             continue;
         end;
         if Str.hasPrefix(p, "./") and (LEN(p) > 2) then p := p[2..LEN(p)]; end;
@@ -102,30 +102,30 @@ begin
     return "", false;
 end;
 
-proc close*(w: ^Walk);
+proc close*(var w: Walk);
 begin
-    Rwalk.done(SYSTEM.ADR(w^.w));
+    Rwalk.done(SYSTEM.ADR(w.w));
 end;
 
 (* s made ready to hold files, from mem. *)
-proc init(s: ^Source; mem: ^Mem.Allocator);
+proc init(var s: Source; mem: ^Mem.Allocator);
 begin
-    Buf.init(s^.text, mem);
-    Buf.init(s^.low, mem);
-    Lines.init(s^.lines, mem);
+    Buf.init(s.text, mem);
+    Buf.init(s.low, mem);
+    Lines.init(s.lines, mem);
 end;
 
 (* The file at path read into s and cut into lines: false if it can't
    be read, is too big, or is binary. *)
-proc load(s: ^Source; path: []const U8): BOOL;
+proc load(var s: Source; path: []const U8): BOOL;
 var t: []const U8; i: Sys.Info; e, at, j: INT;
 begin
-    Buf.reset(s^.text);
-    Lines.reset(s^.lines);
+    Buf.reset(s.text);
+    Lines.reset(s.lines);
     i, e := Sys.info(path);
     if (e # 0) or not i.file or (i.size > MaxSource) then return false; end;
-    if Files.load(path, s^.text) # 0 then return false; end;
-    t := Buf.bytes(s^.text);
+    if Files.load(path, s.text) # 0 then return false; end;
+    t := Buf.bytes(s.text);
     j := LEN(t);
     if j > 8192 then j := 8192; end;
     if Str.find(t[0..j], "\x00") >= 0 then return false; end;
@@ -133,19 +133,19 @@ begin
     while at < LEN(t) do
         j := at;
         while (j < LEN(t)) and (t[j] # '\n') do INC(j); end;
-        Lines.push(s^.lines, t[at..j]);
+        Lines.push(s.lines, t[at..j]);
         at := j + 1;
     end;
     return true;
 end;
 
 (* s's text with its ASCII capitals made small, a copy. *)
-proc lowered(s: ^Source): []U8;
+proc lowered(var s: Source): []U8;
 var t: []U8;
 begin
-    Buf.reset(s^.low);
-    Buf.str(s^.low, Buf.bytes(s^.text));
-    t := Buf.bytes(s^.low);
+    Buf.reset(s.low);
+    Buf.str(s.low, Buf.bytes(s.text));
+    t := Buf.bytes(s.low);
     Str.lower(t);
     return t;
 end;
@@ -154,22 +154,22 @@ end;
 
 (* Line n of a file, numbered as read numbers it: the number right
    aligned in five columns, then a tab. *)
-proc numbered*(out: ^Buf.Buf; n: INT; text: []const U8);
+proc numbered*(var out: Buf.Buf; n: INT; text: []const U8);
 var digits: [20]U8; k, i: INT;
 begin
     digits, k := Str.fromInt(n);
-    for i := k to 4 do Buf.add(out^, ' '); end;
-    Buf.str(out^, digits[0..k]);
-    Buf.add(out^, '\t');
-    Buf.str(out^, text);
-    Buf.add(out^, '\n');
+    for i := k to 4 do Buf.add(out, ' '); end;
+    Buf.str(out, digits[0..k]);
+    Buf.add(out, '\t');
+    Buf.str(out, text);
+    Buf.add(out, '\n');
 end;
 
-proc int(out: ^Buf.Buf; n: INT);
+proc int(var out: Buf.Buf; n: INT);
 var digits: [20]U8; k: INT;
 begin
     digits, k := Str.fromInt(n);
-    Buf.str(out^, digits[0..k]);
+    Buf.str(out, digits[0..k]);
 end;
 
 (* s cut to at most max bytes, where a character starts, and whether it
@@ -204,36 +204,36 @@ end;
    the code of a feature asks for *feature* whether that is a file or a
    directory, and tried glob after glob when a directory of that name
    went unfound. *)
-proc find*(dir, pat: []const U8; out: ^Buf.Buf);
+proc find*(dir, pat: []const U8; var out: Buf.Buf);
 var w: Walk; g: Rwglob.Glob; p, t: []const U8; whole, ok: BOOL; n: INT;
 begin
     if Rwglob.compile(SYSTEM.ADR(g), Heap.heap, pat, false) # nil then
-        Buf.str(out^, "error: ");
-        Buf.str(out^, pat);
-        Buf.str(out^, " is not a glob");
+        Buf.str(out, "error: ");
+        Buf.str(out, pat);
+        Buf.str(out, " is not a glob");
         return;
     end;
     defer Rwglob.done(SYSTEM.ADR(g));
     t := pat;
     while (LEN(t) > 0) and (t[LEN(t) - 1] = '/') do t := t[0..LEN(t) - 1]; end;
     whole := Str.find(t, "/") >= 0;   (* a / at the end only says a directory *)
-    open(SYSTEM.ADR(w), dir);
-    defer close(SYSTEM.ADR(w));
+    open(w, dir);
+    defer close(w);
     n := 0;
-    p, ok := next(SYSTEM.ADR(w));
+    p, ok := next(w);
     while ok do
         if whole and Rwglob.matches(SYSTEM.ADR(g), p) or not whole and anyName(SYSTEM.ADR(g), p) then
             if n = MaxFiles then
-                Buf.str(out^, "[stopped at 500 files]");
+                Buf.str(out, "[stopped at 500 files]");
                 return;
             end;
-            Buf.str(out^, p);
-            Buf.add(out^, '\n');
+            Buf.str(out, p);
+            Buf.add(out, '\n');
             INC(n);
         end;
-        p, ok := next(SYSTEM.ADR(w));
+        p, ok := next(w);
     end;
-    if n = 0 then Buf.str(out^, "no files"); end;
+    if n = 0 then Buf.str(out, "no files"); end;
 end;
 
 (* grep *)
@@ -251,18 +251,18 @@ type
 
 (* Line n of the file at path, from 1, as grep shows it: path, sep, n,
    sep, a blank and the line, cut at MaxLine. *)
-proc show(out: ^Buf.Buf; path: []const U8; s: ^Source; n: INT; sep: U8);
+proc show(var out: Buf.Buf; path: []const U8; const s: Source; n: INT; sep: U8);
 var line: []const U8; cutShort: BOOL;
 begin
-    Buf.str(out^, path);
-    Buf.add(out^, sep);
+    Buf.str(out, path);
+    Buf.add(out, sep);
     int(out, n);
-    Buf.add(out^, sep);
-    Buf.add(out^, ' ');
-    line, cutShort := cut(Lines.all(s^.lines)[n - 1], MaxLine);
-    Buf.str(out^, line);
-    if cutShort then Buf.str(out^, "\u{2026}"); end;
-    Buf.add(out^, '\n');
+    Buf.add(out, sep);
+    Buf.add(out, ' ');
+    line, cutShort := cut(Lines.all(s.lines)[n - 1], MaxLine);
+    Buf.str(out, line);
+    if cutShort then Buf.str(out, "\u{2026}"); end;
+    Buf.add(out, '\n');
 end;
 
 (* The file at path searched: each match as "path:n: line", each line of
@@ -271,33 +271,33 @@ end;
    groups that overlap from showing a line twice; upto is how far the
    group's trailing context reaches. False once MaxHits are found and
    the last one's context is shown. *)
-proc scan(g: ^Grep; s: ^Source; path: []const U8; out: ^Buf.Buf): BOOL;
+proc scan(var g: Grep; var s: Source; path: []const U8; var out: Buf.Buf): BOOL;
 var lines: [][]const U8; text: []const U8; n, a, k, last, upto, at: INT; more: BOOL;
 begin
-    if g^.globbed and not Rwglob.matches(SYSTEM.ADR(g^.glob), path) then return true; end;
+    if g.globbed and not Rwglob.matches(SYSTEM.ADR(g.glob), path) then return true; end;
     if not load(s, path) then return true; end;
-    text := Buf.bytes(s^.text);
-    if g^.fold then text := lowered(s); end;
-    lines := Lines.all(s^.lines);
+    text := Buf.bytes(s.text);
+    if g.fold then text := lowered(s); end;
+    lines := Lines.all(s.lines);
     more := true;
     last := 0;
     upto := 0;
     at := 0;
     for n := 1 to LEN(lines) do
         (* the line in text, which may be the lowered copy *)
-        if Str.find(text[at..at + LEN(lines[n - 1])], g^.pat) >= 0 then
+        if Str.find(text[at..at + LEN(lines[n - 1])], g.pat) >= 0 then
             if not more then break; end;
-            a := n - g^.context;
+            a := n - g.context;
             if a <= last then a := last + 1; end;
-            if (g^.context > 0) and (out^.len > 0) and ((last = 0) or (a > last + 1)) then
-                Buf.str(out^, "--\n");
+            if (g.context > 0) and (out.len > 0) and ((last = 0) or (a > last + 1)) then
+                Buf.str(out, "--\n");
             end;
             for k := a to n - 1 do show(out, path, s, k, '-'); end;
             show(out, path, s, n, ':');
             last := n;
-            upto := n + g^.context;
-            INC(g^.hits);
-            if g^.hits >= MaxHits then more := false; end;
+            upto := n + g.context;
+            INC(g.hits);
+            if g.hits >= MaxHits then more := false; end;
         elsif n <= upto then
             show(out, path, s, n, '-');
             last := n;
@@ -312,11 +312,11 @@ end;
 (* The lines of the files under dir, or of the file dir, that hold pat,
    and context lines around each; only files whose name matches glob,
    if it isn't "". Case is ignored, for ASCII letters, if fold. *)
-proc grep*(dir, pat, glob: []const U8; fold: BOOL; context: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc grep*(dir, pat, glob: []const U8; fold: BOOL; context: INT; mem: ^Mem.Allocator; var out: Buf.Buf);
 var g: Grep; s: Source; w: Walk; p: []const U8; low: Buf.Buf; small: []U8; ok: BOOL;
 begin
     if LEN(pat) = 0 then
-        Buf.str(out^, "error: give the text to look for");
+        Buf.str(out, "error: give the text to look for");
         return;
     end;
     g := {pat: pat, fold: fold, context: context};
@@ -331,21 +331,21 @@ begin
     end;
     if LEN(glob) > 0 then
         if Rwglob.compile(SYSTEM.ADR(g.glob), Heap.heap, glob, false) # nil then
-            Buf.str(out^, "error: ");
-            Buf.str(out^, glob);
-            Buf.str(out^, " is not a glob");
+            Buf.str(out, "error: ");
+            Buf.str(out, glob);
+            Buf.str(out, " is not a glob");
             return;
         end;
         g.globbed := true;
     end;
     defer Rwglob.done(SYSTEM.ADR(g.glob));
-    init(SYSTEM.ADR(s), mem);
-    open(SYSTEM.ADR(w), dir);
-    defer close(SYSTEM.ADR(w));
-    p, ok := next(SYSTEM.ADR(w));
-    while ok and scan(SYSTEM.ADR(g), SYSTEM.ADR(s), p, out) do p, ok := next(SYSTEM.ADR(w)); end;
-    if g.hits >= MaxHits then Buf.str(out^, "[stopped at 200 matches]"); end;
-    if out^.len = 0 then Buf.str(out^, "no matches"); end;
+    init(s, mem);
+    open(w, dir);
+    defer close(w);
+    p, ok := next(w);
+    while ok and scan(g, s, p, out) do p, ok := next(w); end;
+    if g.hits >= MaxHits then Buf.str(out, "[stopped at 200 matches]"); end;
+    if out.len = 0 then Buf.str(out, "no matches"); end;
 end;
 
 (* outline and def: reading a line *)
@@ -696,11 +696,11 @@ end;
 
 (* The declarations of the file at path, a line each, numbered, under
    its path; nothing for a file with none. *)
-proc outlineFile(s: ^Source; path: []const U8; out: ^Buf.Buf);
+proc outlineFile(var s: Source; path: []const U8; var out: Buf.Buf);
 var l: [][]const U8; text: []const U8; n, hits: INT; md, pas, open, inside: BOOL;
 begin
     if not load(s, path) then return; end;
-    l := Lines.all(s^.lines);
+    l := Lines.all(s.lines);
     md := prose(path);
     pas := pascal(path);
     hits := 0;
@@ -710,8 +710,8 @@ begin
         open := not md and after(l[n], open, pas);
         if inside or (LEN(declName(l, n, md, pas)) = 0) then continue; end;
         if hits = 0 then
-            Buf.str(out^, path);
-            Buf.str(out^, ":\n");
+            Buf.str(out, path);
+            Buf.str(out, ":\n");
         end;
         INC(hits);
         text, _ := cut(Str.trimRight(l[n]), MaxDecl);
@@ -722,27 +722,27 @@ end;
 (* The declarations of the file dir, or of each file under it, as
    outlineFile gives them; at most room bytes of them, cut at a line,
    and a note of where to look instead. *)
-proc outline*(dir: []const U8; room: INT; mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc outline*(dir: []const U8; room: INT; mem: ^Mem.Allocator; var out: Buf.Buf);
 var s: Source; w: Walk; p: []const U8; start: INT; ok: BOOL;
 begin
-    init(SYSTEM.ADR(s), mem);
-    start := out^.len;
-    open(SYSTEM.ADR(w), dir);
-    defer close(SYSTEM.ADR(w));
-    p, ok := next(SYSTEM.ADR(w));
-    while ok and (out^.len - start <= room) do
-        outlineFile(SYSTEM.ADR(s), p, out);
-        p, ok := next(SYSTEM.ADR(w));
+    init(s, mem);
+    start := out.len;
+    open(w, dir);
+    defer close(w);
+    p, ok := next(w);
+    while ok and (out.len - start <= room) do
+        outlineFile(s, p, out);
+        p, ok := next(w);
     end;
-    if out^.len - start > room - 100 then
-        out^.len := start + room - 100;
-        while (out^.len > start) and (Buf.bytes(out^)[out^.len - 1] # '\n') do DEC(out^.len); end;
-        Buf.str(out^, "[truncated; outline a subdirectory or one file]");
+    if out.len - start > room - 100 then
+        out.len := start + room - 100;
+        while (out.len > start) and (Buf.bytes(out)[out.len - 1] # '\n') do DEC(out.len); end;
+        Buf.str(out, "[truncated; outline a subdirectory or one file]");
     end;
-    if out^.len = start then
-        Buf.str(out^, "no declarations found in ");
-        Buf.str(out^, dir);
-        Buf.str(out^, "; find lists its files, grep searches them");
+    if out.len = start then
+        Buf.str(out, "no declarations found in ");
+        Buf.str(out, dir);
+        Buf.str(out, "; find lists its files, grep searches them");
     end;
 end;
 
@@ -762,11 +762,11 @@ end;
    first, numbered as read numbers lines, under "path:first-last"; the
    count kept in found, which stops at MaxDefs. A file whose text never
    says the name is passed over before it is cut into lines. *)
-proc defsIn(s: ^Source; path, name: []const U8; found: ^INT; out: ^Buf.Buf);
+proc defsIn(var s: Source; path, name: []const U8; var found: INT; var out: Buf.Buf);
 var l: [][]const U8; n, a, b, k: INT; md, pas, open, inside: BOOL;
 begin
     if not load(s, path) or (Str.find(lowered(s), name) < 0) then return; end;
-    l := Lines.all(s^.lines);
+    l := Lines.all(s.lines);
     md := prose(path);
     pas := pascal(path);
     open := false;
@@ -776,31 +776,31 @@ begin
         if inside or not names(declName(l, n, md, pas), name) then continue; end;
         a := defStart(l, n, pas, cish(path));
         b := defEnd(l, n, md, pas);
-        Buf.str(out^, path);
-        Buf.add(out^, ':');
+        Buf.str(out, path);
+        Buf.add(out, ':');
         int(out, a + 1);
-        Buf.add(out^, '-');
+        Buf.add(out, '-');
         int(out, b + 1);
-        Buf.add(out^, '\n');
+        Buf.add(out, '\n');
         for k := a to b do
             if k - n >= MaxBody then
-                Buf.add(out^, '[');
+                Buf.add(out, '[');
                 int(out, b - k + 1);
-                Buf.str(out^, " more lines; read with offset ");
+                Buf.str(out, " more lines; read with offset ");
                 int(out, k + 1);
-                Buf.str(out^, "]\n");
+                Buf.str(out, "]\n");
                 break;
             end;
             numbered(out, k + 1, l[k]);
         end;
-        INC(found^);
-        if found^ >= MaxDefs then return; end;
+        INC(found);
+        if found >= MaxDefs then return; end;
     end;
 end;
 
 (* Every definition of name in the file dir, or in the files under it,
    as defsIn gives them: how many, at most MaxDefs. *)
-proc defs*(dir, name: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf): INT;
+proc defs*(dir, name: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf): INT;
 var s: Source; w: Walk; low: Buf.Buf; p: []const U8; small: []U8; found: INT; ok: BOOL;
 begin
     Buf.init(low, mem);
@@ -809,13 +809,13 @@ begin
     Str.lower(small);
     found := 0;
     if LEN(small) = 0 then return 0; end;
-    init(SYSTEM.ADR(s), mem);
-    open(SYSTEM.ADR(w), dir);
-    defer close(SYSTEM.ADR(w));
-    p, ok := next(SYSTEM.ADR(w));
+    init(s, mem);
+    open(w, dir);
+    defer close(w);
+    p, ok := next(w);
     while ok and (found < MaxDefs) do
-        defsIn(SYSTEM.ADR(s), p, small, SYSTEM.ADR(found), out);
-        p, ok := next(SYSTEM.ADR(w));
+        defsIn(s, p, small, found, out);
+        p, ok := next(w);
     end;
     return found;
 end;
@@ -837,11 +837,11 @@ begin
     failed := true;
 end;
 
-proc result(b: ^Buf.Buf): []const U8;
+proc result(var b: Buf.Buf): []const U8;
 var s: []const U8;
 begin
-    s := Buf.bytes(b^);
-    Buf.init(b^, Heap.heap);
+    s := Buf.bytes(b);
+    Buf.init(b, Heap.heap);
     Arena.reset(mem);
     return s;
 end;
@@ -867,9 +867,9 @@ begin
         if LEN(t) > 0 then
             Buf.str(b, t);
             Buf.add(b, ' ');
-            int(SYSTEM.ADR(b), defStart(Lines.all(l), n, pas, cish(path)) + 1);
+            int(b, defStart(Lines.all(l), n, pas, cish(path)) + 1);
             Buf.add(b, '-');
-            int(SYSTEM.ADR(b), defEnd(Lines.all(l), n, md, pas) + 1);
+            int(b, defEnd(Lines.all(l), n, md, pas) + 1);
             return Buf.bytes(b);
         end;
     end;
@@ -914,31 +914,31 @@ begin
     if Sys.setWorkDir("build/find") # 0 then Out.str("Afind: no build/find\n"); return 1; end;
     Afence.init;
 
-    find(".", "*.c", SYSTEM.ADR(b));
-    expect("find", result(SYSTEM.ADR(b)), "src/a.c\n");
-    find(".", "*feature*", SYSTEM.ADR(b));
-    expect("find, a directory's name", result(SYSTEM.ADR(b)), "src/feature/x.py\n");
-    find("src", "src/*/*.py", SYSTEM.ADR(b));
-    expect("find, a path", result(SYSTEM.ADR(b)), "src/feature/x.py\n");
-    find(".", "*.java", SYSTEM.ADR(b));
-    expect("find, none", result(SYSTEM.ADR(b)), "no files");
-    find("gen", "*", SYSTEM.ADR(b));
-    expect("find, an ignored directory asked for", result(SYSTEM.ADR(b)), "gen/g.c\n");
+    find(".", "*.c", b);
+    expect("find", result(b), "src/a.c\n");
+    find(".", "*feature*", b);
+    expect("find, a directory's name", result(b), "src/feature/x.py\n");
+    find("src", "src/*/*.py", b);
+    expect("find, a path", result(b), "src/feature/x.py\n");
+    find(".", "*.java", b);
+    expect("find, none", result(b), "no files");
+    find("gen", "*", b);
+    expect("find, an ignored directory asked for", result(b), "gen/g.c\n");
 
-    grep(".", "ADD", "", true, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("grep", result(SYSTEM.ADR(b)), "src/a.c:2: add(int a, int b)\nsrc/feature/x.py:1: def add(a):\n");
-    grep("src/a.c", "return", "", false, 1, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("grep, context", result(SYSTEM.ADR(b)), "src/a.c-3- {\nsrc/a.c:4:     return a + b;\nsrc/a.c-5- }\n");
-    grep(".", "add", "*.py", false, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("grep, a glob", result(SYSTEM.ADR(b)), "src/feature/x.py:1: def add(a):\n");
-    grep(".", "nowhere", "", false, 0, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("grep, none", result(SYSTEM.ADR(b)), "no matches");
+    grep(".", "ADD", "", true, 0, SYSTEM.ADR(mem.base), b);
+    expect("grep", result(b), "src/a.c:2: add(int a, int b)\nsrc/feature/x.py:1: def add(a):\n");
+    grep("src/a.c", "return", "", false, 1, SYSTEM.ADR(mem.base), b);
+    expect("grep, context", result(b), "src/a.c-3- {\nsrc/a.c:4:     return a + b;\nsrc/a.c-5- }\n");
+    grep(".", "add", "*.py", false, 0, SYSTEM.ADR(mem.base), b);
+    expect("grep, a glob", result(b), "src/feature/x.py:1: def add(a):\n");
+    grep(".", "nowhere", "", false, 0, SYSTEM.ADR(mem.base), b);
+    expect("grep, none", result(b), "no matches");
 
-    outline(".", 32000, SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("outline", result(SYSTEM.ADR(b)), "src/a.c:\n    2\tadd(int a, int b)\nsrc/feature/x.py:\n    1\tdef add(a):\n" +
+    outline(".", 32000, SYSTEM.ADR(mem.base), b);
+    expect("outline", result(b), "src/a.c:\n    2\tadd(int a, int b)\nsrc/feature/x.py:\n    1\tdef add(a):\n" +
         "src/m.raz:\n    4\tmodule M;\n    5\tconst X = \"(* \";\n    6\ttype T = INT;\n");
-    n := defs(".", "Add", SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("def", result(SYSTEM.ADR(b)), "src/a.c:1-5\n    1\tint\n    2\tadd(int a, int b)\n    3\t{\n" +
+    n := defs(".", "Add", SYSTEM.ADR(mem.base), b);
+    expect("def", result(b), "src/a.c:1-5\n    1\tint\n    2\tadd(int a, int b)\n    3\t{\n" +
         "    4\t    return a + b;\n    5\t}\nsrc/feature/x.py:1-2\n    1\tdef add(a):\n    2\t    return a\n");
     if n # 2 then Out.str("Afind: def counts wrong\n"); failed := true; end;
     _ := Sys.setWorkDir(dir);

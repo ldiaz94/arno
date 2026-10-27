@@ -90,7 +90,7 @@ begin
     known := i >= 0;
     if known then pr := {inp: Table[i].inp, cached: Table[i].cached, out: Table[i].out, window: Table[i].window}; end;
     n := 0;
-    w, rest := Str.field(Awire.param(p, "price"));
+    w, rest := Str.field(Awire.param(p^, "price"));
     while (LEN(w) > 0) and (n < 3) do
         vals[n], ok := Math.toReal(w);
         if not ok then break; end;
@@ -104,7 +104,7 @@ begin
         if n = 3 then pr.cached := vals[2]; end;
         known := true;
     end;
-    window, ok := Str.toInt(Awire.param(p, "context_window"));
+    window, ok := Str.toInt(Awire.param(p^, "context_window"));
     if ok then pr.window := window; end;
     return pr, known;
 end;

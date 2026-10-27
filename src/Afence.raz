@@ -39,12 +39,12 @@ var
     ready: BOOL;           (* grants made *)
 
 (* b cut to its last '/': "/a/b" to "/a", and "/a" to "". *)
-proc up(b: ^Buf.Buf);
+proc up(var b: Buf.Buf);
 var s: []const U8;
 begin
-    s := Buf.bytes(b^);
-    b^.len := Str.findLast(s, "/");
-    if b^.len < 0 then b^.len := 0; end;
+    s := Buf.bytes(b);
+    b.len := Str.findLast(s, "/");
+    if b.len < 0 then b.len := 0; end;
 end;
 
 (* path, absolute and with every link followed, made what b holds.
@@ -53,7 +53,7 @@ end;
    is the parent of where link points, as the kernel has it. A part
    that is a link is put back as its target, in front of rest; an
    absolute target starts again from "/". *)
-proc resolve*(path: []const U8; b: ^Buf.Buf);
+proc resolve*(path: []const U8; var b: Buf.Buf);
 var rest, next: Buf.Buf; s, c, t, dir: []const U8; at, i, hops, keep, e: INT;
 begin
     Buf.init(rest, Heap.heap);
@@ -66,7 +66,7 @@ begin
         Buf.add(rest, '/');
     end;
     Buf.str(rest, path);
-    Buf.reset(b^);
+    Buf.reset(b);
     at := 0;
     hops := 0;
     while at < rest.len do
@@ -77,10 +77,10 @@ begin
         at := i + 1;
         if (LEN(c) = 0) or (c = ".") then continue; end;
         if c = ".." then up(b); continue; end;
-        keep := b^.len;
-        Buf.add(b^, '/');
-        Buf.str(b^, c);
-        t, e := Sys.readLink(Buf.bytes(b^));
+        keep := b.len;
+        Buf.add(b, '/');
+        Buf.str(b, c);
+        t, e := Sys.readLink(Buf.bytes(b));
         if (e = 0) and (hops < MaxHops) then
             INC(hops);
             Buf.reset(next);
@@ -90,11 +90,11 @@ begin
             Buf.reset(rest);
             Buf.str(rest, Buf.bytes(next));
             at := 0;
-            b^.len := keep;
-            if Str.hasPrefix(t, "/") then b^.len := 0; end;
+            b.len := keep;
+            if Str.hasPrefix(t, "/") then b.len := 0; end;
         end;
     end;
-    if b^.len = 0 then Buf.add(b^, '/'); end;
+    if b.len = 0 then Buf.add(b, '/'); end;
 end;
 
 (* Whether p is base or below it, both resolved: the '/' after the
@@ -131,7 +131,7 @@ begin
     defer Buf.done(mark);
     if not ready then Strs.init(grants, Heap.heap); ready := true; end;
     forget;
-    resolve(".", SYSTEM.ADR(b));
+    resolve(".", b);
     zone := keep(Buf.bytes(b));
     rooted := false;
     for levels := 0 to 2 do
@@ -147,7 +147,7 @@ begin
             end;
         end;
         if b.len = 1 then return; end;
-        up(SYSTEM.ADR(b));
+        up(b);
         if b.len = 0 then Buf.add(b, '/'); end;
     end;
 end;
@@ -158,7 +158,7 @@ var b: Buf.Buf; p: []const U8; g: [][]U8; i: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, SYSTEM.ADR(b));
+    resolve(path, b);
     p := Buf.bytes(b);
     if within(p, zone) then return true; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
@@ -176,7 +176,7 @@ var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, SYSTEM.ADR(b));
+    resolve(path, b);
     if LEN(scratch) > 0 then Str.free(Heap.heap, scratch); end;
     scratch := keep(Buf.bytes(b));
 end;
@@ -194,7 +194,7 @@ begin
     if LEN(scratch) = 0 then return false; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, SYSTEM.ADR(b));
+    resolve(path, b);
     return within(Buf.bytes(b), scratch);
 end;
 
@@ -205,7 +205,7 @@ var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    resolve(path, SYSTEM.ADR(b));
+    resolve(path, b);
     Strs.push(grants, keep(Buf.bytes(b)));
 end;
 
@@ -230,7 +230,7 @@ proc resolved(path: []const U8): []const U8;
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
-    resolve(path, SYSTEM.ADR(b));
+    resolve(path, b);
     return Buf.bytes(b);
 end;
 

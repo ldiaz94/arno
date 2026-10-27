@@ -146,11 +146,11 @@ begin
     end;
     (* a bare name: the files below that hold it *)
     if (LEN(dir) > 0) or (LEN(base) = 0) then return; end;
-    Afind.open(SYSTEM.ADR(w), ".");
-    defer Afind.close(SYSTEM.ADR(w));
+    Afind.open(w, ".");
+    defer Afind.close(w);
     seen := 0;
     while (seen < MaxWalk) and (items.len < MaxHits) do
-        name, ok := Afind.next(SYSTEM.ADR(w));
+        name, ok := Afind.next(w);
         if not ok then break; end;
         INC(seen);
         i := Str.findLast(name, "/");

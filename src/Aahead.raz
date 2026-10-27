@@ -332,13 +332,13 @@ begin
     Buf.str(pre, Afence.zone);
     if Afence.zone # "/" then Buf.add(pre, '/'); end;
     prefix := Buf.bytes(pre);
-    Afind.open(SYSTEM.ADR(w), Afence.zone);
-    p, ok := Afind.next(SYSTEM.ADR(w));
+    Afind.open(w, Afence.zone);
+    p, ok := Afind.next(w);
     while ok do
         if Str.hasPrefix(p, prefix) then visit(SYSTEM.ADR(t), p[LEN(prefix)..LEN(p)]); end;
-        p, ok := Afind.next(SYSTEM.ADR(w));
+        p, ok := Afind.next(w);
     end;
-    Afind.close(SYSTEM.ADR(w));
+    Afind.close(w);
     if t.total = 0 then return; end;
     start := out^.len;
     tops := Places.all(t.tops);
@@ -571,7 +571,7 @@ begin
     end;
     Strs.push(argv, "--");
     Strs.push(argv, dir);
-    status := Arun.run(Strs.all(argv), 1 shl 20, SYSTEM.ADR(b));
+    status := Arun.run(Strs.all(argv), 1 shl 20, b);
     if (status = 0) or (status = 1) then
         rest := Buf.bytes(b);
         while LEN(rest) > 0 do
@@ -580,9 +580,9 @@ begin
         end;
         return;
     end;
-    Afind.open(SYSTEM.ADR(w), dir);
-    defer Afind.close(SYSTEM.ADR(w));
-    p, ok := Afind.next(SYSTEM.ADR(w));
+    Afind.open(w, dir);
+    defer Afind.close(w);
+    p, ok := Afind.next(w);
     while ok do
         Buf.reset(text);
         if Files.load(p, text) = 0 then
@@ -598,7 +598,7 @@ begin
                 end;
             end;
         end;
-        p, ok := Afind.next(SYSTEM.ADR(w));
+        p, ok := Afind.next(w);
     end;
 end;
 
@@ -624,7 +624,7 @@ begin
     Buf.init(b, mem);
     n := 0;
     for f := 0 to LEN(files) - 1 do
-        INC(n, Afind.defs(files[f], name, mem, SYSTEM.ADR(b)));
+        INC(n, Afind.defs(files[f], name, mem, b));
         if n > MaxSeen then return "", "", "", false; end;
     end;
     (* def's text: each definition's "path:first-last", then its lines,
@@ -1062,7 +1062,7 @@ begin
     _ := Files.write("build/ahead/proj/src/core/c.c", "int c;\n");
     _ := Files.write("build/ahead/proj/test/t.c", "int t;\n");
     (* a repository of its own, for git grep, which no tests' tree is *)
-    if Arun.run(["git", "init", "-q", "build/ahead/proj"], 1000, SYSTEM.ADR(b)) # 0 then
+    if Arun.run(["git", "init", "-q", "build/ahead/proj"], 1000, b) # 0 then
         Out.str("Aahead: git init failed\n");
         return 1;
     end;

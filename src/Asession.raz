@@ -175,7 +175,7 @@ proc turn*(s: ^Session; text: []const U8; why: ^Buf.Buf): ERROR;
 var m: ^Amsg.Msg;
 begin
     m := Msgs.add(s^.conv.msgs);
-    Amsg.init(m, Amsg.Role.user);
+    Amsg.init(m^, Amsg.Role.user);
     Aattach.expand(m, text);
     return answer(s, why);
 end;
@@ -288,7 +288,7 @@ begin
     m := Msgs.all(s^.conv.msgs);
     keep := 1;
     while (keep < LEN(m)) and (m[keep].role # Amsg.Role.user) do INC(keep); end;
-    for i := keep to LEN(m) - 1 do Amsg.free(SYSTEM.ADR(m[i])); end;
+    for i := keep to LEN(m) - 1 do Amsg.free(m[i]); end;
     Msgs.resize(s^.conv.msgs, keep);
     save(s);
     changed(s);
@@ -338,13 +338,13 @@ begin
         Astore.setTitle(SYSTEM.ADR(c), Buf.bytes(title));
         Astore.setSystem(SYSTEM.ADR(c), s^.conv.system);
         m := Msgs.add(c.msgs);
-        Amsg.init(m, Amsg.Role.user);
+        Amsg.init(m^, Amsg.Role.user);
         Buf.reset(ask);
         Fmt.write(ask, "Summary of our conversation so far:\n\n{}", [Fmt.str(Str.trim(Buf.bytes(sum)))]);
-        Amsg.setText(m, Buf.bytes(ask));
+        Amsg.setText(m^, Buf.bytes(ask));
         m := Msgs.add(c.msgs);
-        Amsg.init(m, Amsg.Role.assistant);
-        Amsg.setText(m, Agent.CompactAck);
+        Amsg.init(m^, Amsg.Role.assistant);
+        Amsg.setText(m^, Agent.CompactAck);
         Fmt.write(s^.out, "compacted {} messages ({} KB) into a summary ({} KB); the full history is kept as {}",
             [Fmt.int(n), Fmt.int(before div 1024), Fmt.int(sum.len div 1024), Fmt.str(s^.conv.id)]);
         Astore.moveScratch(s^.conv.id, c.id);
@@ -485,7 +485,7 @@ begin
     p := SYSTEM.ADR(s^.conf.prov);
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    if Awire.models(p, SYSTEM.ADR(s^.out), SYSTEM.ADR(why)) = nil then
+    if Awire.models(p^, s^.out, why) = nil then
         Buf.reset(s^.listed);
         Buf.str(s^.listed, Buf.bytes(s^.out));
         Buf.reset(s^.listedOf);
@@ -509,7 +509,7 @@ proc provider(s: ^Session; name: []const U8);
 var p: ^Awire.Prov;
 begin
     p := SYSTEM.ADR(s^.conf.prov);
-    if (LEN(name) > 0) and not Awire.preset(keep(s, name), p) then
+    if (LEN(name) > 0) and not Awire.preset(keep(s, name), p^) then
         Fmt.write(s^.out, "unknown; try {}", [Fmt.str(Awire.Presets)]);
         fail(s, Buf.bytes(s^.out));
         return;
@@ -722,7 +722,7 @@ begin
     end;
     if LEN(cmd) = 0 then fail(s, "usage: /test COMMAND, or set test_cmd in config"); return; end;
     j := {args: ["sh", "-c", cmd], detach: true, tail: true};
-    status, cut := Arun.start(SYSTEM.ADR(j), MaxTest, SYSTEM.ADR(got));
+    status, cut := Arun.start(j, MaxTest, got);
     if status = 0 then
         Fmt.write(s^.out, "tests passed: {}", [Fmt.str(cmd)]);
         say(s, Buf.bytes(s^.out));
@@ -734,8 +734,8 @@ begin
     Buf.str(output, Buf.bytes(got));
     Aahead.block(SYSTEM.ADR(b), cmd, "", Buf.bytes(output));
     m := Msgs.add(s^.conv.msgs);
-    Amsg.init(m, Amsg.Role.user);
-    Amsg.setText(m, Buf.bytes(b));
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, Buf.bytes(b));
     failed(s, answer(s, SYSTEM.ADR(why)), Buf.bytes(why));
 end;
 
