@@ -208,7 +208,7 @@ begin
 end;
 
 (* The human asked question, after detail: one of keys. *)
-proc ask(q, detail, k: []const U8; _arg: ^U8): U8;
+proc ask(q, detail, k: []const U8): U8;
 begin
     if gone() then return 'n'; end;
     post(asked, q, detail, k, false);
@@ -216,7 +216,7 @@ begin
 end;
 
 (* After a no, why: "" for nothing, and for a no that came of a stop. *)
-proc reasoned(_arg: ^U8): []const U8;
+proc reasoned(): []const U8;
 begin
     if gone() or stopped() then return ""; end;
     post(Sort.why, "", "", "", false);

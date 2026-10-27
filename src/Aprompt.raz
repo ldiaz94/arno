@@ -311,7 +311,7 @@ begin
     Fmt.write(b, "context files: {}", [Fmt.str(Buf.bytes(f.names))]);
     if say # nil then say(Buf.bytes(b), h.arg); end;
     yes := mode = "yes";
-    if not yes and (h.ask # nil) then yes := h.ask("read them into every request?", "", "yn", h.arg) = 'y'; end;
+    if not yes and (h.ask # nil) then yes := h.ask("read them into every request?", "", "yn") = 'y'; end;
     if not yes then
         if say # nil then say("context files left out", h.arg); end;
         return;
@@ -426,7 +426,7 @@ begin
     failed := true;
 end;
 
-proc no(_question, _detail, _keys: []const U8; _arg: ^U8): U8;
+proc no(_question, _detail, _keys: []const U8): U8;
 begin
     return 'n';
 end;

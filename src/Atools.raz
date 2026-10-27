@@ -54,9 +54,9 @@ type
     (* What the human answers to question, shown detail first (a diff;
        "" for none): one of the bytes of keys, or 0 if there is nobody
        to ask. *)
-    Ask* = proc(question, detail, keys: []const U8; arg: ^U8): U8;
+    Ask* = proc(question, detail, keys: []const U8): U8;
     (* After a no, why: a line, "" for none; good until the next call. *)
-    Why* = proc(arg: ^U8): []const U8;
+    Why* = proc(): []const U8;
 
     (* How the human is asked; ask nil if nobody is there, why nil if
        they aren't asked why. *)
@@ -416,7 +416,7 @@ begin
         Buf.str(out, ", and there is nobody to ask");
         return false;
     end;
-    match h.ask(Buf.bytes(q), "", "yna", h.arg) of
+    match h.ask(Buf.bytes(q), "", "yna") of
     | 'y': return true;
     | 'a': Afence.grant(Buf.bytes(room)); return true;
     | else:
@@ -778,14 +778,14 @@ begin
         else
             Fmt.write(q, "run these {} commands? (a: always {})", [Fmt.int(LEN(c)), Fmt.str(x)]);
         end;
-        answer := h.ask(Buf.bytes(q), Buf.bytes(lines), "yna", h.arg);
+        answer := h.ask(Buf.bytes(q), Buf.bytes(lines), "yna");
         if answer = 'a' then
             Buf.str(trust, x);
             Buf.add(trust, ' ');
         elsif answer # 'y' then
             Buf.str(out, "declined by user");
             why := "";
-            if h.why # nil then why := Str.trim(h.why(h.arg)); end;
+            if h.why # nil then why := Str.trim(h.why()); end;
             if LEN(why) > 0 then
                 Buf.str(out, ": ");
                 Buf.str(out, why);
@@ -861,10 +861,10 @@ begin
         Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
         return false;
     end;
-    if h.ask(question, detail, "yn", h.arg) = 'y' then return true; end;
+    if h.ask(question, detail, "yn") = 'y' then return true; end;
     Buf.str(out, "declined by user");
     why := "";
-    if h.why # nil then why := Str.trim(h.why(h.arg)); end;
+    if h.why # nil then why := Str.trim(h.why()); end;
     if LEN(why) > 0 then
         Buf.str(out, ": ");
         Buf.str(out, why);
@@ -1528,14 +1528,14 @@ begin
     failed := true;
 end;
 
-proc human(_question, detail, _keys: []const U8; _arg: ^U8): U8;
+proc human(_question, detail, _keys: []const U8): U8;
 begin
     INC(asked);
     shown := keep(detail);
     return answer;
 end;
 
-proc reason(_arg: ^U8): []const U8;
+proc reason(): []const U8;
 begin
     return because;
 end;
