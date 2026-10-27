@@ -175,7 +175,7 @@ end;
 proc counted(_arg: ^U8);
 begin
     Buf.reset(made);
-    Asession.status(session, SYSTEM.ADR(made));
+    Asession.status(session^, made);
     post(Sort.status, Buf.bytes(made), "", "", false);
 end;
 
@@ -237,11 +237,11 @@ end;
 
 (* c shown again from its start, on the job's thread, which has it: the
    board cleared, then each message as it was told when it came. *)
-proc changed*(c: ^Astore.Conv; _arg: ^U8);
+proc changed*(const c: Astore.Conv; _arg: ^U8);
 var m: []Amsg.Msg; calls: []Amsg.Call; i, k: INT;
 begin
     post(cleared, "", "", "", false);
-    m := Msgs.all(c^.msgs);
+    m := Msgs.all(c.msgs);
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
         | user: post(typed, Aattach.shown(m[i].text), "", "", false);
@@ -261,9 +261,9 @@ var going: BOOL;
 begin
     going := true;
     if job.len = 0 then
-        Asession.prepare(session);
+        Asession.prepare(session^);
     else
-        going := Asession.line(session, Buf.bytes(job));
+        going := Asession.line(session^, Buf.bytes(job));
     end;
     counted(nil);
     post(ended, "", "", "", going);
@@ -352,7 +352,7 @@ begin
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
             Buf.reset(status);
-            Asession.status(session, SYSTEM.ADR(status));
+            Asession.status(session^, status);
         end;
     end;
 end;
@@ -403,7 +403,7 @@ begin
     if thread = nil then
         session^.agent.mode := Aprompt.Mode(m);
         Buf.reset(status);
-        Asession.status(session, SYSTEM.ADR(status));
+        Asession.status(session^, status);
     else
         mode := m;
         Fmt.write(flash, "mode {} from the next turn", [Fmt.str(Aprompt.Modes[m].name)]);
@@ -604,7 +604,7 @@ begin
     wordA, wordB := Acomplete.token(s, editor.point);
     if wordA < 0 then return; end;
     if (s[wordA] = '/') and (thread # nil) then return; end;
-    menu := Acomplete.complete(s[wordA..wordB], Asession.models(session));
+    menu := Acomplete.complete(s[wordA..wordB], Asession.models(session^));
 end;
 
 (* Whether the menu is shown. *)
@@ -681,7 +681,7 @@ end;
    from the human's last message on, the message quoted as mail is, a
    reply as it was written, a call its line; arno's own lines left
    out. Nothing if nothing has been said. *)
-proc exchange(b: ^Buf.Buf);
+proc exchange(var b: Buf.Buf);
 var e: []Aboard.Entry; i, first: INT; s, line: []const U8; ok: BOOL;
 begin
     e := Aboard.all();
@@ -694,17 +694,17 @@ begin
         | user:
             repeat
                 line, s, ok := Str.cut(s, "\n");
-                Fmt.write(b^, "\n> {}", [Fmt.str(line)]);
+                Fmt.write(b, "\n> {}", [Fmt.str(line)]);
             until not ok;
-            Buf.add(b^, '\n');
-        | reply: if LEN(Str.trim(s)) > 0 then Fmt.write(b^, "\n{}\n", [Fmt.str(Str.trim(s))]); end;
+            Buf.add(b, '\n');
+        | reply: if LEN(Str.trim(s)) > 0 then Fmt.write(b, "\n{}\n", [Fmt.str(Str.trim(s))]); end;
         | tool:
             line := Buf.bytes(e[i].args);
             if LEN(line) > 100 then line := line[0..100]; end;
-            Fmt.write(b^, "\n\u{25B8} {} ", [Fmt.str(s)]);
-            Str.replace(b^, line, "\n", " ");
-            Buf.add(b^, '\n');
-        | error: Fmt.write(b^, "\n{}\n", [Fmt.str(s)]);
+            Fmt.write(b, "\n\u{25B8} {} ", [Fmt.str(s)]);
+            Str.replace(b, line, "\n", " ");
+            Buf.add(b, '\n');
+        | error: Fmt.write(b, "\n{}\n", [Fmt.str(s)]);
         | info:
         end;
     end;
@@ -723,7 +723,7 @@ begin
     Buf.init(last, Heap.heap);
     defer Buf.done(last);
     Buf.str(b, Buf.bytes(saved));
-    exchange(SYSTEM.ADR(last));
+    exchange(last);
     if last.len > 0 then
         Fmt.write(b, "\n\n{}\n# Not sent: this line and all below it are dropped. The last exchange:\n{}",
             [Fmt.str(Scissors), Fmt.str(Buf.bytes(last))]);
@@ -945,7 +945,7 @@ begin
     Fmt.write(made, "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
         Fmt.str(s^.conf.prov.name)]);
     _ := Aboard.push(Aboard.info, Buf.bytes(made));
-    Asession.status(s, SYSTEM.ADR(status));
+    Asession.status(s^, status);
     TuiLoop.after(0);
     ran := TuiLoop.run({key: key, draw: draw, woken: woken, tick: tick});
     if thread # nil then

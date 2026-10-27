@@ -32,7 +32,6 @@
    Files. *)
 module Aattach;
 import Amsg, Aahead, Arun, Buf, Str, Sys, Files, Heap, Fmt, Out, Strs := Vec([]U8), Names := Sort([]U8, before);
-import SYSTEM;
 
 const
     Tag = "\n\n<file path=\"";

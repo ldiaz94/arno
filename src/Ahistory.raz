@@ -17,7 +17,6 @@
    Depends on Buf, Str, Sys and Files. *)
 module Ahistory;
 import Buf, Str, Sys, Files, Heap, Out, Strs := Vec([]U8);
-import SYSTEM;
 
 const
     Max = 1000;   (* entries kept when the file is written again *)

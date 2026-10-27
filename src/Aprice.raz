@@ -14,7 +14,6 @@
    peak, which the status line and the turns' ledger show, in stage 3. *)
 module Aprice;
 import Awire, Str, Math, Out;
-import SYSTEM;
 
 type
     Price* = record

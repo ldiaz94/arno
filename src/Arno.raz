@@ -181,13 +181,13 @@ begin
 end;
 
 (* The session: a line at a time, until the input ends or /quit. *)
-proc session(s: ^Asession.Session): INT;
+proc session(var s: Asession.Session): INT;
 var text: []const U8; tty, more: BOOL;
 begin
     tty := Sys.isTerminal(Sys.stdin);
     Asession.prepare(s);
-    say("arno · ", s^.conf.prov.model, " via ");
-    say(s^.conf.prov.name, " · /help for commands\n", "");
+    say("arno · ", s.conf.prov.model, " via ");
+    say(s.conf.prov.name, " · /help for commands\n", "");
     while true do
         if tty then say("> ", "", ""); end;
         text, more := readLine();
@@ -240,14 +240,14 @@ begin
         stopped: interrupted}, shown, nil);
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    if ARGC() < 2 then return session(SYSTEM.ADR(s)); end;
-    if (first = 3) and not Asession.resume(SYSTEM.ADR(s), Files.arg(2)) then
+    if ARGC() < 2 then return session(s); end;
+    if (first = 3) and not Asession.resume(s, Files.arg(2)) then
         say("arno: no conversation ", Files.arg(2), "\n");
         return 1;
     end;
-    Asession.prepare(SYSTEM.ADR(s));
+    Asession.prepare(s);
     Buf.init(failure, Heap.heap);
-    err := Asession.turn(SYSTEM.ADR(s), Str.trim(Buf.bytes(prompt)), SYSTEM.ADR(failure));
+    err := Asession.turn(s, Str.trim(Buf.bytes(prompt)), failure);
     breakLine;
     if err = Awire.Failed then say("arno: ", Buf.bytes(failure), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;

@@ -25,7 +25,6 @@
    Depends on Sys, Buf and Str. *)
 module Afence;
 import Buf, Str, Sys, Heap, Rt, Out, Strs := Vec([]U8);
-import SYSTEM;
 
 const
     Marks: []const []const U8 = [".git", ".sauce", ".hg", ".jj", ".svn"];
