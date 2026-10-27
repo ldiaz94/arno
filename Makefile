@@ -1,6 +1,6 @@
 # arno is a harness for language models in the terminal, written in raz
-# over rnet (HTTP and TLS) and rtui (the screen), which it reaches with -I;
-# they are siblings of this directory unless RNET, RTUI say otherwise. rjson,
+# over rnet (HTTP and TLS) and rtui (the screen); rnet is installed in ~/.raz/lib
+# (make install in its checkout), its TLS backend and rtui reached with -I as siblings unless RNET, RTUI say otherwise. rjson,
 # rzone, rwalk and rterm are installed in ~/.raz/lib.
 # It builds with the raz on PATH, which must be the version it is
 # written for, RAZVERSION: make warns of any other. Its tarball is on
@@ -22,12 +22,12 @@ RNET ?= ../rnet
 RTUI ?= ../rtui
 # rnet's TLS backend, OpenSSL unless TLS says GnuTLS
 TLS ?= openssl
-INC = -I src -I $(RNET)/src -I $(RNET)/tls/$(TLS) -I $(RTUI)/src
+INC = -I src -I $(RNET)/tls/$(TLS) -I $(RTUI)/src
 # the modules whose main is their test
 MODS = Amsg Awire Astore Aconf Afence Afind Arun Aahead Amemory Aprice Aprompt Ahtml Atools Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
-LIBS = $(wildcard $(RNET)/src/*.raz $(RNET)/tls/$(TLS)/*.raz $(RTUI)/src/*.raz)
+LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz $(RTUI)/src/*.raz)
 CONCHA = concha
 
 all: build/arno
@@ -41,7 +41,7 @@ build/arno: $(SRC) $(LIBS) | build
 
 # the model's server the tests ask, with no TLS
 build/stub: test/Astub.raz $(LIBS) | build
-	$(RAZ) -Werror -I $(RNET)/src -o $@ test/Astub.raz
+	$(RAZ) -Werror -o $@ test/Astub.raz
 
 # each module's main is its test; then the program's, test/oneshot.cn
 check: build/arno build/stub

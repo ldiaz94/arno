@@ -49,7 +49,7 @@ and the development files for OpenSSL, the default TLS backend.
 The build links against libc, pthreads, and the TLS libraries.
 [Concha](https://github.com/ldiaz94/concha) is needed for `make check`.
 
-arno expects rnet and rtui alongside its directory; rwalk, rterm, rjson and rzone must be installed first (`make install` in each checkout, which puts it in `~/.raz/lib`):
+arno expects rnet and rtui alongside its directory; rnet, rwalk, rterm, rjson and rzone must be installed first (`make install` in each checkout, which puts it in `~/.raz/lib`); rnet's TLS backend is still reached in its checkout:
 
 ```text
 workspace/
