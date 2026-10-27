@@ -125,12 +125,12 @@ end;
 
 (* s with its ASCII capitals made small, in t's buffer, good until the
    next call. *)
-proc small(t: ^Tally; s: []const U8): []const U8;
+proc small(var t: Tally; s: []const U8): []const U8;
 var l: []U8;
 begin
-    Buf.reset(t^.low);
-    Buf.str(t^.low, s);
-    l := Buf.bytes(t^.low);
+    Buf.reset(t.low);
+    Buf.str(t.low, s);
+    l := Buf.bytes(t.low);
     Str.lower(l);
     return l;
 end;
@@ -138,45 +138,45 @@ end;
 (* One more of name in c, a copy of name added if it is new. A walk
    gives the files of a directory together, so the name is nearly
    always the one counted last, which is asked first. *)
-proc bump(t: ^Tally; c: ^Counts.Vec; name: []const U8);
+proc bump(const t: Tally; var c: Counts.Vec; name: []const U8);
 var all: []Count; i: INT;
 begin
-    all := Counts.all(c^);
+    all := Counts.all(c);
     for i := LEN(all) - 1 to 0 by -1 do
         if all[i].name = name then
             INC(all[i].n);
             return;
         end;
     end;
-    Counts.push(c^, {name: copy(t^.mem, name), n: 1});
+    Counts.push(c, {name: copy(t.mem, name), n: 1});
 end;
 
 (* The index of the place called name in p, added if it is new. *)
-proc place(t: ^Tally; p: ^Places.Vec; name: []const U8): INT;
+proc place(const t: Tally; var p: Places.Vec; name: []const U8): INT;
 var all: []Place; i: INT; q: ^Place;
 begin
-    all := Places.all(p^);
+    all := Places.all(p);
     for i := LEN(all) - 1 to 0 by -1 do
         if all[i].name = name then return i; end;
     end;
-    q := Places.add(p^);
-    q^.name := copy(t^.mem, name);
-    Counts.init(q^.exts, t^.mem);
-    return p^.len - 1;
+    q := Places.add(p);
+    q^.name := copy(t.mem, name);
+    Counts.init(q^.exts, t.mem);
+    return p.len - 1;
 end;
 
 (* A file of extension ext, "" for none, counted in p. *)
-proc count(t: ^Tally; p: ^Place; ext: []const U8);
+proc count(var t: Tally; var p: Place; ext: []const U8);
 begin
-    INC(p^.files);
-    if LEN(ext) > 0 then bump(t, SYSTEM.ADR(p^.exts), small(t, ext)); end;
+    INC(p.files);
+    if LEN(ext) > 0 then bump(t, p.exts, small(t, ext)); end;
 end;
 
 (* Where the tests of the file rel are, or "" if it is no test: the
    path down to a directory of tests on its way; else, for a file named
    as tests are (x_test.go, test_x.py, x.test.ts, x.spec.js, x_spec.rb,
    XTest.java), its own directory. *)
-proc testPlace(t: ^Tally; rel: []const U8): []const U8;
+proc testPlace(var t: Tally; rel: []const U8): []const U8;
 var f, stem, l: []const U8; at, j: INT;
 begin
     at := 0;
@@ -202,10 +202,10 @@ end;
 
 (* One file of the project, rel its path from the zone, counted where
    it belongs. *)
-proc visit(t: ^Tally; rel: []const U8);
+proc visit(var t: Tally; rel: []const U8);
 var name, ext, tested: []const U8; i, j, k: INT;
 begin
-    INC(t^.total);
+    INC(t.total);
     i := Str.findLast(rel, "/");
     name := rel[i + 1..LEN(rel)];
     ext := "";
@@ -214,41 +214,41 @@ begin
     i := Str.find(rel, "/");
     j := -1;
     if i < 0 then
-        count(t, SYSTEM.ADR(t^.top), ext);
-        if (LEN(t^.readme) = 0) and Str.hasPrefix(small(t, name), "readme") then t^.readme := copy(t^.mem, rel); end;
+        count(t, t.top, ext);
+        if (LEN(t.readme) = 0) and Str.hasPrefix(small(t, name), "readme") then t.readme := copy(t.mem, rel); end;
     else
-        k := place(t, SYSTEM.ADR(t^.tops), rel[0..i + 1]);
-        count(t, SYSTEM.ADR(Places.all(t^.tops)[k]), ext);
+        k := place(t, t.tops, rel[0..i + 1]);
+        count(t, Places.all(t.tops)[k], ext);
         j := Str.find(rel[i + 1..LEN(rel)], "/");
         if j >= 0 then
-            k := place(t, SYSTEM.ADR(t^.subs), rel[0..i + j + 2]);
-            count(t, SYSTEM.ADR(Places.all(t^.subs)[k]), ext);
+            k := place(t, t.subs, rel[0..i + j + 2]);
+            count(t, Places.all(t.subs)[k], ext);
         end;
     end;
     if (j < 0) and (Afind.listed(name, Manifests) or Afind.listed(ext, ManifestExts)) then
-        Strs.push(t^.found, copy(t^.mem, rel));
+        Strs.push(t.found, copy(t.mem, rel));
     end;
     tested := testPlace(t, rel);
-    if LEN(tested) > 0 then bump(t, SYSTEM.ADR(t^.tests), tested); end;
+    if LEN(tested) > 0 then bump(t, t.tests, tested); end;
 end;
 
 (* p as a line of the map: "- src/: 212 files (.ts 180, .json 20, .css
    8)". *)
-proc placeLine(b: ^Buf.Buf; p: ^Place; indent: []const U8);
+proc placeLine(var b: Buf.Buf; const p: Place; indent: []const U8);
 var exts: []Count; i: INT;
 begin
-    Buf.str(b^, indent);
-    Fmt.write(b^, "- {}: {} file", [Fmt.str(p^.name), Fmt.int(p^.files)]);
-    if p^.files # 1 then Buf.add(b^, 's'); end;
-    exts := Counts.all(p^.exts);
+    Buf.str(b, indent);
+    Fmt.write(b, "- {}: {} file", [Fmt.str(p.name), Fmt.int(p.files)]);
+    if p.files # 1 then Buf.add(b, 's'); end;
+    exts := Counts.all(p.exts);
     ByCount.sort(exts);
     for i := 0 to LEN(exts) - 1 do
         if i = MaxExts then break; end;
-        if i = 0 then Buf.str(b^, " ("); else Buf.str(b^, ", "); end;
-        Fmt.write(b^, "{} {}", [Fmt.str(exts[i].name), Fmt.int(exts[i].n)]);
+        if i = 0 then Buf.str(b, " ("); else Buf.str(b, ", "); end;
+        Fmt.write(b, "{} {}", [Fmt.str(exts[i].name), Fmt.int(exts[i].n)]);
     end;
-    if LEN(exts) > 0 then Buf.add(b^, ')'); end;
-    Buf.add(b^, '\n');
+    if LEN(exts) > 0 then Buf.add(b, ')'); end;
+    Buf.add(b, '\n');
 end;
 
 (* A line of prose, as a README's first paragraph is made of: not
@@ -283,7 +283,7 @@ end;
 
 (* The README's first paragraph of prose, joined into a line and cut at
    a word near MaxLead. *)
-proc lead(path: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc lead(path: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf);
 var text, b: Buf.Buf; line, rest, t: []const U8;
 begin
     Buf.init(text, mem);
@@ -308,14 +308,14 @@ begin
         b.len := LEN(Str.trimRight(Buf.bytes(b)));
         Buf.str(b, " \u{2026}");
     end;
-    Buf.str(out^, Buf.bytes(b));
+    Buf.str(out, Buf.bytes(b));
 end;
 
 (* The "# Project map" section of the system prompt, added to out;
    nothing outside a project. A directory that holds more than half the
    project gets its own directories listed too: in a repository that
    keeps everything under src/, the top level says next to nothing. *)
-proc map*(mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc map*(mem: ^Mem.Allocator; var out: Buf.Buf);
 var t: Tally; w: Afind.Walk; p, prefix: []const U8; pre, line: Buf.Buf; tops, subs: []Place; found: [][]const U8;
     tests: []Count; i, j, n, rest, start: INT; ok: BOOL;
 begin
@@ -335,73 +335,73 @@ begin
     Afind.open(w, Afence.zone);
     p, ok := Afind.next(w);
     while ok do
-        if Str.hasPrefix(p, prefix) then visit(SYSTEM.ADR(t), p[LEN(prefix)..LEN(p)]); end;
+        if Str.hasPrefix(p, prefix) then visit(t, p[LEN(prefix)..LEN(p)]); end;
         p, ok := Afind.next(w);
     end;
     Afind.close(w);
     if t.total = 0 then return; end;
-    start := out^.len;
+    start := out.len;
     tops := Places.all(t.tops);
     subs := Places.all(t.subs);
     ByFiles.sort(tops);
     ByFiles.sort(subs);
-    Fmt.write(out^, "# Project map\nThe project at {} holds {} files, not counting hidden ones and what git " +
+    Fmt.write(out, "# Project map\nThe project at {} holds {} files, not counting hidden ones and what git " +
         "ignores. Take it as your orientation instead of listing the tree; outline a directory to see what " +
         "its files declare.\n", [Fmt.str(Afence.zone), Fmt.int(t.total)]);
-    if t.top.files > 0 then placeLine(out, SYSTEM.ADR(t.top), ""); end;
+    if t.top.files > 0 then placeLine(out, t.top, ""); end;
     rest := 0;
     for i := 0 to LEN(tops) - 1 do
         if i >= MaxTops then
             INC(rest, tops[i].files);
             continue;
         end;
-        placeLine(out, SYSTEM.ADR(tops[i]), "");
+        placeLine(out, tops[i], "");
         if 2 * tops[i].files <= t.total then continue; end;
         n := 0;
         for j := 0 to LEN(subs) - 1 do
             if (n < MaxSubs) and Str.hasPrefix(subs[j].name, tops[i].name) then
-                placeLine(out, SYSTEM.ADR(subs[j]), "  ");
+                placeLine(out, subs[j], "  ");
                 INC(n);
             end;
         end;
     end;
     if rest > 0 then
-        Fmt.write(out^, "- {} more directories: {} files\n", [Fmt.int(LEN(tops) - MaxTops), Fmt.int(rest)]);
+        Fmt.write(out, "- {} more directories: {} files\n", [Fmt.int(LEN(tops) - MaxTops), Fmt.int(rest)]);
     end;
     found := Strs.all(t.found);
     if LEN(found) > 0 then
-        Buf.str(out^, "Build and manifests: ");
+        Buf.str(out, "Build and manifests: ");
         for i := 0 to LEN(found) - 1 do
             if i = MaxManifests then
-                Fmt.write(out^, ", {} more", [Fmt.int(LEN(found) - MaxManifests)]);
+                Fmt.write(out, ", {} more", [Fmt.int(LEN(found) - MaxManifests)]);
                 break;
             end;
-            if i > 0 then Buf.str(out^, ", "); end;
-            Buf.str(out^, found[i]);
+            if i > 0 then Buf.str(out, ", "); end;
+            Buf.str(out, found[i]);
         end;
-        Buf.add(out^, '\n');
+        Buf.add(out, '\n');
     end;
     tests := Counts.all(t.tests);
     if LEN(tests) > 0 then
         ByCount.sort(tests);
-        Buf.str(out^, "Tests: ");
+        Buf.str(out, "Tests: ");
         for i := 0 to LEN(tests) - 1 do
             if i = MaxTests then
-                Fmt.write(out^, ", {} more places", [Fmt.int(LEN(tests) - MaxTests)]);
+                Fmt.write(out, ", {} more places", [Fmt.int(LEN(tests) - MaxTests)]);
                 break;
             end;
-            if i > 0 then Buf.str(out^, ", "); end;
-            Fmt.write(out^, "{} ({})", [Fmt.str(tests[i].name), Fmt.int(tests[i].n)]);
+            if i > 0 then Buf.str(out, ", "); end;
+            Fmt.write(out, "{} ({})", [Fmt.str(tests[i].name), Fmt.int(tests[i].n)]);
         end;
-        Buf.add(out^, '\n');
+        Buf.add(out, '\n');
     end;
     if LEN(t.readme) > 0 then
         Buf.init(line, mem);
         Buf.str(pre, t.readme);
-        lead(Buf.bytes(pre), mem, SYSTEM.ADR(line));
-        if line.len > 0 then Fmt.write(out^, "{}: {}\n", [Fmt.str(t.readme), Fmt.str(Buf.bytes(line))]); end;
+        lead(Buf.bytes(pre), mem, line);
+        if line.len > 0 then Fmt.write(out, "{}: {}\n", [Fmt.str(t.readme), Fmt.str(Buf.bytes(line))]); end;
     end;
-    out^.len := start + LEN(Str.trimRight(Buf.bytes(out^)[start..out^.len]));
+    out.len := start + LEN(Str.trimRight(Buf.bytes(out)[start..out.len]));
 end;
 
 (* prefetch *)
@@ -484,15 +484,15 @@ begin
 end;
 
 (* name pushed on l unless it is "" or there already. *)
-proc keep(l: ^Strs.Vec; name: []const U8);
+proc keep(var l: Strs.Vec; name: []const U8);
 var all: [][]const U8; i: INT;
 begin
     if LEN(name) = 0 then return; end;
-    all := Strs.all(l^);
+    all := Strs.all(l);
     for i := 0 to LEN(all) - 1 do
         if all[i] = name then return; end;
     end;
-    Strs.push(l^, name);
+    Strs.push(l, name);
 end;
 
 (* The names in the human's text that prefetch looks up, at most
@@ -501,7 +501,7 @@ end;
    whole: pasted code or output is full of names nobody asked about. So
    is a token with a / @ \ or = in it: a path, an attachment, a URL, an
    assignment. *)
-proc names(text: []const U8; mem: ^Mem.Allocator; l: ^Strs.Vec);
+proc names(text: []const U8; mem: ^Mem.Allocator; var l: Strs.Vec);
 var bare: Strs.Vec; b: Buf.Buf; w, rest: []const U8; s: []U8; all: [][]const U8; i, j, k: INT;
 begin
     Strs.init(bare, mem);
@@ -533,13 +533,13 @@ begin
     w, rest := Str.field(s);
     while LEN(w) > 0 do
         if (Str.find(w, "/") < 0) and (Str.find(w, "@") < 0) and (Str.find(w, "\\") < 0) and (Str.find(w, "=") < 0) then
-            keep(SYSTEM.ADR(bare), tidy(w, false, mem));
+            keep(bare, tidy(w, false, mem));
         end;
         w, rest := Str.field(rest);
     end;
     all := Strs.all(bare);
     for i := 0 to LEN(all) - 1 do keep(l, all[i]); end;
-    if l^.len > MaxLook then Strs.resize(l^, MaxLook); end;
+    if l.len > MaxLook then Strs.resize(l, MaxLook); end;
 end;
 
 (* The files under dir whose text mentions any of names, case aside,
@@ -551,7 +551,7 @@ end;
    Either way it is one pass for every name, where a def for each name
    would be a walk each: in a repository of 48,000 icons, 7 seconds for
    five names against a fraction of one. *)
-proc mentions(dir: []const U8; names: [][]const U8; mem: ^Mem.Allocator; files: ^Strs.Vec);
+proc mentions(dir: []const U8; names: [][]const U8; mem: ^Mem.Allocator; var files: Strs.Vec);
 var argv: Strs.Vec; b, text: Buf.Buf; w: Afind.Walk; p, path, rest: []const U8; s: []U8; i, status: INT; ok: BOOL;
 begin
     Strs.init(argv, mem);
@@ -576,7 +576,7 @@ begin
         rest := Buf.bytes(b);
         while LEN(rest) > 0 do
             path, rest, _ := Str.cut(rest, "\x00");
-            Strs.push(files^, path);
+            Strs.push(files, path);
         end;
         return;
     end;
@@ -593,7 +593,7 @@ begin
                 Buf.str(b, names[i]);
                 Str.lower(Buf.bytes(b));
                 if Str.find(s, Buf.bytes(b)) >= 0 then
-                    Strs.push(files^, copy(mem, p));
+                    Strs.push(files, copy(mem, p));
                     break;
                 end;
             end;
@@ -674,19 +674,19 @@ end;
 
 (* text, the lines of path, as one block of an attachment, added to b:
    <file path="path" lines="lines">, the text, </file>. *)
-proc block*(b: ^Buf.Buf; path, lines, text: []const U8);
+proc block*(var b: Buf.Buf; path, lines, text: []const U8);
 begin
-    Fmt.write(b^, "<file path=\"{}\"", [Fmt.str(path)]);
-    if LEN(lines) > 0 then Fmt.write(b^, " lines=\"{}\"", [Fmt.str(lines)]); end;
-    Buf.str(b^, ">\n");
+    Fmt.write(b, "<file path=\"{}\"", [Fmt.str(path)]);
+    if LEN(lines) > 0 then Fmt.write(b, " lines=\"{}\"", [Fmt.str(lines)]); end;
+    Buf.str(b, ">\n");
     if LEN(text) > MaxText then
-        Buf.str(b^, text[0..MaxText]);
-        Buf.str(b^, "\n[truncated]");
+        Buf.str(b, text[0..MaxText]);
+        Buf.str(b, "\n[truncated]");
     else
-        Buf.str(b^, text);
+        Buf.str(b, text);
     end;
-    if (LEN(text) > 0) and (Buf.bytes(b^)[b^.len - 1] # '\n') then Buf.add(b^, '\n'); end;
-    Buf.str(b^, "</file>");
+    if (LEN(text) > 0) and (Buf.bytes(b)[b.len - 1] # '\n') then Buf.add(b, '\n'); end;
+    Buf.str(b, "</file>");
 end;
 
 (* The definitions of the names in text that look like code, each added
@@ -695,21 +695,21 @@ end;
    most MaxAttach. A dotted name with none as written (Afence.zone,
    where the declaration says zone) is looked up again by its last
    part. Each is shown as the def call it stands in for. *)
-proc prefetch*(text: []const U8; mem: ^Mem.Allocator; show: Shown; arg: ^U8; out: ^Buf.Buf);
+proc prefetch*(text: []const U8; mem: ^Mem.Allocator; show: Shown; arg: ^U8; var out: Buf.Buf);
 var l, look, files: Strs.Vec; args, res: Buf.Buf; w: [][]const U8; dir, name, path, lines, body: []const U8; i, got: INT;
     found: BOOL;
 begin
     if not Afence.rooted then return; end;
     Strs.init(l, mem);
-    names(text, mem, SYSTEM.ADR(l));
+    names(text, mem, l);
     w := Strs.all(l);
     if LEN(w) = 0 then return; end;
     Strs.init(look, mem);
-    for i := 0 to LEN(w) - 1 do keep(SYSTEM.ADR(look), w[i]); end;
-    for i := 0 to LEN(w) - 1 do keep(SYSTEM.ADR(look), lastPart(w[i])); end;
+    for i := 0 to LEN(w) - 1 do keep(look, w[i]); end;
+    for i := 0 to LEN(w) - 1 do keep(look, lastPart(w[i])); end;
     dir := Afence.zone;
     Strs.init(files, mem);
-    mentions(dir, Strs.all(look), mem, SYSTEM.ADR(files));
+    mentions(dir, Strs.all(look), mem, files);
     Buf.init(args, mem);
     Buf.init(res, mem);
     got := 0;
@@ -729,7 +729,7 @@ begin
             Fmt.write(res, "{}:{}\n{}", [Fmt.str(path), Fmt.str(lines), Fmt.str(body)]);
             show("def", Buf.bytes(args), Buf.bytes(res), arg);
         end;
-        Buf.str(out^, "\n\n");
+        Buf.str(out, "\n\n");
         block(out, path, lines, body);
         INC(got);
     end;
@@ -738,27 +738,27 @@ end;
 (* notes *)
 
 (* notes.json's path, into b. *)
-proc notesFile(b: ^Buf.Buf): []const U8;
+proc notesFile(var b: Buf.Buf): []const U8;
 begin
-    Buf.str(b^, Astore.dir());
-    Buf.str(b^, "notes.json");
-    return Buf.bytes(b^);
+    Buf.str(b, Astore.dir());
+    Buf.str(b, "notes.json");
+    return Buf.bytes(b);
 end;
 
 (* The notes of the project, pushed on l, from notes.json, read into d:
    an object of the projects' roots, each an array of its notes, oldest
    first. Its value is given, None if the file is missing or broken. *)
-proc readNotes(d: ^Json.Doc; mem: ^Mem.Allocator; l: ^Strs.Vec): Json.Value;
+proc readNotes(d: ^Json.Doc; mem: ^Mem.Allocator; var l: Strs.Vec): Json.Value;
 var path, text: Buf.Buf; v, a: Json.Value; i: INT;
 begin
     Buf.init(path, mem);
     Buf.init(text, mem);
-    if Files.load(notesFile(SYSTEM.ADR(path)), text) # 0 then return Json.None; end;
+    if Files.load(notesFile(path), text) # 0 then return Json.None; end;
     v := Json.parse(d, Buf.bytes(text));
     if Json.kind(d, v) # Json.Kind.object then return Json.None; end;
     a := Json.member(d, v, Afence.zone);
     for i := 0 to Json.len(d, a) - 1 do
-        if Json.kind(d, Json.item(d, a, i)) = Json.Kind.string then Strs.push(l^, Json.text(d, Json.item(d, a, i))); end;
+        if Json.kind(d, Json.item(d, a, i)) = Json.Kind.string then Strs.push(l, Json.text(d, Json.item(d, a, i))); end;
     end;
     return v;
 end;
@@ -791,7 +791,7 @@ begin
         Buf.add(b, ']');
     end;
     Buf.add(b, '}');
-    _ := Astore.replace(notesFile(SYSTEM.ADR(path)), Buf.bytes(b));
+    _ := Astore.replace(notesFile(path), Buf.bytes(b));
 end;
 
 (* Whether a word of a note names a path, and the path: it has a / and
@@ -850,7 +850,7 @@ end;
    step: the system prompt changes then, and the provider's cache of it,
    but only when a note does. A stale note is dropped from the file as
    it is found, and said. *)
-proc notes*(mem: ^Mem.Allocator; say: Said; arg: ^U8; out: ^Buf.Buf);
+proc notes*(mem: ^Mem.Allocator; say: Said; arg: ^U8; var out: Buf.Buf);
 var d: Json.Doc; all, kept: Strs.Vec; b: Buf.Buf; v: Json.Value; l: [][]const U8; i: INT;
 begin
     if not Afence.rooted then return; end;
@@ -859,7 +859,7 @@ begin
     Strs.init(kept, mem);
     Buf.init(b, mem);
     Astore.lock;
-    v := readNotes(SYSTEM.ADR(d), mem, SYSTEM.ADR(all));
+    v := readNotes(SYSTEM.ADR(d), mem, all);
     l := Strs.all(all);
     for i := 0 to LEN(l) - 1 do
         if stale(l[i], mem) then
@@ -874,22 +874,22 @@ begin
     Astore.unlock;
     l := Strs.all(kept);
     if LEN(l) = 0 then return; end;
-    Buf.str(out^, "# Project notes\nWhat earlier sessions found out about this project and kept with the note " +
+    Buf.str(out, "# Project notes\nWhat earlier sessions found out about this project and kept with the note " +
         "tool. They save searching, but one can be out of date: where the code says otherwise, the code is right.");
     for i := 0 to LEN(l) - 1 do
-        Buf.str(out^, "\n- ");
-        Buf.str(out^, l[i]);
+        Buf.str(out, "\n- ");
+        Buf.str(out, l[i]);
     end;
 end;
 
 (* The note tool: text kept as a note of the project, unless it is one
    already; what came of it added to out. A note is a line: line feeds
    and tabs are made blanks. *)
-proc note*(text: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc note*(text: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf);
 var d: Json.Doc; l: Strs.Vec; b: Buf.Buf; t: []const U8; v: Json.Value; all: [][]const U8; i: INT;
 begin
     if not Afence.rooted then
-        Buf.str(out^, "error: notes are kept for a project, and this directory is in none");
+        Buf.str(out, "error: notes are kept for a project, and this directory is in none");
         return;
     end;
     Buf.init(b, mem);
@@ -901,48 +901,48 @@ begin
     end;
     t := Str.trim(Buf.bytes(b));
     if LEN(t) = 0 then
-        Buf.str(out^, "error: give the note as text");
+        Buf.str(out, "error: give the note as text");
         return;
     end;
     if Str.chars(t) > MaxNote then
-        Fmt.write(out^, "error: a note is one line of at most {} characters; say it shorter", [Fmt.int(MaxNote)]);
+        Fmt.write(out, "error: a note is one line of at most {} characters; say it shorter", [Fmt.int(MaxNote)]);
         return;
     end;
     if not Json.init(SYSTEM.ADR(d), mem) then return; end;
     Strs.init(l, mem);
     Astore.lock;
     defer Astore.unlock;
-    v := readNotes(SYSTEM.ADR(d), mem, SYSTEM.ADR(l));
+    v := readNotes(SYSTEM.ADR(d), mem, l);
     all := Strs.all(l);
     for i := 0 to LEN(all) - 1 do
         if Str.eqFold(all[i], t) then
-            Buf.str(out^, "ok: already noted");
+            Buf.str(out, "ok: already noted");
             return;
         end;
     end;
     if LEN(all) >= MaxNotes then
-        Fmt.write(out^, "error: this project already has {} notes, the most kept; tell the human, who can forget " +
+        Fmt.write(out, "error: this project already has {} notes, the most kept; tell the human, who can forget " +
             "some", [Fmt.int(MaxNotes)]);
         return;
     end;
     Strs.push(l, t);
     writeNotes(SYSTEM.ADR(d), v, Strs.all(l), mem);
-    Fmt.write(out^, "ok: noted ({} of {})", [Fmt.int(l.len), Fmt.int(MaxNotes)]);
+    Fmt.write(out, "ok: noted ({} of {})", [Fmt.int(l.len), Fmt.int(MaxNotes)]);
 end;
 
 (* /notes: the notes of the project, numbered from 1, a line each,
    added to out; nothing outside a project, or for one with none. *)
-proc listNotes*(mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc listNotes*(mem: ^Mem.Allocator; var out: Buf.Buf);
 var d: Json.Doc; l: Strs.Vec; all: [][]const U8; i: INT;
 begin
     if not Afence.rooted or not Json.init(SYSTEM.ADR(d), mem) then return; end;
     Strs.init(l, mem);
-    _ := readNotes(SYSTEM.ADR(d), mem, SYSTEM.ADR(l));
+    _ := readNotes(SYSTEM.ADR(d), mem, l);
     all := Strs.all(l);
     for i := 0 to LEN(all) - 1 do
-        if i > 0 then Buf.add(out^, '\n'); end;
-        if i < 9 then Buf.add(out^, ' '); end;
-        Fmt.write(out^, "{}  {}", [Fmt.int(i + 1), Fmt.str(all[i])]);
+        if i > 0 then Buf.add(out, '\n'); end;
+        if i < 9 then Buf.add(out, ' '); end;
+        Fmt.write(out, "{}  {}", [Fmt.int(i + 1), Fmt.str(all[i])]);
     end;
 end;
 
@@ -964,7 +964,7 @@ end;
    and the note added to out for each: how many. The human's say over
    what the model carries from one session to the next, since a file
    the model read could have asked it to keep a note. *)
-proc forgetNotes*(what: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf): INT;
+proc forgetNotes*(what: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf): INT;
 var d: Json.Doc; l, kept: Strs.Vec; all: [][]const U8; v: Json.Value; n: I64; i: INT; number: BOOL;
 begin
     if not Afence.rooted or not Json.init(SYSTEM.ADR(d), mem) then return 0; end;
@@ -973,12 +973,12 @@ begin
     n, number := Str.toInt(what);
     Astore.lock;
     defer Astore.unlock;
-    v := readNotes(SYSTEM.ADR(d), mem, SYSTEM.ADR(l));
+    v := readNotes(SYSTEM.ADR(d), mem, l);
     all := Strs.all(l);
     for i := 0 to LEN(all) - 1 do
         if (number and (n = i + 1)) or (not number and holdsFold(all[i], what, mem)) then
-            if out^.len > 0 then Buf.add(out^, '\n'); end;
-            Fmt.write(out^, "forgot: {}", [Fmt.str(all[i])]);
+            if out.len > 0 then Buf.add(out, '\n'); end;
+            Fmt.write(out, "forgot: {}", [Fmt.str(all[i])]);
         else
             Strs.push(kept, all[i]);
         end;
@@ -1004,11 +1004,11 @@ begin
     failed := true;
 end;
 
-proc result(b: ^Buf.Buf): []const U8;
+proc result(var b: Buf.Buf): []const U8;
 var s: []const U8;
 begin
-    s := copy(Heap.heap, Buf.bytes(b^));
-    Buf.reset(b^);
+    s := copy(Heap.heap, Buf.bytes(b));
+    Buf.reset(b);
     Arena.reset(mem);
     return s;
 end;
@@ -1018,7 +1018,7 @@ var l: Strs.Vec; b: Buf.Buf;
 begin
     Strs.init(l, SYSTEM.ADR(mem.base));
     Buf.init(b, Heap.heap);
-    names(text, SYSTEM.ADR(mem.base), SYSTEM.ADR(l));
+    names(text, SYSTEM.ADR(mem.base), l);
     Str.join(b, Strs.all(l), " ");
     Arena.reset(mem);
     return Buf.bytes(b);
@@ -1078,35 +1078,35 @@ begin
     _ := Sys.remove(Buf.bytes(b));
     Buf.reset(b);
 
-    map(SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
+    map(SYSTEM.ADR(mem.base), b);
     Fmt.write(seen, "# Project map\nThe project at {} holds 7 files, not counting hidden ones and what git " +
         "ignores. Take it as your orientation instead of listing the tree; outline a directory to see what its " +
         "files declare.\n- (top level): 2 files (.md 1)\n- src/: 4 files (.c 3, .h 1)\n" +
         "  - src/core/: 3 files (.c 2, .h 1)\n- test/: 1 file (.c 1)\nBuild and manifests: Makefile\n" +
         "Tests: test/ (1)\nREADME.md: Proj does things.", [Fmt.str(Afence.zone)]);
-    expect("map", result(SYSTEM.ADR(b)), result(SYSTEM.ADR(seen)));
+    expect("map", result(b), result(seen));
 
-    prefetch("what does runAll do, and noSuchThing?", SYSTEM.ADR(mem.base), shown, nil, SYSTEM.ADR(b));
-    expect("prefetch", result(SYSTEM.ADR(b)), "\n\n<file path=\"src/main.c\" lines=\"1-6\">\n    1\t/* runs */\n    2\tint\n" +
+    prefetch("what does runAll do, and noSuchThing?", SYSTEM.ADR(mem.base), shown, nil, b);
+    expect("prefetch", result(b), "\n\n<file path=\"src/main.c\" lines=\"1-6\">\n    1\t/* runs */\n    2\tint\n" +
         "    3\trunAll(int a)\n    4\t{\n    5\t    return a;\n    6\t}\n</file>");
-    expect("prefetch, shown", result(SYSTEM.ADR(seen)), `def{"name":"runAll"}`);
+    expect("prefetch, shown", result(seen), `def{"name":"runAll"}`);
 
-    note("the entry\nis src/main.c", SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("note", result(SYSTEM.ADR(b)), "ok: noted (1 of 30)");
-    note("The entry is src/main.c", SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("note again", result(SYSTEM.ADR(b)), "ok: already noted");
-    note("the old one was src/old.c", SYSTEM.ADR(mem.base), SYSTEM.ADR(b));
-    expect("another note", result(SYSTEM.ADR(b)), "ok: noted (2 of 30)");
-    notes(SYSTEM.ADR(mem.base), said, nil, SYSTEM.ADR(b));
-    expect("notes", result(SYSTEM.ADR(b)), "# Project notes\nWhat earlier sessions found out about this project and kept " +
+    note("the entry\nis src/main.c", SYSTEM.ADR(mem.base), b);
+    expect("note", result(b), "ok: noted (1 of 30)");
+    note("The entry is src/main.c", SYSTEM.ADR(mem.base), b);
+    expect("note again", result(b), "ok: already noted");
+    note("the old one was src/old.c", SYSTEM.ADR(mem.base), b);
+    expect("another note", result(b), "ok: noted (2 of 30)");
+    notes(SYSTEM.ADR(mem.base), said, nil, b);
+    expect("notes", result(b), "# Project notes\nWhat earlier sessions found out about this project and kept " +
         "with the note tool. They save searching, but one can be out of date: where the code says otherwise, the " +
         "code is right.\n- the entry is src/main.c");
-    expect("a stale note", result(SYSTEM.ADR(seen)), "note dropped, its paths are gone: the old one was src/old.c");
+    expect("a stale note", result(seen), "note dropped, its paths are gone: the old one was src/old.c");
     Buf.str(b, Astore.dir());
     Buf.str(b, "notes.json");
-    _ := Files.load(copy(Heap.heap, result(SYSTEM.ADR(b))), b);
+    _ := Files.load(copy(Heap.heap, result(b)), b);
     Fmt.write(seen, `{{"{}":["the entry is src/main.c"]}}`, [Fmt.str(Afence.zone)]);
-    expect("notes.json", result(SYSTEM.ADR(b)), result(SYSTEM.ADR(seen)));
+    expect("notes.json", result(b), result(seen));
 
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;

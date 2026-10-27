@@ -251,7 +251,7 @@ begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     Buf.str(b, "\x1b]52;c;");
-    Aattach.base64(SYSTEM.ADR(b), s);
+    Aattach.base64(b, s);
     Buf.add(b, 7);
     TuiLoop.send(Buf.bytes(b));
 end;

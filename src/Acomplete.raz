@@ -127,7 +127,7 @@ begin
     defer Buf.done(full);
     name := dir;
     if LEN(name) = 0 then name := "."; end;
-    if Aattach.listing(Str.trimRight(name), SYSTEM.ADR(list)) then
+    if Aattach.listing(Str.trimRight(name), list) then
         rest := Buf.bytes(list);
         ok := LEN(rest) > 0;
         while ok do
@@ -204,14 +204,14 @@ begin
             add(Buf.bytes(b), "");
         end;
     | "/load":
-        Astore.recent(8, arg, SYSTEM.ADR(list));
+        Astore.recent(8, arg, list);
         l := Listed.all(list);
         for i := 0 to LEN(l) - 1 do
             Buf.reset(b);
             Fmt.write(b, "/load {}", [Fmt.str(l[i].id)]);
             add(Buf.bytes(b), l[i].title);
         end;
-        Astore.drop(SYSTEM.ADR(list));
+        Astore.drop(list);
     | else:
     end;
 end;

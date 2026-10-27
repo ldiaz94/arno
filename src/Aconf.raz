@@ -52,60 +52,60 @@ const
         "trust", "grant", "context_files", "project_map", "prefetch", "mcp"];
 
 (* c made a configuration of nothing: the ollama preset. *)
-proc init*(c: ^Conf);
+proc init*(var c: Conf);
 begin
-    c^ := {};
-    Buf.init(c^.warnings, Heap.heap);
-    Buf.init(c^.text, Heap.heap);
-    Strs.init(c^.keys, Heap.heap);
-    Strs.init(c^.values, Heap.heap);
-    Strs.init(c^.params, Heap.heap);
-    _ := Awire.preset("ollama", c^.prov);
+    c := {};
+    Buf.init(c.warnings, Heap.heap);
+    Buf.init(c.text, Heap.heap);
+    Strs.init(c.keys, Heap.heap);
+    Strs.init(c.values, Heap.heap);
+    Strs.init(c.params, Heap.heap);
+    _ := Awire.preset("ollama", c.prov);
 end;
 
-proc dropParams(c: ^Conf);
+proc dropParams(var c: Conf);
 var i: INT; p: [][]const U8;
 begin
-    p := Strs.all(c^.params);
+    p := Strs.all(c.params);
     (* kept as the []const U8 the provider reads; each is Str.copy's, so freed as it is *)
     for i := 0 to LEN(p) - 1 do
         if LEN(p[i]) > 0 then Mem.free(Heap.heap, SYSTEM.PTR(p[i])); end;
     end;
-    Strs.reset(c^.params);
+    Strs.reset(c.params);
 end;
 
-proc done*(c: ^Conf);
+proc done*(var c: Conf);
 begin
     dropParams(c);
-    Strs.done(c^.params);
-    Strs.done(c^.keys);
-    Strs.done(c^.values);
-    Buf.done(c^.text);
-    Buf.done(c^.warnings);
-    c^ := {};
+    Strs.done(c.params);
+    Strs.done(c.keys);
+    Strs.done(c.values);
+    Buf.done(c.text);
+    Buf.done(c.warnings);
+    c := {};
 end;
 
 (* The value of key, as the file last set it; "" if it doesn't. *)
-proc get*(c: ^Conf; key: []const U8): []const U8;
+proc get*(const c: Conf; key: []const U8): []const U8;
 var i: INT; keys: [][]const U8;
 begin
-    keys := Strs.all(c^.keys);
+    keys := Strs.all(c.keys);
     for i := LEN(keys) - 1 to 0 by -1 do
-        if keys[i] = key then return Strs.all(c^.values)[i]; end;
+        if keys[i] = key then return Strs.all(c.values)[i]; end;
     end;
     return "";
 end;
 
-proc warn(c: ^Conf; a, b: []const U8);
+proc warn(var c: Conf; a, b: []const U8);
 begin
-    Buf.str(c^.warnings, "config: ");
-    Buf.str(c^.warnings, a);
-    Buf.str(c^.warnings, b);
-    Buf.add(c^.warnings, '\n');
+    Buf.str(c.warnings, "config: ");
+    Buf.str(c.warnings, a);
+    Buf.str(c.warnings, b);
+    Buf.add(c.warnings, '\n');
 end;
 
 (* A param of the provider, its key and value joined by =. *)
-proc param(c: ^Conf; key, value: []const U8);
+proc param(var c: Conf; key, value: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
@@ -113,11 +113,11 @@ begin
     Buf.str(b, key);
     Buf.add(b, '=');
     Buf.str(b, value);
-    Strs.push(c^.params, Amsg.keep(Buf.bytes(b)));
+    Strs.push(c.params, Amsg.keep(Buf.bytes(b)));
 end;
 
 (* model's effort, as the param reasoning_effort@MODEL=level. *)
-proc effort(c: ^Conf; model, level: []const U8);
+proc effort(var c: Conf; model, level: []const U8);
 var key: Buf.Buf;
 begin
     Buf.init(key, Heap.heap);
@@ -129,7 +129,7 @@ end;
 
 (* value, a whole number of 0 or more, into n; or a warning, and n as
    it was. *)
-proc number(c: ^Conf; key, value: []const U8; n: ^INT);
+proc number(var c: Conf; key, value: []const U8; var n: INT);
 var v: I64; ok: BOOL;
 begin
     v, ok := Str.toInt(value);
@@ -137,7 +137,7 @@ begin
         warn(c, key, " wants a number");
         return;
     end;
-    n^ := INT(v);
+    n := INT(v);
 end;
 
 proc known(key: []const U8): BOOL;
@@ -150,25 +150,25 @@ begin
 end;
 
 (* One setting, key = value, read into c. *)
-proc setting(c: ^Conf; key, value: []const U8);
+proc setting(var c: Conf; key, value: []const U8);
 var word, rest: []const U8; at: INT;
 begin
     match key of
     | "provider":
-        if Awire.preset(value, c^.prov) then
+        if Awire.preset(value, c.prov) then
             dropParams(c);
         else
             warn(c, "unknown provider ", value);
         end;
-    | "model": c^.prov.model := value;
-    | "url": c^.prov.url := value;
-    | "key": c^.prov.keyEnv := value;
+    | "model": c.prov.model := value;
+    | "url": c.prov.url := value;
+    | "key": c.prov.keyEnv := value;
     | "dialect":
-        c^.prov.dialect := Awire.Dialect.openai;
-        if value = "anthropic" then c^.prov.dialect := Awire.Dialect.anthropic; end;
-    | "timeout": number(c, key, value, SYSTEM.ADR(c^.prov.limit));
-    | "max_retries": number(c, key, value, SYSTEM.ADR(c^.prov.retries));
-    | "retry_backoff": number(c, key, value, SYSTEM.ADR(c^.prov.backoff));
+        c.prov.dialect := Awire.Dialect.openai;
+        if value = "anthropic" then c.prov.dialect := Awire.Dialect.anthropic; end;
+    | "timeout": number(c, key, value, c.prov.limit);
+    | "max_retries": number(c, key, value, c.prov.retries);
+    | "retry_backoff": number(c, key, value, c.prov.backoff);
     | "effort":
         (* MODEL:LEVEL ..., a model's name having colons of its own,
            as deepseek-v4.1-flash:cloud *)
@@ -185,11 +185,11 @@ end;
 
 (* text, a configuration file, read into c, made with init: c keeps
    a copy of it, which its settings are slices of. *)
-proc read*(c: ^Conf; text: []const U8);
+proc read*(var c: Conf; text: []const U8);
 var line, rest, key, value: []const U8; more, eq: BOOL;
 begin
-    Buf.str(c^.text, text);
-    rest := Buf.bytes(c^.text);
+    Buf.str(c.text, text);
+    rest := Buf.bytes(c.text);
     more := LEN(rest) > 0;
     while more do
         line, rest, more := Str.cut(rest, "\n");
@@ -199,16 +199,16 @@ begin
         if not eq then continue; end;
         key := Str.trim(key);
         value := Str.trim(value);
-        Strs.push(c^.keys, key);
-        Strs.push(c^.values, value);
+        Strs.push(c.keys, key);
+        Strs.push(c.values, value);
         setting(c, key, value);
     end;
-    c^.prov.params := Strs.all(c^.params);
+    c.prov.params := Strs.all(c.params);
 end;
 
 (* c made the configuration in arno's file, or the ollama preset if
    there is none. *)
-proc load*(c: ^Conf);
+proc load*(var c: Conf);
 var path, text: Buf.Buf; base: []const U8;
 begin
     init(c);
@@ -247,8 +247,8 @@ end;
 proc main*: INT;
 var c: Conf; b: Buf.Buf;
 begin
-    init(SYSTEM.ADR(c));
-    read(SYSTEM.ADR(c), `
+    init(c);
+    read(c, `
         # arno's configuration
         temperature = 0.9
         provider = claude
@@ -274,12 +274,12 @@ begin
     Str.join(b, c.prov.params, " ");
     expect("its params, temperature dropped by the provider after it", Buf.bytes(b),
         "reasoning_effort@kimi-k3=high reasoning_effort@deepseek-v4.1-flash:cloud=low anthropic_version=2023-06-01");
-    expect("a key kept for the rest of arno", get(SYSTEM.ADR(c), "run"), "tiza man fd");
-    expect("a key not set", get(SYSTEM.ADR(c), "worker"), "");
+    expect("a key kept for the rest of arno", get(c, "run"), "tiza man fd");
+    expect("a key not set", get(c, "worker"), "");
     expect("the warnings", Buf.bytes(c.warnings),
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
     expect("the effort for a model", Awire.param(c.prov, "reasoning_effort@kimi-k3"), "high");
-    done(SYSTEM.ADR(c));
+    done(c);
     if failed then return 1; end;
     return 0;
 end;

@@ -193,7 +193,7 @@ begin
     Buf.init(b, SYSTEM.ADR(a^.mem.base));
     Buf.str(b, m^.text);
     n := b.len;
-    Aahead.prefetch(m^.text, SYSTEM.ADR(a^.mem.base), prefetched, ^U8(a), SYSTEM.ADR(b));
+    Aahead.prefetch(m^.text, SYSTEM.ADR(a^.mem.base), prefetched, ^U8(a), b);
     if b.len > n then Amsg.setText(m^, Buf.bytes(b)); end;
     Arena.reset(a^.mem);
 end;
@@ -263,7 +263,7 @@ begin
     INC(a^.used.written, u.written);
     INC(a^.used.out, u.out);
     INC(a^.requests);
-    price, priced := Aprice.price(a^.prov);
+    price, priced := Aprice.price(a^.prov^);
     if priced then a^.spent := a^.spent + Aprice.cost(price, u); else INC(a^.unpriced); end;
     (* a worker's context is not the conversation's *)
     if not a^.working and (u.inp + u.out > 0) then a^.held := u.inp + u.out; end;
@@ -377,8 +377,8 @@ begin
     Fmt.write(why, "worker {}: {}", [Fmt.str(a^.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
     note(a, Buf.bytes(why));
 
-    Astore.init(SYSTEM.ADR(w), "worker");
-    defer Astore.done(SYSTEM.ADR(w));
+    Astore.init(w, "worker");
+    defer Astore.done(w);
     m := Msgs.add(w.msgs);
     Amsg.init(m^, Amsg.Role.user);
     Amsg.setText(m^, Buf.bytes(brief));
@@ -558,7 +558,7 @@ proc main*: INT;
 var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT; t: []const U8;
 begin
     init(SYSTEM.ADR(a), SYSTEM.ADR(p), {});
-    Astore.init(SYSTEM.ADR(c), "test");
+    Astore.init(c, "test");
     Buf.init(long, Heap.heap);
     for i := 1 to 100 do Buf.str(long, "a line of a long result, 38 bytes....\n"); end;
     for i := 0 to 5 do

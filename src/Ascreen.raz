@@ -576,7 +576,7 @@ var path, t: Buf.Buf; s: []const U8; p: INT;
 begin
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
-    if not Aattach.paste(SYSTEM.ADR(path), SYSTEM.ADR(flash)) then return; end;
+    if not Aattach.paste(path, flash) then return; end;
     Buf.init(t, Heap.heap);
     defer Buf.done(t);
     s := TuiEdit.text(SYSTEM.ADR(editor));

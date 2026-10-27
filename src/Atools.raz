@@ -626,7 +626,7 @@ end;
 proc testFor*(b: ^Buf.Buf): []const U8;
 var s: []const U8;
 begin
-    s := Astore.keyed("tests.json", Afence.zone, b);
+    s := Astore.keyed("tests.json", Afence.zone, b^);
     if LEN(s) = 0 then
         Buf.str(b^, testCmd);
         s := testCmd;
@@ -1299,7 +1299,7 @@ begin
     end;
     s := Buf.bytes(body);
     if (Str.find(kind, "text/html") >= 0) or (Str.find(kind, "application/xhtml") >= 0) then
-        Ahtml.text(s, kind, out);
+        Ahtml.text(s, kind, out^);
         return;
     end;
     if LEN(s) > 8192 then s := s[0..8192]; end;
@@ -1478,7 +1478,7 @@ begin
     elsif name = "remove" then
         remove(SYSTEM.ADR(a), h, mem, SYSTEM.ADR(res));
     elsif name = "note" then
-        Aahead.note(str(SYSTEM.ADR(a), "text"), mem, SYSTEM.ADR(res));
+        Aahead.note(str(SYSTEM.ADR(a), "text"), mem, res);
     elsif (name = "search") and (LEN(searx) > 0) then
         searchWeb(SYSTEM.ADR(a), mem, SYSTEM.ADR(res));
     elsif name = "fetch" then

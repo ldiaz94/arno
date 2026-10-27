@@ -220,7 +220,7 @@ begin
         Buf.str(p, nice[LEN(f^.home)..LEN(nice)]);
         nice := Buf.bytes(p);
     end;
-    Aahead.block(SYSTEM.ADR(f^.text), nice, "", s);
+    Aahead.block(f^.text, nice, "", s);
     Buf.add(f^.text, '\n');
     if f^.names.len > 0 then Buf.str(f^.names, ", "); end;
     Buf.str(f^.names, nice);
@@ -333,8 +333,8 @@ begin
     if not Arena.init(ar, 1 shl 26) then return; end;
     defer Arena.done(ar);
     readContext(p, Sys.env("HOME"), mode, h, say, SYSTEM.ADR(ar.base));
-    if map then Aahead.map(SYSTEM.ADR(ar.base), SYSTEM.ADR(p^.map)); end;
-    Amemory.section(SYSTEM.ADR(ar.base), SYSTEM.ADR(p^.memory));
+    if map then Aahead.map(SYSTEM.ADR(ar.base), p^.map); end;
+    Amemory.section(SYSTEM.ADR(ar.base), p^.memory);
 end;
 
 (* p's remembered facts read again, after the human changed them. *)
@@ -344,7 +344,7 @@ begin
     if not Arena.init(ar, 1 shl 24) then return; end;
     defer Arena.done(ar);
     Buf.reset(p^.memory);
-    Amemory.section(SYSTEM.ADR(ar.base), SYSTEM.ADR(p^.memory));
+    Amemory.section(SYSTEM.ADR(ar.base), p^.memory);
 end;
 
 (* Command c as /help shows it, its argument after its name, added to b. *)
@@ -369,7 +369,7 @@ begin
     dir, e := Sys.workDir();
     if e = 0 then Buf.str(out^, dir); end;
     Fmt.write(out^, ". Project root: {}. Date: ", [Fmt.str(Afence.zone)]);
-    Astore.date(out);
+    Astore.date(out^);
     Buf.add(out^, '.');
     if p^.context.len > 0 then
         Buf.str(out^, "\n\n");
@@ -387,7 +387,7 @@ begin
     end;
     at := out^.len;
     Buf.str(out^, "\n\n");
-    Aahead.notes(mem, say, arg, out);
+    Aahead.notes(mem, say, arg, out^);
     if out^.len = at + 2 then out^.len := at; end;
     if p^.memory.len > 0 then
         Buf.str(out^, "\n\n");

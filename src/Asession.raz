@@ -66,7 +66,7 @@ var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    Afence.useScratch(Astore.scratch(s^.conv.id, SYSTEM.ADR(b)));
+    Afence.useScratch(Astore.scratch(s^.conv.id, b));
 end;
 
 (* s made the session the config sets up, telling front of turns and
@@ -76,7 +76,7 @@ proc init*(s: ^Session; front: Agent.Front; show: Show; arg: ^U8);
 var id: Buf.Buf; n: I64; i: INT; ok: BOOL;
 begin
     s^ := {show: show, arg: arg};
-    Aconf.load(SYSTEM.ADR(s^.conf));
+    Aconf.load(s^.conf);
     if not Arena.init(s^.mem, 1 shl 28) then Rt.stop("arno: out of memory"); end;
     Buf.init(s^.out, Heap.heap);
     Buf.init(s^.listed, Heap.heap);
@@ -84,23 +84,23 @@ begin
     if s^.conf.warnings.len > 0 then show(Str.trimRight(Buf.bytes(s^.conf.warnings)), true, arg); end;
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
-    Astore.newId(SYSTEM.ADR(id));
-    Astore.init(SYSTEM.ADR(s^.conv), Buf.bytes(id));
+    Astore.newId(id);
+    Astore.init(s^.conv, Buf.bytes(id));
     Agent.init(SYSTEM.ADR(s^.agent), SYSTEM.ADR(s^.conf.prov), front);
     useScratch(s);
-    n, ok := Str.toInt(Aconf.get(SYSTEM.ADR(s^.conf), "max_steps"));
+    n, ok := Str.toInt(Aconf.get(s^.conf, "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;
-    n, ok := Str.toInt(Aconf.get(SYSTEM.ADR(s^.conf), "prune"));
+    n, ok := Str.toInt(Aconf.get(s^.conf, "prune"));
     if ok and (n >= 0) then s^.agent.prune := INT(n); end;
-    s^.agent.budget, _ := Math.toReal(Aconf.get(SYSTEM.ADR(s^.conf), "turn_budget"));
-    s^.agent.prefetch := Aconf.get(SYSTEM.ADR(s^.conf), "prefetch") # "no";
-    s^.agent.worker := Aconf.get(SYSTEM.ADR(s^.conf), "worker");
+    s^.agent.budget, _ := Math.toReal(Aconf.get(s^.conf, "turn_budget"));
+    s^.agent.prefetch := Aconf.get(s^.conf, "prefetch") # "no";
+    s^.agent.worker := Aconf.get(s^.conf, "worker");
     for i := 0 to LEN(Aprompt.Modes) - 1 do
-        if Aprompt.Modes[i].name = Aconf.get(SYSTEM.ADR(s^.conf), "mode") then s^.agent.mode := Aprompt.Mode(i); end;
+        if Aprompt.Modes[i].name = Aconf.get(s^.conf, "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
-    Atools.search(Aconf.get(SYSTEM.ADR(s^.conf), "searxng"));
-    Atools.commands(Aconf.get(SYSTEM.ADR(s^.conf), "run"), Aconf.get(SYSTEM.ADR(s^.conf), "run_ro"),
-        Aconf.get(SYSTEM.ADR(s^.conf), "run_env"), Aconf.get(SYSTEM.ADR(s^.conf), "trust"), Aconf.get(SYSTEM.ADR(s^.conf), "test_cmd"));
+    Atools.search(Aconf.get(s^.conf, "searxng"));
+    Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
+        Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));
 end;
 
 (* What lasts the session found: the context files, as config's
@@ -111,9 +111,9 @@ end;
 proc prepare*(s: ^Session);
 var mode: []const U8;
 begin
-    mode := Aconf.get(SYSTEM.ADR(s^.conf), "context_files");
+    mode := Aconf.get(s^.conf, "context_files");
     if LEN(mode) = 0 then mode := "ask"; end;
-    Agent.prepare(SYSTEM.ADR(s^.agent), mode, Aconf.get(SYSTEM.ADR(s^.conf), "project_map") # "no");
+    Agent.prepare(SYSTEM.ADR(s^.agent), mode, Aconf.get(s^.conf, "project_map") # "no");
 end;
 
 proc say(s: ^Session; text: []const U8);
@@ -129,8 +129,8 @@ end;
 (* s's conversation saved; said if it can't be. *)
 proc save(s: ^Session);
 begin
-    Astore.setModel(SYSTEM.ADR(s^.conv), s^.conf.prov.model);
-    if Astore.save(SYSTEM.ADR(s^.conv)) # nil then
+    Astore.setModel(s^.conv, s^.conf.prov.model);
+    if Astore.save(s^.conv) # nil then
         Buf.reset(s^.out);
         Fmt.write(s^.out, "the conversation can't be saved in {}", [Fmt.str(Astore.dir())]);
         fail(s, Buf.bytes(s^.out));
@@ -149,7 +149,7 @@ end;
    granted and declined for that one forgotten. *)
 proc switch(s: ^Session; c: ^Astore.Conv);
 begin
-    Astore.done(SYSTEM.ADR(s^.conv));
+    Astore.done(s^.conv);
     s^.conv := c^;
     useScratch(s);
     Afence.forget;
@@ -176,7 +176,7 @@ var m: ^Amsg.Msg;
 begin
     m := Msgs.add(s^.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
-    Aattach.expand(m, text);
+    Aattach.expand(m^, text);
     return answer(s, why);
 end;
 
@@ -193,20 +193,20 @@ proc find(arg: []const U8; id: ^Buf.Buf): BOOL;
 var list: Items.Vec; n: I64; ok: BOOL;
 begin
     n, ok := Str.toInt(arg);
-    Astore.recent(Listed, "", SYSTEM.ADR(list));
+    Astore.recent(Listed, "", list);
     if ok and (n >= 1) and (n <= list.len) then Buf.str(id^, Items.all(list)[n - 1].id); end;
-    Astore.drop(SYSTEM.ADR(list));
+    Astore.drop(list);
     if id^.len > 0 then return true; end;
     if LEN(arg) = 0 then return false; end;
-    if Sys.access(Astore.file(arg, id), {}) = 0 then
+    if Sys.access(Astore.file(arg, id^), {}) = 0 then
         Buf.reset(id^);
         Buf.str(id^, arg);
         return true;
     end;
     Buf.reset(id^);
-    Astore.recent(1, arg, SYSTEM.ADR(list));
+    Astore.recent(1, arg, list);
     if list.len > 0 then Buf.str(id^, Items.all(list)[0].id); end;
-    Astore.drop(SYSTEM.ADR(list));
+    Astore.drop(list);
     return id^.len > 0;
 end;
 
@@ -218,8 +218,8 @@ begin
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
     if not find(arg, SYSTEM.ADR(id)) then return false; end;
-    if Astore.load(SYSTEM.ADR(c), Buf.bytes(id)) # nil then
-        Astore.done(SYSTEM.ADR(c));
+    if Astore.load(c, Buf.bytes(id)) # nil then
+        Astore.done(c);
         return false;
     end;
     switch(s, SYSTEM.ADR(c));
@@ -274,8 +274,8 @@ var id: Buf.Buf; c: Astore.Conv;
 begin
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
-    Astore.newId(SYSTEM.ADR(id));
-    Astore.init(SYSTEM.ADR(c), Buf.bytes(id));
+    Astore.newId(id);
+    Astore.init(c, Buf.bytes(id));
     switch(s, SYSTEM.ADR(c));
     say(s, "a new conversation");
 end;
@@ -322,7 +322,7 @@ begin
     Buf.str(ask, Agent.CompactAsk);
     if LEN(focus) > 0 then Fmt.write(ask, " Pay particular attention to: {}.", [Fmt.str(focus)]); end;
     err := Agent.once(SYSTEM.ADR(s^.agent), SYSTEM.ADR(s^.conv), Buf.bytes(ask), SYSTEM.ADR(sum), SYSTEM.ADR(why));
-    Astore.newId(SYSTEM.ADR(id));
+    Astore.newId(id);
     if err = Awire.Stopped then
         fail(s, "stopped; history unchanged");
     elsif err # nil then
@@ -332,11 +332,11 @@ begin
         fail(s, "the summary came back empty; history unchanged");
     else
         Buf.str(title, s^.conv.title);
-        if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
+        if title.len = 0 then Astore.autoTitle(s^.conv, title); end;
         if not Str.hasSuffix(Buf.bytes(title), " (compacted)") then Buf.str(title, " (compacted)"); end;
-        Astore.init(SYSTEM.ADR(c), Buf.bytes(id));
-        Astore.setTitle(SYSTEM.ADR(c), Buf.bytes(title));
-        Astore.setSystem(SYSTEM.ADR(c), s^.conv.system);
+        Astore.init(c, Buf.bytes(id));
+        Astore.setTitle(c, Buf.bytes(title));
+        Astore.setSystem(c, s^.conv.system);
         m := Msgs.add(c.msgs);
         Amsg.init(m^, Amsg.Role.user);
         Buf.reset(ask);
@@ -348,7 +348,7 @@ begin
         Fmt.write(s^.out, "compacted {} messages ({} KB) into a summary ({} KB); the full history is kept as {}",
             [Fmt.int(n), Fmt.int(before div 1024), Fmt.int(sum.len div 1024), Fmt.str(s^.conv.id)]);
         Astore.moveScratch(s^.conv.id, c.id);
-        Astore.done(SYSTEM.ADR(s^.conv));
+        Astore.done(s^.conv);
         s^.conv := c;
         useScratch(s);
         save(s);
@@ -360,8 +360,8 @@ end;
 proc list(word: []const U8; out: ^Buf.Buf);
 var l: Items.Vec; items: []Astore.Item; i: INT;
 begin
-    Astore.recent(Listed, word, SYSTEM.ADR(l));
-    defer Astore.drop(SYSTEM.ADR(l));
+    Astore.recent(Listed, word, l);
+    defer Astore.drop(l);
     items := Items.all(l);
     for i := 0 to LEN(items) - 1 do
         if i > 0 then Buf.add(out^, '\n'); end;
@@ -381,7 +381,7 @@ begin
     end;
     Buf.init(title, SYSTEM.ADR(s^.mem.base));
     Buf.str(title, s^.conv.title);
-    if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
+    if title.len = 0 then Astore.autoTitle(s^.conv, title); end;
     Fmt.write(s^.out, "loaded {}: {}, {} messages",
         [Fmt.str(s^.conv.id), Fmt.str(Buf.bytes(title)), Fmt.int(s^.conv.msgs.len)]);
     say(s, Buf.bytes(s^.out));
@@ -402,7 +402,7 @@ begin
         fail(s, Buf.bytes(s^.out));
         return;
     end;
-    if Files.load(Astore.file(Buf.bytes(id), SYSTEM.ADR(path)), s^.out) # 0 then
+    if Files.load(Astore.file(Buf.bytes(id), path), s^.out) # 0 then
         Fmt.write(s^.out, "no conversation {}", [Fmt.str(Buf.bytes(id))]);
         fail(s, Buf.bytes(s^.out));
         return;
@@ -412,7 +412,7 @@ end;
 
 proc rename(s: ^Session; title: []const U8);
 begin
-    Astore.setTitle(SYSTEM.ADR(s^.conv), title);
+    Astore.setTitle(s^.conv, title);
     save(s);
     if LEN(title) = 0 then say(s, "title cleared"); return; end;
     Fmt.write(s^.out, "renamed: {}", [Fmt.str(title)]);
@@ -428,11 +428,11 @@ begin
         Fmt.write(s^.out, "this conversation's own system prompt (/system - for arno's):\n\n{}",
             [Fmt.str(s^.conv.system)]);
     elsif text = "-" then
-        Astore.setSystem(SYSTEM.ADR(s^.conv), "");
+        Astore.setSystem(s^.conv, "");
         save(s);
         Buf.str(s^.out, "system prompt: arno's own, from the next turn");
     else
-        Astore.setSystem(SYSTEM.ADR(s^.conv), text);
+        Astore.setSystem(s^.conv, text);
         save(s);
         Buf.str(s^.out, "system prompt: this conversation's own, from the next turn");
     end;
@@ -563,7 +563,7 @@ begin
     n, exact := context(s);
     if not exact then Buf.add(b^, '~'); end;
     tokens(b, n);
-    pr, _ := Aprice.price(SYSTEM.ADR(s^.conf.prov));
+    pr, _ := Aprice.price(s^.conf.prov);
     if pr.window > 0 then
         Buf.add(b^, '/');
         tokens(b, pr.window);
@@ -596,7 +596,7 @@ begin
         end;
     end;
     n, _ := context(s);
-    pr, _ := Aprice.price(SYSTEM.ADR(s^.conf.prov));
+    pr, _ := Aprice.price(s^.conf.prov);
     if pr.window > 0 then
         full := n * 10 >= pr.window * 6;
     else
@@ -606,7 +606,7 @@ begin
     Buf.init(title, Heap.heap);
     defer Buf.done(title);
     Buf.str(title, s^.conv.title);
-    if title.len = 0 then Astore.autoTitle(SYSTEM.ADR(s^.conv), SYSTEM.ADR(title)); end;
+    if title.len = 0 then Astore.autoTitle(s^.conv, title); end;
     t := Buf.bytes(title);
     if LEN(t) = 0 then return; end;
     Buf.str(b^, " \u{B7} ");
@@ -636,7 +636,7 @@ begin
         money(out, a^.spent);
         if a^.unpriced > 0 then Fmt.write(out^, ", and {} requests with no known price", [Fmt.int(a^.unpriced)]); end;
     end;
-    pr, priced := Aprice.price(SYSTEM.ADR(s^.conf.prov));
+    pr, priced := Aprice.price(s^.conf.prov);
     if priced then
         Fmt.write(out^, "\nprice     {}: ", [Fmt.str(s^.conf.prov.model)]);
         price(out, pr.inp);
@@ -681,7 +681,7 @@ proc notes(s: ^Session; arg: []const U8);
 var verb, what: []const U8;
 begin
     if LEN(arg) = 0 then
-        Aahead.listNotes(SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out));
+        Aahead.listNotes(SYSTEM.ADR(s^.mem.base), s^.out);
         if s^.out.len = 0 then Fmt.write(s^.out, "no notes for {}", [Fmt.str(Afence.zone)]); end;
         say(s, Buf.bytes(s^.out));
         return;
@@ -689,7 +689,7 @@ begin
     verb, what := Str.field(arg);
     what := Str.trim(what);
     if (verb # "forget") or (LEN(what) = 0) then fail(s, "usage: /notes [forget N|WORD]"); return; end;
-    if Aahead.forgetNotes(what, SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out)) = 0 then
+    if Aahead.forgetNotes(what, SYSTEM.ADR(s^.mem.base), s^.out) = 0 then
         Fmt.write(s^.out, "no note {}", [Fmt.str(what)]);
         fail(s, Buf.bytes(s^.out));
         return;
@@ -711,7 +711,7 @@ begin
     cmd := arg;
     if LEN(cmd) = 0 then
         cmd := Atools.testFor(SYSTEM.ADR(b));
-    elsif cmd # Astore.keyed("tests.json", Afence.zone, SYSTEM.ADR(b)) then
+    elsif cmd # Astore.keyed("tests.json", Afence.zone, b) then
         if Astore.setKeyed("tests.json", Afence.zone, cmd) # nil then
             fail(s, "tests.json can't be written");
             return;
@@ -732,7 +732,7 @@ begin
     Fmt.write(b, "Tests failed (`{}`, exit {}). What should I fix?\n\n", [Fmt.str(cmd), Fmt.int(status)]);
     if cut then Buf.str(output, "[...]\n"); end;
     Buf.str(output, Buf.bytes(got));
-    Aahead.block(SYSTEM.ADR(b), cmd, "", Buf.bytes(output));
+    Aahead.block(b, cmd, "", Buf.bytes(output));
     m := Msgs.add(s^.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
     Amsg.setText(m^, Buf.bytes(b));
@@ -765,7 +765,7 @@ begin
     | "/remember": remember(s, arg);
     | "/forget": forget(s, arg);
     | "/my-memory":
-        Amemory.facts(arg, SYSTEM.ADR(s^.mem.base), SYSTEM.ADR(s^.out));
+        Amemory.facts(arg, SYSTEM.ADR(s^.mem.base), s^.out);
         if s^.out.len = 0 then Buf.str(s^.out, "nothing remembered"); end;
         say(s, Buf.bytes(s^.out));
     | "/notes": notes(s, arg);

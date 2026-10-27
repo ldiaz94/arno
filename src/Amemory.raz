@@ -14,11 +14,11 @@ import Astore, Json, Buf, Str, Sys, Files, Heap, Mem, Arena, Rt, Out;
 import SYSTEM;
 
 (* memory.json's path, into b. *)
-proc file(b: ^Buf.Buf): []const U8;
+proc file(var b: Buf.Buf): []const U8;
 begin
-    Buf.str(b^, Astore.dir());
-    Buf.str(b^, "memory.json");
-    return Buf.bytes(b^);
+    Buf.str(b, Astore.dir());
+    Buf.str(b, "memory.json");
+    return Buf.bytes(b);
 end;
 
 (* memory.json read into d: its array, None if there is no file or it
@@ -28,7 +28,7 @@ var path, text: Buf.Buf; v: Json.Value;
 begin
     Buf.init(path, mem);
     Buf.init(text, mem);
-    if Files.load(file(SYSTEM.ADR(path)), text) # 0 then return Json.None; end;
+    if Files.load(file(path), text) # 0 then return Json.None; end;
     v := Json.parse(d, Buf.bytes(text));
     if Json.kind(d, v) # Json.Kind.array then return Json.None; end;
     return v;
@@ -59,16 +59,16 @@ begin
 end;
 
 (* Fact m on a line, as " [a,b]" after it shows its tags, added to out. *)
-proc line(d: ^Json.Doc; m: Json.Value; out: ^Buf.Buf);
+proc line(d: ^Json.Doc; m: Json.Value; var out: Buf.Buf);
 var tags: Json.Value; k: INT;
 begin
-    Buf.str(out^, Json.text(d, Json.member(d, m, "fact")));
+    Buf.str(out, Json.text(d, Json.member(d, m, "fact")));
     tags := Json.member(d, m, "tags");
     for k := 0 to Json.len(d, tags) - 1 do
-        if k = 0 then Buf.str(out^, " ["); else Buf.add(out^, ','); end;
-        Buf.str(out^, Json.text(d, Json.item(d, tags, k)));
+        if k = 0 then Buf.str(out, " ["); else Buf.add(out, ','); end;
+        Buf.str(out, Json.text(d, Json.item(d, tags, k)));
     end;
-    if Json.len(d, tags) > 0 then Buf.add(out^, ']'); end;
+    if Json.len(d, tags) > 0 then Buf.add(out, ']'); end;
 end;
 
 (* text written as memory.json. *)
@@ -76,28 +76,28 @@ proc save(text: []const U8; mem: ^Mem.Allocator);
 var path: Buf.Buf;
 begin
     Buf.init(path, mem);
-    _ := Astore.replace(file(SYSTEM.ADR(path)), text);
+    _ := Astore.replace(file(path), text);
 end;
 
 (* Fact m added to b, an array begun: after a comma if it isn't the
    array's first. *)
-proc add(d: ^Json.Doc; m: Json.Value; b: ^Buf.Buf);
+proc add(d: ^Json.Doc; m: Json.Value; var b: Buf.Buf);
 begin
-    if Buf.bytes(b^)[b^.len - 1] # '[' then Buf.add(b^, ','); end;
-    Json.write(d, b, m, {});
+    if Buf.bytes(b)[b.len - 1] # '[' then Buf.add(b, ','); end;
+    Json.write(d, SYSTEM.ADR(b), m, {});
 end;
 
 (* The "# Remembered facts" section of the system prompt, added to out;
    nothing if there are none. *)
-proc section*(mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc section*(mem: ^Mem.Allocator; var out: Buf.Buf);
 var d: Json.Doc; v: Json.Value; i: INT;
 begin
     if not Json.init(SYSTEM.ADR(d), mem) then return; end;
     v := read(SYSTEM.ADR(d), mem);
     if Json.len(SYSTEM.ADR(d), v) = 0 then return; end;
-    Buf.str(out^, "# Remembered facts\nAbout the human and this project:");
+    Buf.str(out, "# Remembered facts\nAbout the human and this project:");
     for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
-        Buf.str(out^, "\n  - ");
+        Buf.str(out, "\n  - ");
         line(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), out);
     end;
 end;
@@ -123,12 +123,12 @@ begin
         INC(n);
     end;
     Buf.str(b, `],"created":"`);
-    Astore.date(SYSTEM.ADR(b));
+    Astore.date(b);
     Buf.str(b, `"}`);
     Astore.lock;
     v := read(SYSTEM.ADR(d), mem);
     Buf.str(all, "[");
-    for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do add(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), SYSTEM.ADR(all)); end;
+    for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do add(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), v, i), all); end;
     if all.len > 1 then Buf.add(all, ','); end;
     Buf.str(all, Buf.bytes(b));
     Buf.add(all, ']');
@@ -153,7 +153,7 @@ begin
         if tagged(SYSTEM.ADR(d), m, word) or holds(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "fact")), word, mem) then
             INC(n);
         else
-            add(SYSTEM.ADR(d), m, SYSTEM.ADR(b));
+            add(SYSTEM.ADR(d), m, b);
         end;
     end;
     Buf.add(b, ']');
@@ -163,7 +163,7 @@ end;
 
 (* The facts, or those with the tag tag unless it is "", a line each
    with its tags, added to out; nothing if there are none. *)
-proc facts*(tag: []const U8; mem: ^Mem.Allocator; out: ^Buf.Buf);
+proc facts*(tag: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf);
 var d: Json.Doc; v, m: Json.Value; i, n: INT;
 begin
     if not Json.init(SYSTEM.ADR(d), mem) then return; end;
@@ -172,7 +172,7 @@ begin
     for i := 0 to Json.len(SYSTEM.ADR(d), v) - 1 do
         m := Json.item(SYSTEM.ADR(d), v, i);
         if (LEN(tag) = 0) or tagged(SYSTEM.ADR(d), m, tag) then
-            if n > 0 then Buf.add(out^, '\n'); end;
+            if n > 0 then Buf.add(out, '\n'); end;
             line(SYSTEM.ADR(d), m, out);
             INC(n);
         end;
@@ -206,17 +206,17 @@ begin
     remember("likes tea", "me,drinks", mem);
     remember("the build is make", "", mem);
     remember("Tea at four", ",DRINKS,", mem);
-    facts("", mem, SYSTEM.ADR(b));
+    facts("", mem, b);
     ok := expect("facts", Buf.bytes(b), "likes tea [me,drinks]\nthe build is make\nTea at four [DRINKS]");
     Buf.reset(b);
-    facts("drinks", mem, SYSTEM.ADR(b));
+    facts("drinks", mem, b);
     ok := expect("facts by tag", Buf.bytes(b), "likes tea [me,drinks]\nTea at four [DRINKS]") and ok;
     if forget("TEA", mem) # 2 then
         Out.str("Amemory: forget\n");
         ok := false;
     end;
     Buf.reset(b);
-    section(mem, SYSTEM.ADR(b));
+    section(mem, b);
     ok := expect("section", Buf.bytes(b), "# Remembered facts\nAbout the human and this project:\n  - the build is make")
         and ok;
     if ok then return 0; end;

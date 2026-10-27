@@ -77,34 +77,34 @@ type
 
 (* The text next parted from the last by k, unless something wider
    parts it already. *)
-proc part(p: ^Page; k: INT);
+proc part(var p: Page; k: INT);
 begin
-    if k > p^.gap then p^.gap := k; end;
+    if k > p.gap then p.gap := k; end;
 end;
 
 (* c, a byte of the text, added, after what parts it from the text
    before; nothing parts the text from the page's start. *)
-proc emit(p: ^Page; c: U8);
+proc emit(var p: Page; c: U8);
 begin
-    if p^.out^.len > p^.start then
-        if (p^.gap = 1) and (p^.nl = 0) then Buf.add(p^.out^, ' '); end;
-        while p^.nl < p^.gap - 1 do   (* 2: a line end, 3: two *)
-            Buf.add(p^.out^, '\n');
-            INC(p^.nl);
+    if p.out^.len > p.start then
+        if (p.gap = 1) and (p.nl = 0) then Buf.add(p.out^, ' '); end;
+        while p.nl < p.gap - 1 do   (* 2: a line end, 3: two *)
+            Buf.add(p.out^, '\n');
+            INC(p.nl);
         end;
     end;
-    p^.gap := 0;
-    Buf.add(p^.out^, c);
-    if c = '\n' then INC(p^.nl); else p^.nl := 0; end;
+    p.gap := 0;
+    Buf.add(p.out^, c);
+    if c = '\n' then INC(p.nl); else p.nl := 0; end;
 end;
 
 (* Text, its blanks run together unless in pre. *)
-proc flow(p: ^Page; s: []const U8);
+proc flow(var p: Page; s: []const U8);
 var i: INT;
 begin
-    if p^.hidden > 0 then return; end;
+    if p.hidden > 0 then return; end;
     for i := 0 to LEN(s) - 1 do
-        if p^.pre > 0 then
+        if p.pre > 0 then
             emit(p, s[i]);
         else
             match s[i] of
@@ -117,14 +117,14 @@ end;
 
 (* s with its character references made the characters they stand for,
    in b. *)
-proc decode(s: []const U8; b: ^Buf.Buf): []const U8;
+proc decode(s: []const U8; var b: Buf.Buf): []const U8;
 var i, j, k: INT; c: I32; v: U64; d: I64; ok: BOOL; e: [4]U8; n: INT;
 begin
-    Buf.reset(b^);
+    Buf.reset(b);
     i := 0;
     while i < LEN(s) do
         if s[i] # '&' then
-            Buf.add(b^, s[i]);
+            Buf.add(b, s[i]);
             INC(i);
             continue;
         end;
@@ -151,36 +151,36 @@ begin
             end;
         end;
         if c < 0 then
-            Buf.add(b^, '&');
+            Buf.add(b, '&');
             INC(i);
         else
             e, n := Str.encode(c);
-            Buf.str(b^, e[0..n]);
+            Buf.str(b, e[0..n]);
             i := j + 1;
         end;
     end;
-    return Buf.bytes(b^);
+    return Buf.bytes(b);
 end;
 
 (* A tag, start or end, called name, small, laid out. *)
-proc tag(p: ^Page; name: []const U8; ending: BOOL);
+proc tag(var p: Page; name: []const U8; ending: BOOL);
 var t: []const U8;
 begin
     if Afind.listed(name, Hidden) then
-        if not ending then INC(p^.hidden); elsif p^.hidden > 0 then DEC(p^.hidden); end;
+        if not ending then INC(p.hidden); elsif p.hidden > 0 then DEC(p.hidden); end;
     elsif name = "pre" then
-        if not ending then INC(p^.pre); elsif p^.pre > 0 then DEC(p^.pre); end;
+        if not ending then INC(p.pre); elsif p.pre > 0 then DEC(p.pre); end;
     elsif name = "title" then
-        if not ending and (p^.title = -1) then
-            p^.title := p^.out^.len;
-        elsif ending and (p^.title >= 0) then
+        if not ending and (p.title = -1) then
+            p.title := p.out^.len;
+        elsif ending and (p.title >= 0) then
             (* the title's text taken out, and kept apart at the start *)
-            t := Str.trim(Buf.bytes(p^.out^)[p^.title..p^.out^.len]);
-            p^.out^.len := p^.title;
-            p^.title := -2;
-            p^.nl := 0;
-            Buf.str(p^.out^, t);
-            p^.gap := 3;
+            t := Str.trim(Buf.bytes(p.out^)[p.title..p.out^.len]);
+            p.out^.len := p.title;
+            p.title := -2;
+            p.nl := 0;
+            Buf.str(p.out^, t);
+            p.gap := 3;
         end;
     end;
     if Afind.listed(name, Paras) then
@@ -249,27 +249,27 @@ begin
 end;
 
 (* s, Windows-1252, made UTF-8 in b. *)
-proc fromLatin(s: []const U8; b: ^Buf.Buf): []const U8;
+proc fromLatin(s: []const U8; var b: Buf.Buf): []const U8;
 var i, n: INT; c: I32; e: [4]U8;
 begin
     for i := 0 to LEN(s) - 1 do
         if s[i] < 80H then
-            Buf.add(b^, s[i]);
+            Buf.add(b, s[i]);
         else
             c := I32(s[i]);
             if (c >= 80H) and (c < 0A0H) then c := Win[c - 80H]; end;
             if c = 0 then c := 0FFFDH; end;
             e, n := Str.encode(c);
-            Buf.str(b^, e[0..n]);
+            Buf.str(b, e[0..n]);
         end;
     end;
-    return Buf.bytes(b^);
+    return Buf.bytes(b);
 end;
 
 (* The text of body, an HTML page, added to out: its title, a blank
    line, and the rest; "(no text)" if there is none. ctype is its
    Content-Type, which may name its charset. *)
-proc text*(body, ctype: []const U8; out: ^Buf.Buf);
+proc text*(body, ctype: []const U8; var out: Buf.Buf);
 var p: Page; ent, bytes: Buf.Buf; s, charset: []const U8; name: []U8; i, j, k, from: INT; ending: BOOL;
 begin
     Buf.init(ent, Heap.heap);
@@ -283,15 +283,15 @@ begin
         if k > 2048 then k := 2048; end;
         charset := charsetOf(s[0..k]);
     end;
-    if latin(charset) then s := fromLatin(s, SYSTEM.ADR(bytes)); end;
-    from := out^.len;
-    p := {out: out, start: out^.len, title: -1};
+    if latin(charset) then s := fromLatin(s, bytes); end;
+    from := out.len;
+    p := {out: SYSTEM.ADR(out), start: out.len, title: -1};
     i := 0;
     while i < LEN(s) do
         if s[i] # '<' then
             j := i;
             while (j < LEN(s)) and (s[j] # '<') do INC(j); end;
-            flow(SYSTEM.ADR(p), decode(s[i..j], SYSTEM.ADR(ent)));
+            flow(p, decode(s[i..j], ent));
             i := j;
         elsif Str.hasPrefix(s[i..LEN(s)], "<!--") then
             j := Str.find(s[i + 4..LEN(s)], "-->");
@@ -305,7 +305,7 @@ begin
             k := j;
             while (k < LEN(s)) and nameChar(s[k]) do INC(k); end;
             if k = j then
-                flow(SYSTEM.ADR(p), "<");   (* a < that starts no tag is text *)
+                flow(p, "<");   (* a < that starts no tag is text *)
                 INC(i);
                 continue;
             end;
@@ -313,7 +313,7 @@ begin
             Buf.str(ent, s[j..k]);
             name := Buf.bytes(ent);
             Str.lower(name);
-            tag(SYSTEM.ADR(p), name, ending);
+            tag(p, name, ending);
             i := tagEnd(s, k);
             if not ending and Afind.listed(name, Raw) then
                 (* script and style hold text, < and all, to their end tag *)
@@ -321,13 +321,13 @@ begin
                 Buf.str(bytes, "</");
                 Buf.str(bytes, name);
                 j := findFold(s, Buf.bytes(bytes), i);
-                tag(SYSTEM.ADR(p), name, true);
+                tag(p, name, true);
                 i := tagEnd(s, j);
             end;
         end;
     end;
-    out^.len := from + LEN(Str.trimRight(Buf.bytes(out^)[from..out^.len]));
-    if out^.len = from then Buf.str(out^, "(no text)"); end;
+    out.len := from + LEN(Str.trimRight(Buf.bytes(out)[from..out.len]));
+    if out.len = from then Buf.str(out, "(no text)"); end;
 end;
 
 (* The module's test. *)
@@ -338,7 +338,7 @@ proc expect(what, html, ctype, want: []const U8);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
-    text(html, ctype, SYSTEM.ADR(b));
+    text(html, ctype, b);
     if Buf.bytes(b) = want then return; end;
     Out.str("Ahtml: ");
     Out.str(what);
