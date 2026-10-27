@@ -49,15 +49,13 @@ and the development files for OpenSSL, the default TLS backend.
 The build links against libc, pthreads, and the TLS libraries.
 [Concha](https://github.com/ldiaz94/concha) is needed for `make check`.
 
-arno expects these libraries alongside its directory:
+arno expects rnet and rtui alongside its directory; rwalk, rterm, rjson and rzone must be installed first (`make install` in each checkout, which puts it in `~/.raz/lib`):
 
 ```text
 workspace/
 ├── arno/
 ├── rnet/
-├── rwalk/
-├── rtui/
-└── rterm/
+└── rtui/
 ```
 
 From the parent directory:
@@ -65,9 +63,7 @@ From the parent directory:
 ```sh
 git clone https://github.com/ldiaz94/arno.git
 git clone https://github.com/ldiaz94/rnet.git
-git clone https://github.com/ldiaz94/rwalk.git
 git clone https://github.com/ldiaz94/rtui.git
-git clone https://github.com/ldiaz94/rterm.git
 cd arno
 make
 ./build/arno --help
