@@ -54,31 +54,28 @@ arno expects these libraries alongside its directory:
 ```text
 workspace/
 ├── arno/
-├── rjson/
 ├── rnet/
 ├── rwalk/
 ├── rtui/
-├── rterm/
-└── rzone/
+└── rterm/
 ```
 
 From the parent directory:
 
 ```sh
 git clone https://github.com/ldiaz94/arno.git
-git clone https://github.com/ldiaz94/rjson.git
 git clone https://github.com/ldiaz94/rnet.git
 git clone https://github.com/ldiaz94/rwalk.git
 git clone https://github.com/ldiaz94/rtui.git
 git clone https://github.com/ldiaz94/rterm.git
-git clone https://github.com/ldiaz94/rzone.git
 cd arno
 make
 ./build/arno --help
 ```
 
-For another layout, set `RJSON`, `RNET`, `RWALK`, `RTUI`, `RTERM`, and
-`RZONE` when running make. `TLS=gnutls` selects rnet's GnuTLS backend.
+rjson and rzone are installed first, with `make install` in each checkout
+(they go to `~/.raz/lib`, raz's `RAZ_PATH`). For another layout, set `RNET`,
+`RWALK`, `RTUI` and `RTERM` when running make. `TLS=gnutls` selects rnet's GnuTLS backend.
 See the [Makefile](Makefile) for the build settings. There is no
 `make install` target yet; run `build/arno` directly or put the binary
 on your `PATH`.

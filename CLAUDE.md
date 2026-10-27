@@ -15,7 +15,7 @@ version `RAZVERSION` in the Makefile says.
 
 `make check` and `make fmt` must pass before every commit. rjson, rnet
 and the other libraries, rzone (local time) among them, are siblings of
-this directory (`RJSON`, `RNET`, `RZONE`... in the Makefile).
+this directory (`RNET`... in the Makefile); rjson and rzone are installed in `~/.raz/lib`.
 
 ## How we work
 
