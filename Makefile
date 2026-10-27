@@ -10,7 +10,7 @@
 # release's.
 
 RAZ ?= raz
-RAZVERSION = 0.24.0
+RAZVERSION = 0.25.0
 RAZSITE = https://raz.lucelad.workers.dev
 # raz's tools, the formatter among them, lie beside its real path
 comma := ,
