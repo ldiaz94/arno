@@ -49,13 +49,12 @@ and the development files for OpenSSL, the default TLS backend.
 The build links against libc, pthreads, and the TLS libraries.
 [Concha](https://github.com/ldiaz94/concha) is needed for `make check`.
 
-arno expects rnet and rtui alongside its directory; rnet, rwalk, rterm, rjson and rzone must be installed first (`make install` in each checkout, which puts it in `~/.raz/lib`); rnet's TLS backend is still reached in its checkout:
+arno expects rnet alongside its directory, for its TLS backend; rnet, rtui, rwalk, rterm, rjson and rzone must be installed first (`make install` in each checkout, which puts it in `~/.raz/lib`):
 
 ```text
 workspace/
 ├── arno/
-├── rnet/
-└── rtui/
+└── rnet/
 ```
 
 From the parent directory:
@@ -63,15 +62,14 @@ From the parent directory:
 ```sh
 git clone https://github.com/ldiaz94/arno.git
 git clone https://github.com/ldiaz94/rnet.git
-git clone https://github.com/ldiaz94/rtui.git
 cd arno
 make
 ./build/arno --help
 ```
 
-rjson and rzone are installed first, with `make install` in each checkout
-(they go to `~/.raz/lib`, raz's `RAZ_PATH`). For another layout, set `RNET`,
-`RWALK`, `RTUI` and `RTERM` when running make. `TLS=gnutls` selects rnet's GnuTLS backend.
+The other libraries are installed first, with `make install` in each checkout
+(they go to `~/.raz/lib`, raz's `RAZ_PATH`). For another layout, set `RNET`
+when running make. `TLS=gnutls` selects rnet's GnuTLS backend.
 See the [Makefile](Makefile) for the build settings. There is no
 `make install` target yet; run `build/arno` directly or put the binary
 on your `PATH`.

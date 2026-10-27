@@ -1,7 +1,7 @@
 # arno is a harness for language models in the terminal, written in raz
-# over rnet (HTTP and TLS) and rtui (the screen); rnet is installed in ~/.raz/lib
-# (make install in its checkout), its TLS backend and rtui reached with -I as siblings unless RNET, RTUI say otherwise. rjson,
-# rzone, rwalk and rterm are installed in ~/.raz/lib.
+# over rnet (HTTP and TLS) and rtui (the screen); rnet, rtui, rjson, rzone, rwalk
+# and rterm are installed in ~/.raz/lib (make install in each checkout); only
+# rnet's TLS backend is reached with -I, as a sibling unless RNET says otherwise.
 # It builds with the raz on PATH, which must be the version it is
 # written for, RAZVERSION: make warns of any other. Its tarball is on
 # raz's website, at download/raz-$(RAZVERSION)-linux-x86_64.tar.gz.
@@ -19,15 +19,14 @@ ifneq "$(firstword $(subst -, ,$(subst $(comma),,$(word 2,$(shell $(RAZ) --versi
 $(warning arno is written for raz $(RAZVERSION), from $(RAZSITE); $(RAZ) is $(or $(shell $(RAZ) --version 2>/dev/null),not found))
 endif
 RNET ?= ../rnet
-RTUI ?= ../rtui
 # rnet's TLS backend, OpenSSL unless TLS says GnuTLS
 TLS ?= openssl
-INC = -I src -I $(RNET)/tls/$(TLS) -I $(RTUI)/src
+INC = -I src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
 MODS = Amsg Awire Astore Aconf Afence Afind Arun Aahead Amemory Aprice Aprompt Ahtml Atools Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
-LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz $(RTUI)/src/*.raz)
+LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)
 CONCHA = concha
 
 all: build/arno
