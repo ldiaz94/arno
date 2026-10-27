@@ -161,10 +161,10 @@ end;
 
 (* The system prompt of c's next request, made again in sys: it ends
    with the mode's instructions, or a worker's. *)
-proc system(var a: Agent; c: ^Astore.Conv; var sys: Buf.Buf);
+proc system(var a: Agent; const c: Astore.Conv; var sys: Buf.Buf);
 begin
     Buf.reset(sys);
-    Aprompt.write(a.prompt, c^, a.prov^, a.mode, SYSTEM.ADR(a.mem.base), a.front.note, a.front.arg, sys);
+    Aprompt.write(a.prompt, c, a.prov^, a.mode, SYSTEM.ADR(a.mem.base), a.front.note, a.front.arg, sys);
     Buf.str(sys, "\n\n");
     if a.working then
         Buf.str(sys, WorkerText);
@@ -458,7 +458,7 @@ var sys: Buf.Buf; m: ^Amsg.Msg; n: INT; err: ERROR;
 begin
     Buf.init(sys, Heap.heap);
     defer Buf.done(sys);
-    system(a, SYSTEM.ADR(c), sys);
+    system(a, c, sys);
     m := Msgs.add(c.msgs);
     Amsg.init(m^, Amsg.Role.user);
     Amsg.setText(m^, request);
@@ -527,7 +527,7 @@ begin
             prune(a, c);
             floor := size(c);
         end;
-        system(a, SYSTEM.ADR(c), sys);
+        system(a, c, sys);
         err := ask(a, c, Buf.bytes(sys), why);
         if err # nil then break; end;
         calls := Msgs.all(c.msgs)[c.msgs.len - 1].calls.len;
