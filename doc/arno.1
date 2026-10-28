@@ -90,7 +90,7 @@ speaking its protocol on standard input and output.
 See
 .Sx SERVE
 and
-.Xr arno-peer 5 .
+.Xr arno-serve 5 .
 It takes no other argument.
 .It Fl \-attach Op Ar pid
 Show another arno's session in this terminal, and type into it.
@@ -1119,7 +1119,7 @@ program to run, a call of an MCP tool, the stage's diff.
 A refusal may come with its reason, which the model reads as it would
 yours.
 The whole protocol is in
-.Xr arno-peer 5 .
+.Xr arno-serve 5 .
 .Pp
 Nothing else is written to standard output, which becomes a copy of
 standard error, so that nothing a tool or a library prints can land in
@@ -1311,10 +1311,14 @@ and
 are the Pascal arno's.
 They are accepted, so that its file reads, and ignored.
 .Pp
-Any other key is passed to the provider as a request parameter, such as
-.Cm temperature , top_p , max_tokens
-or
-.Cm reasoning_effort .
+Of the other keys, only these are sent, in the provider's request:
+.Cm temperature , top_p
+and
+.Cm max_tokens
+(Claude needs the last, and has 8192 when it is not set), and the header
+.Cm anthropic_version
+of a Claude provider.
+Any other key is read and then dropped, without a word.
 .Pp
 A reasoning model's thinking is not shown, but it is kept for the rest of
 the turn and sent back with each tool result, since some models lose the
@@ -1394,7 +1398,9 @@ On the screen, and with
 it exits 0 when it ends in the ordinary way.
 .Pp
 .Fl \-attach
-exits 1 when there is no session to attach to or no terminal to use.
+exits 1 when there is no session to attach to or no terminal to use, and 2
+when its argument is not a process id or
+.Fl l .
 .Sh ENVIRONMENT
 .Bl -tag -width XDG_RUNTIME_DIR
 .It Ev XDG_CONFIG_HOME
@@ -1516,7 +1522,7 @@ Any left? @src/
 Look at @"my notes/todo.md"
 .Ed
 .Sh SEE ALSO
-.Xr arno-peer 5 ,
+.Xr arno-serve 5 ,
 .Xr git 1 ,
 .Xr git-worktree 1 ,
 .Xr man 1 ,

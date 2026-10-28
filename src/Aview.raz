@@ -27,7 +27,7 @@
 
    Whoever keeps a copy of the transcript appends what it is told, in
    order, and has the same numbers; apply is that, for a viewer. These
-   are the messages of ~/lib/arnoc's protocol, which a host of --serve
+   are the messages of the protocol of arno-serve(5), which a host of --serve
    reads, and the viewers' too.
 
    The session's socket is $XDG_RUNTIME_DIR/arno/PID.view, or, with no

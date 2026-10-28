@@ -11,11 +11,14 @@ Conversations are kept on disk. It runs as a full-screen session, as a
 line-at-a-time filter, as a one-shot command, or as a server for
 another program (a word processor, an editor) to drive.
 
-The name is that of a river, and the mascot is a river otter: a
-small, practical animal that fetches things from the water and brings
-them back. The otter holds a terminal, with its prompt, and wears a
+The name is short, to be typed often. The mascot is a river otter: a
+small, practical animal that fetches things and brings them back. It holds a terminal, with its prompt, and wears a
 teal scarf. [`doc/img/arno-mascot.png`](doc/img/arno-mascot.png) is the
 full picture; [`doc/img/logo.svg`](doc/img/logo.svg) is the emblem.
+
+<p align="center">
+  <img src="doc/img/demo.gif" alt="arno in a terminal: a greeting, a tool call that reads a file, the mode set to review, and the usage counted" width="800">
+</p>
 
 This is the raz rebuild of an earlier arno written in Pascal. It reads
 the conversations that one saved. [PLAN.md](PLAN.md) has the decisions
@@ -23,10 +26,16 @@ and the stages.
 
 ## See it
 
-There is no recording yet. It will be made, not filmed, as the other
-projects' are: a script that types at arno on a pseudo-terminal and
-writes down what it draws. Until then, `make check` runs arno against
-a stub model and shows what it does.
+Above, arno answers a greeting, runs a call of the model's that reads a
+file, switches to review mode and counts its usage. The model is the
+test suite's stub, so the replies are the same on every run. The same
+recording is in [`doc/demo.cast`](doc/demo.cast), to play in your
+terminal with [asciinema](https://asciinema.org):
+
+    asciinema play doc/demo.cast
+
+It is made, not filmed: `make cast` types `doc/demo.keys` at arno on a
+pseudo-terminal (`test/Play.raz`, `test/cast.cn`).
 
 ## Get it
 
@@ -36,17 +45,15 @@ backend; `TLS=gnutls` selects rnet's GnuTLS one). arno links libc,
 pthreads and the TLS libraries. `make check` also needs
 [concha](https://github.com/ldiaz94/concha).
 
-arno is built over its sibling libraries: rnet (HTTP and TLS) is a
-directory beside arno's, and rnet, rtui, rjson, rzone, rwalk and
-rterm are installed first, with `make install` in each checkout (they
-go to `~/.raz/lib`).
+arno is built over its sibling libraries. rnet (HTTP and TLS) is a
+directory beside arno's; rtui, rjson, rzone, rwalk and rterm are
+installed into `~/.raz/lib` first, with `make install` in each checkout.
 
-    workspace/
-    ├── arno/
-    └── rnet/
-
-    git clone https://github.com/ldiaz94/arno.git
-    git clone https://github.com/ldiaz94/rnet.git
+    mkdir workspace && cd workspace
+    for r in arno rnet rtui rjson rzone rwalk rterm; do
+        git clone https://github.com/ldiaz94/$r.git
+    done
+    for r in rtui rjson rzone rwalk rterm; do (cd $r && make install); done
     cd arno
     make              # build/arno
     make check        # the tests
@@ -75,8 +82,10 @@ The config never holds a secret: `key` names the variable. Put
 `provider` first, since choosing one resets its settings; `model`,
 `url`, `key` and `dialect` (`openai` or `anthropic`) then override the
 preset. With no config, arno uses Ollama at
-`http://localhost:11434/v1`. Any key arno does not know is passed to
-the provider as a parameter (`temperature`, `top_p`, `max_tokens`).
+`http://localhost:11434/v1`. Of the other keys, arno sends `temperature`,
+`top_p` and `max_tokens` (and `anthropic_version` to Claude) in the
+provider's request, and drops the rest.
+
 
 ## Learn it
 
@@ -105,7 +114,7 @@ these are the ones to start with:
 |---|---|
 | `/new`, `/clear` | start a fresh conversation, or clear this one |
 | `/list [WORD]`, `/load N\|ID\|WORD` | find and resume a saved conversation |
-| `/mode [NAME]` | `chat`, `review`, `improve` or `pair`; the first two offer no editing tools |
+| `/mode [NAME]` | `chat`, `review`, `improve` or `pair`; `review` and `improve` offer no editing tools |
 | `/model [NAME]`, `/models`, `/provider [NAME]` | switch, or list, what answers |
 | `/compact [FOCUS]` | replace the history with a summary |
 | `/tools`, `/usage` | the tools on offer; tokens and cost |
@@ -138,8 +147,8 @@ keys, the copy-mode keys, and the config keys.
 ### What the model may do
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
-`run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`
-and `shell`. It reads freely inside the project; outside, it needs a
+`run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
+`delegate` (when the config names a `worker`) and `shell`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows. `check` runs the test command you set.
 
@@ -164,7 +173,7 @@ with the arguments shown. A server is somebody else's program: the
 question is the only guard.
 
 **Serve and attach.** `arno --serve` runs one session for the program
-that started it, speaking `~/lib/arnoc`'s protocol on standard input
+that started it, speaking the protocol of `arno-serve(5)` on standard input
 and output; the host can offer tools of its own. `arno --attach`
 shows any arno's session, a terminal's or a host's, in your terminal
 and types into it.
@@ -211,18 +220,24 @@ is `--attach`. `Arno` ties it together: the command line.
 
 ## Correctness
 
-Each module's `main` is its test, run by `make check`, and the program
+Everything compiles with `-Werror`, and `make fmt` checks the layout.
+The conversations the Pascal arno saved are read and written again
+byte for byte (`make compat`). The man pages give no `groff -ww`
+warning (`make man`, part of `make check`).
+
+## Tests
+
+`make check` runs them. Each module's `main` is its test, and the program
 is tried end to end: `test/oneshot.cn` runs one-shot turns against
 `test/Astub.raz`, a model of the test's own, with a staged shell and
 an MCP server (`test/Amcpstub.raz`); `test/serve.cn` drives `--serve`
-with a host (`test/Ahost.raz`). `make compat` reads every conversation
-the Pascal arno saved and writes it again, byte for byte. Everything
-compiles with `-Werror`, and `make fmt` checks the layout.
+with a host (`test/Ahost.raz`). The README's recording is
+made by `make cast`, which is not part of the check.
 
 ## Size
 
-14 202 lines of code in 29 modules, with 2 700 of comment, measured
-with `rloc src`.
+14 202 lines of code in 29 modules, with 2 699 of comment, measured
+by `make loc`.
 
 ## Left out
 

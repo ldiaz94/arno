@@ -32,7 +32,7 @@
    line.
 
    --serve runs one session for the program that started it, a host
-   that speaks ~/lib/arnoc's protocol on standard input and output
+   that speaks the protocol of arno-serve(5) on standard input and output
    (Aserve). --attach shows another arno's session, a terminal's or a
    host's, in this terminal, and types into it (Aview, Ascreen); -l
    lists the sessions: process id, owner, project root and title.

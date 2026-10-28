@@ -1,0 +1,285 @@
+// test/cast.cn: doc/demo.cast and doc/img/demo.gif made again, by
+// make cast, from arno's top directory:
+//
+//     concha test/cast.cn build/arno build/stub build/play
+//
+// build/play plays doc/demo.keys at arno on a pseudo-terminal (test/Play.raz
+// says how), in a project of two small files and a HOME of its own whose
+// configuration points arno at the stub model, build/stub, started here;
+// the model's replies are the stub's, so they are the same on every run.
+// Its times are counted from the keys' pauses, not read from the clock.
+// The GIF is made from the cast: tmux, as a terminal, is shown the cast's
+// output up to each event, and the screen it then holds (colours and
+// cursor included) is drawn as an SVG; rsvg-convert makes each a PNG, and
+// ffmpeg joins them, each on for as long as the cast has it on, with a
+// palette of their own colours. So the same keys make the same cast and
+// the same GIF.
+//
+// It needs tmux, rsvg-convert and ffmpeg, and the DejaVu Sans Mono font.
+// The run takes a few minutes.
+
+if length(args) <> 3 then begin
+  echo 'usage: concha test/cast.cn arno stub play' >&2
+  halt(2)
+end
+arno := args[0]
+stub := args[1]
+play := args[2]
+
+errexit := true
+pipefail := true
+server := ''
+
+procedure cleanup;
+begin
+  if server <> '' then kill -9 $server 2> /dev/null
+end;
+trap cleanup EXIT
+
+Work := 'build/cast'
+CastFile := 'doc/demo.cast'
+GifFile := 'doc/img/demo.gif'
+Cols := 80
+Rows := 22
+CellW := 10             // pixels a column takes
+CellH := 24             // pixels a row takes
+Pad := 24               // pixels between the window's edge and the screen
+Top := 44               // pixels above the screen, for the window's bar
+Esc := chr(27)
+Sock := 'arnocast'       // the name of tmux's server
+
+Frames := 0             // frames made so far
+CurX := 0               // the cursor's column and row on the screen last read
+CurY := 0
+
+// the time of an event line, in centiseconds: its number of seconds with
+// three decimals, as play writes them
+function centis(event);
+var t;
+begin
+  t := copy(event, 2, pos(',', event) - 2)
+  result := int(replace(t, '.', '')) div 10
+end;
+
+// the number cs/100 as a decimal with at least one digit after the point
+function seconds(cs);
+var frac;
+begin
+  frac := str(cs mod 100)
+  if length(frac) = 1 then frac := '0' + frac
+  result := str(cs div 100) + '.' + frac
+end;
+
+// the bytes an event line writes: the inside of its JSON string, with the
+// \u00xx escapes play makes (and \" and \\) undone
+function output(event);
+var s, i, hex, chars;
+begin
+  s := copy(event, pos('"o", "', event) + 6)
+  s := copy(s, 1, length(s) - 2)
+  chars := ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+  for i := 0 to 255 do
+    if i < 32 then begin
+      hex := '\u00' + chars[i div 16] + chars[i mod 16]
+      s := replace(s, hex, chr(i))
+    end
+  s := replace(s, '\"', '"')
+  result := replace(s, '\\', '\')
+end;
+
+// the number of columns text takes: its characters, not its bytes (a
+// byte that starts 10 in binary continues a character)
+function columns(text);
+var i, n, b;
+begin
+  n := 0
+  for i := 1 to length(text) do begin
+    b := ord(copy(text, i, 1))
+    if (b < 128) or (b >= 192) then inc(n)
+  end
+  result := n
+end;
+
+// s with the characters XML gives a meaning written as entities
+function xmlEscape(s);
+begin
+  s := replace(s, '&', '&amp;')
+  s := replace(s, '<', '&lt;')
+  result := replace(s, '>', '&gt;')
+end;
+
+// the colour of a foreground SGR code (30 to 37, 90 to 97, or 39 for none)
+function colourOf(code);
+begin
+  case code of
+    '31':   result := '#ff5555'
+    '32':   result := '#3fb950'
+    '34':   result := '#58a6ff'
+    '35':   result := '#d2a8ff'
+    '36':   result := '#56d4dd'
+    '90':   result := '#6e7681'
+    else    result := '#c9d1d9'
+  end
+end;
+
+// the text of a screen line at row y, from its colour codes (ESC [ then
+// numbers between semicolons then m): one piece of text for each run
+// under the same colour; a reversed run is a rectangle with the text in
+// the window's colour on it
+var fg, bold, dim, reverse;       // what the codes so far have set
+
+// the codes in one escape sequence's numbers applied to fg, bold, dim and reverse
+procedure apply(code);
+var n;
+begin
+  for n in split(code, ';') do
+    case n of
+      '', '0':  begin fg := '39'; bold := false; dim := false; reverse := false end
+      '1':      bold := true
+      '2':      dim := true
+      '22':     begin bold := false; dim := false end
+      '7':      reverse := true
+      '27':     reverse := false
+      else      fg := n
+    end
+end;
+
+// one run of text at column x, row y, in the current colours
+procedure run(text, x, y);
+var fill, w;
+begin
+  fill := colourOf(fg)
+  if bold and (fg = '39') then fill := '#ffffff'
+  if dim then fill := '#586e75'
+  w := columns(text)
+  if reverse then begin
+    writeln('  <rect x="', Pad + x * CellW, '" y="', Top + y * CellH, '" width="', w * CellW,
+      '" height="', CellH, '" fill="', fill, '"/>')
+    fill := '#10141a'
+  end
+  if trim(text) <> '' then begin
+    write('  <text x="', Pad + x * CellW, '" y="', Top + y * CellH + 17)
+    write('" font-family="DejaVu Sans Mono" font-size="16.6" xml:space="preserve" fill="', fill, '"')
+    if bold then write(' font-weight="bold"')
+    writeln('>', xmlEscape(text), '</text>')
+  end
+end;
+
+// the runs of one screen line, at row y
+procedure drawLine(line, y);
+var parts, i, part, m, x;
+begin
+  fg := '39'
+  bold := false
+  dim := false
+  reverse := false
+  x := 0
+  parts := split(line + Esc, Esc)
+  if parts[0] <> '' then begin
+    run(parts[0], x, y)
+    inc(x, columns(parts[0]))
+  end
+  for i := 1 to length(parts) - 1 do begin
+    part := parts[i]
+    m := pos('m', part)
+    apply(copy(part, 2, m - 2))
+    if copy(part, m + 1) <> '' then begin
+      run(copy(part, m + 1), x, y)
+      inc(x, columns(copy(part, m + 1)))
+    end
+  end
+end;
+
+// the screen, lines of text, as an SVG window
+procedure svg(screen);
+var i, w, h;
+begin
+  w := 2 * Pad + Cols * CellW
+  h := Top + Rows * CellH + Pad
+  writeln('<svg text-rendering="optimizeSpeed" xmlns="http://www.w3.org/2000/svg" width="', w, '" height="', h, '" viewBox="0 0 ', w, ' ', h, '">')
+  writeln('  <rect width="100%" height="100%" rx="8" fill="#10141a" stroke="#253240" stroke-width="1"/>')
+  writeln('  <circle cx="24" cy="20" r="5" fill="#ff5f56"/>')
+  writeln('  <circle cx="40" cy="20" r="5" fill="#ffbd2e"/>')
+  writeln('  <circle cx="56" cy="20" r="5" fill="#27c93f"/>')
+  writeln('  <text x="', w div 2, '" y="24" font-family="DejaVu Sans Mono" font-size="12" fill="#7d8590" text-anchor="middle">arno</text>')
+  for i := 0 to length(screen) - 1 do drawLine(screen[i], i)
+  writeln('  <rect x="', Pad + CurX * CellW, '" y="', Top + CurY * CellH + 2, '" width="', CellW, '" height="', CellH - 4, '" fill="#c9d1d9" fill-opacity="0.6"/>')
+  writeln('</svg>')
+end;
+
+// the screen tmux holds after it is shown the file acc.out, as lines with
+// colour codes; tmux says when it has been shown it all
+function screenOf;
+var pos;
+begin
+  tmux -f /dev/null -L $Sock new-session -d -x $Cols -y $Rows "stty -echo; cat $Work/acc.out; tmux -L $Sock wait-for -S shown; sleep 60"
+  tmux -L $Sock wait-for shown
+  result := lines(`tmux -L $Sock capture-pane -e -p -t 0`)
+  pos := split(`tmux -L $Sock display-message -p -t 0 '#{cursor_x} #{cursor_y}'`, ' ')
+  CurX := int(pos[0])
+  CurY := int(pos[1])
+  tmux -L $Sock kill-server
+end;
+
+// one GIF frame: the screen after everything written so far, on for cs
+// centiseconds
+procedure frame(cs);
+var screen;
+begin
+  screen := screenOf()
+  begin svg(screen) end > $Work/frame.svg
+  rsvg-convert $Work/frame.svg -o $Work/f$Frames.png
+  begin
+    writeln('file f', Frames, '.png')
+    writeln('duration ', seconds(cs))
+  end >> $Work/concat.txt
+  inc(Frames)
+end;
+
+procedure main;
+var events, i, acc, cs, top, started;
+begin
+  rm -rf $Work
+  mkdir -p $Work doc/img
+
+  // the fixtures: a project to work in, and a HOME whose configuration
+  // points arno at the stub
+  started := split(`$stub 300`)
+  server := started[1]
+  mkdir -p $Work/project $Work/home/.config/arno $Work/home/.local/share/arno
+  begin
+    writeln('Groceries')
+    writeln('  bread')
+    writeln('  milk')
+  end > $Work/project/notes.txt
+  begin
+    writeln('url = http://127.0.0.1:', started[0], '/v1')
+    writeln('model = demo')
+    writeln('context_files = no')
+  end > $Work/home/.config/arno/config
+
+  // the cast, kept only if the play went through
+  top := PWD
+  $play cast $top/$arno doc/demo.keys $top/$Work/project $top/$Work/home > $Work/demo.cast
+  mv $Work/demo.cast $CastFile
+
+  // every event but the last, which only ends the session
+  events := lines(`tail -n +2 $CastFile`)
+  acc := ''
+  for i := 0 to length(events) - 2 do begin
+    acc := acc + output(events[i])
+    cs := centis(events[i + 1]) - centis(events[i])
+    if cs > 0 then begin
+      begin write(acc) end > $Work/acc.out
+      frame(cs)
+    end
+  end
+
+  // ffmpeg's concat needs the last file named again, without a duration
+  begin writeln('file f', Frames - 1, '.png') end >> $Work/concat.txt
+  ffmpeg -loglevel error -y -f concat -i $Work/concat.txt -vf palettegen $Work/palette.png
+  ffmpeg -loglevel error -y -f concat -i $Work/concat.txt -i $Work/palette.png -lavfi paletteuse=dither=none:diff_mode=rectangle $GifFile
+  writeln(CastFile, ': ', length(events), ' events; ', GifFile, ': ', Frames, ' frames')
+end;
+
+main

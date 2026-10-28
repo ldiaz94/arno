@@ -13,8 +13,8 @@
    Numbers are decimal text. A length of more than nine digits, or over
    MaxNet, is malformed, and so is a message whose netstrings don't
    fill it exactly: whoever reads one can't read on, and ends the
-   connection. This is the framing of ~/lib/arnoc, which hosts of
-   `arno --serve` speak, byte for byte.
+   connection. This is the framing of arno-serve(5), which hosts of
+   `arno --serve` speak.
 
    pack writes a message; take reads the first of a buffer, its fields
    pointing into it. sendPipe and sendSocket write whole bytes to a
@@ -164,7 +164,7 @@ begin
     Buf.init(b, Heap.heap);
     Fields.init(f, Heap.heap);
     pack(b, ["line", "hi", ""]);
-    expect("the example of arnoc(3)", Buf.bytes(b) = "15:4:line,2:hi,0:,,");
+    expect("a message as arno-serve(5) frames it", Buf.bytes(b) = "15:4:line,2:hi,0:,,");
     msg := Buf.bytes(b);
     n := take(msg, f);
     expect("a message taken", (n = LEN(msg)) and (f.len = 3));

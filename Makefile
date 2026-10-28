@@ -93,11 +93,26 @@ compat: | build
 # the sources are as raz's formatter lays them out
 fmt: | build
 	$(RAZ) -o build/Pretty $(RAZTOOLS)/Pretty.raz
-	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz test/Ahost.raz; do \
+	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz test/Ahost.raz test/Play.raz; do \
 	    build/Pretty $$f | cmp -s - $$f || { echo "not formatted: $$f"; fail=1; }; \
 	done; test $$fail = 0
+
+# the pseudo-terminal player, for the cast
+build/play: test/Play.raz | build
+	$(RAZ) -Werror -o $@ test/Play.raz
+
+# doc/demo.cast and doc/img/demo.gif made again, from doc/demo.keys typed at
+# arno on a pseudo-terminal, against the stub model; needs tmux, rsvg-convert,
+# ffmpeg and the DejaVu Sans Mono font
+cast: build/arno build/stub build/play
+	$(CONCHA) test/cast.cn build/arno build/stub build/play
+
+# lines of code and of comment, by rloc; a measure, not a limit
+loc:
+	@rloc -f src/*.raz
+	@rloc -c src/*.raz
 
 clean:
 	rm -rf build
 
-.PHONY: all check compat fmt man install uninstall clean
+.PHONY: all check compat fmt cast loc man install uninstall clean

@@ -7,9 +7,8 @@
    arno's questions and the results of its own tools; arno sends what
    the terminal would have shown, as the Board's changes (Aview), and
    asks the host what the terminal would have asked the human. The
-   session ends when the host says bye or closes the pipe. ~/lib/arnoc
-   is the library hosts use, and its arnoc(3) sets the protocol out in
-   full; what is said here is only how this side does it.
+   session ends when the host says bye or closes the pipe. arno-serve(5) sets the protocol out in full; what is said here
+   is only how this side does it.
 
    Standard input is the host's pipe in. Messages out go to a
    descriptor of their own, and descriptor 1 becomes a copy of standard

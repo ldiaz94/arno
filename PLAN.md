@@ -296,7 +296,7 @@ one or more commits that build with `-Werror`.
    test is `Amcp`'s `main` over `test/Amcpstub.raz` (`build/mcpstub`),
    and `oneshot.cn` runs a call through the program. Also, `Atools`'s
    declined text is one `declined` for `approve`, `run` and MCP.
-6. **Peers, serve, attach:** `arno-peer(5)`, `--serve`, `--attach`.
+6. **Peers, serve, attach:** `arno-serve(5)` (the host and viewer protocol; `arno-peer(5)`, the editors', is stage 6b), `--serve`, `--attach`.
    - [x] a. `--serve`, `--attach` and `Forget`. `Aframe` is the
      netstring messages of `~/lib/arnoc`, byte for byte; `Aview` the
      session as others see it: every change to the Board is made

@@ -1,8 +1,8 @@
 .Dd October 28, 2026
-.Dt ARNO-PEER 5
+.Dt ARNO-SERVE 5
 .Os
 .Sh NAME
-.Nm arno-peer
+.Nm arno-serve
 .Nd the messages a program speaks to an arno session
 .Sh DESCRIPTION
 An
@@ -165,15 +165,10 @@ number
 .Ar id ,
 for the model to read.
 Dropped like an answer for an id not waited on.
-.It Cm recent Ar max filter
-.It Cm paste
-.It Cm rename Ar id title
-.It Cm forget Ar id
-.It Cm models
-.It Cm system Ar id
-.It Cm setsystem Ar id text
-Requests about the conversations; see
-.Sx Requests .
+.It "recent, paste, rename, forget, models, system, setsystem"
+Requests about the conversations, with the fields the section
+.Sx Requests
+gives each.
 .It Cm bye
 End the session.
 .El
@@ -503,8 +498,8 @@ arno -> host   ask 2 "apply these changes?" "diff..." yn
 host -> arno   answer 2 n "keep teh"
 .Ed
 .Pp
-List the sessions, from a shell with a few lines of any language; each
-session is a socket named by its process id:
+List the live sessions: a line for each, with its process id, owner, project
+root and conversation title, separated by tabs:
 .Bd -literal -offset indent
 $ arno \-\-attach \-l
 4242	terminal	/home/me/proj	fix the typo
@@ -516,15 +511,12 @@ D. J. Bernstein,
 .Lk https://cr.yp.to/proto/netstrings.txt "Netstrings" ,
 1997.
 .Sh HISTORY
-The framing and the host's messages are those of
-.Xr arnoc 3 ,
-the library hosts of the Pascal arno's
+The framing and the host's messages are those the Pascal arno's
 .Fl \-serve
-use, byte for byte.
+spoke, so that a host written for it works with this arno.
 .Pp
-Despite the name, this is not the protocol of the editors that talk to
-.Nm arno
-by a socket of their own; that one is not built.
+The protocol of the editors that talk to arno by a socket of their own,
+as a peer, is a different one, and is not built.
 .Sh CAVEATS
 .Cm busy
 is sent for every job, not only the turns of the model, so a host cannot tell a

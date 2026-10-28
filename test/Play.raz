@@ -1,0 +1,257 @@
+(* Play: arno run on a pseudo-terminal, with keys typed at it as a
+   person would type them, for the README's cast.
+
+   play cast arno keys dir home    an asciicast of arno, on standard output
+
+   arno runs in the directory dir, with home as HOME (so its configuration,
+   conversations and cache are under home), TERM=xterm-256color and a
+   PATH of its own, so that the cast does not depend on the machine it
+   is made on.
+
+   Keys are written as they are typed, and the others by name:
+   <Enter>, <Tab>, <BS>, <Esc>, <Del>, <Up>, <Down>, <Left>, <Right>,
+   <Home>, <End>, <PgUp>, <PgDn>, <lt> for <, <C-x> for a control key
+   and <M-x> for Alt and x. A line feed in the file is nothing, so that
+   keys can be laid out on lines; <Enter> types one. <wait 500> pauses
+   half a second.
+
+   A cast is 80 columns by 22 rows, in asciinema's format, version 2:
+   a line saying the screen's size, then a line for each piece of what
+   arno wrote, with the time it came at. Keys are typed in it at about
+   a person's speed, and the times are counted from the pauses, not read
+   from the clock, so that the same keys give the same cast.
+
+   It depends on Sys, for the pseudo-terminal and arno's process, and
+   on Rt, Out, Buf, Fmt, Str, Bytes, Files, Heap and Vec. It leaves out
+   checking what arno prints: the tests do that. *)
+module Play;
+import Sys, Rt, Out, Buf, Fmt, Str, Bytes, Files, Heap, Steps := Vec(Step);
+
+const
+    Cols = 80;      (* the screen's width, in checks and casts *)
+    Rows = 22;      (* and its height *)
+
+type
+    (* A key: its bytes, keys's from lo up to hi, and how long to wait
+       before typing it, in milliseconds. *)
+    Step = record lo, hi, pause: INT; end;
+
+var
+    keys: Buf.Buf;      (* the bytes of every key *)
+    steps: Steps.Vec;
+    output: Buf.Buf;    (* what arno wrote, not yet put in the cast *)
+    vtime: F64;         (* the cast's time now, in seconds: counted from the pauses, not read from the clock *)
+
+(* The hexadecimal digit for d, from 0 to 15. *)
+proc hex(d: U8): U8;
+begin
+    if d < 10 then return '0' + d; end;
+    return 'a' + d - 10;
+end;
+
+(* Play's message, and status 2. *)
+proc fail(msg: []const U8);
+begin
+    Fmt.eprint("play: {}\n", [Fmt.str(msg)]);
+    Rt.exit(2);
+end;
+
+(* The keys written in s, in keys and steps. *)
+proc parse(s: []const U8);
+var i, j, n, pause: INT; name: []const U8; c: U8; num: I64; ok: BOOL; st: ^Step;
+begin
+    Buf.reset(keys);
+    Steps.reset(steps);
+    i := 0;
+    pause := 0;
+    while i < LEN(s) do
+        if s[i] = '\n' then
+            INC(i);
+            continue;
+        end;
+        if Str.hasPrefix(s[i..LEN(s)], "<wait ") then
+            j := Bytes.index(s[i..LEN(s)], '>');
+            if j < 0 then fail("a < with no >"); end;
+            num, ok := Str.toInt(s[i + 6..i + j]);
+            if not ok then fail(s[i..i + j + 1]); end;
+            INC(pause, INT(num));
+            INC(i, j + 1);
+            continue;
+        end;
+        st := Steps.add(steps);
+        st^.lo := keys.len;
+        st^.pause := pause;
+        pause := 0;
+        if s[i] # '<' then
+            _, n := Str.decode(s[i..LEN(s)]);
+            Buf.str(keys, s[i..i + n]);
+            INC(i, n);
+        elsif (i + 4 < LEN(s)) and (s[i + 2] = '-') and ((s[i + 1] = 'C') or (s[i + 1] = 'M')) and (s[i + 4] = '>') then
+            c := s[i + 3];
+            if s[i + 1] = 'C' then
+                Buf.add(keys, c & 1FH);
+            else
+                Buf.add(keys, 27);
+                Buf.add(keys, c);
+            end;
+            INC(i, 5);
+        else
+            j := Bytes.index(s[i..LEN(s)], '>');
+            if j < 0 then fail("a < with no >"); end;
+            name := s[i + 1..i + j];
+            INC(i, j + 1);
+            match name of
+            | "Enter": Buf.add(keys, 13);
+            | "Tab": Buf.add(keys, 9);
+            | "BS": Buf.add(keys, 127);
+            | "Esc": Buf.add(keys, 27);
+            | "Del": Buf.str(keys, "\x1b[3~");
+            | "Up": Buf.str(keys, "\x1b[A");
+            | "Down": Buf.str(keys, "\x1b[B");
+            | "Right": Buf.str(keys, "\x1b[C");
+            | "Left": Buf.str(keys, "\x1b[D");
+            | "Home": Buf.str(keys, "\x1b[H");
+            | "End": Buf.str(keys, "\x1b[F");
+            | "PgUp": Buf.str(keys, "\x1b[5~");
+            | "PgDn": Buf.str(keys, "\x1b[6~");
+            | "lt": Buf.add(keys, '<');
+            | else: fail(name);
+            end;
+        end;
+        st^.hi := keys.len;
+    end;
+end;
+
+(* What arno wrote, put in the cast as a line at time t, in seconds,
+   with the bytes JSON wants escaped escaped. A character cut off at
+   the end waits for its other bytes. *)
+proc event(t: F64);
+var s: []U8; i, cut, need: INT; c: U8; line: Buf.Buf;
+begin
+    s := Buf.bytes(output);
+    cut := LEN(s);
+    i := cut - 1;
+    while (i >= 0) and (i >= cut - 3) do
+        if s[i] >= 0C0H then
+            need := 2;
+            if s[i] >= 0E0H then need := 3; end;
+            if s[i] >= 0F0H then need := 4; end;
+            if cut - i < need then cut := i; end;
+            break;
+        end;
+        if s[i] < 80H then break; end;
+        DEC(i);
+    end;
+    if cut = 0 then return; end;
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    Fmt.write(line, "[{}, \"o\", \"", [Fmt.real(t, 3)]);
+    for i := 0 to cut - 1 do
+        c := s[i];
+        if (c = '"') or (c = '\\') then
+            Buf.add(line, '\\');
+            Buf.add(line, c);
+        elsif c < 32 then
+            Buf.str(line, "\\u00");
+            Buf.add(line, '0' + (c shr 4));
+            Buf.add(line, hex(c & 15));
+        else
+            Buf.add(line, c);
+        end;
+    end;
+    Buf.str(line, "\"]\n");
+    _ := Sys.write(Sys.stdout, Buf.bytes(line));
+    COPY(s[0..LEN(s) - cut], s[cut..LEN(s)]);
+    Buf.cut(output, LEN(s) - cut);
+end;
+
+(* What arno writes, read for ms milliseconds and written out as one
+   event, at the cast's time now, which moves on by ms. false once arno
+   has closed the terminal, as it does when it ends. *)
+proc drain(pty, ms: INT): BOOL;
+var buf: [4096]U8; n: INT; deadline, left: I64; open: BOOL;
+begin
+    deadline := Sys.clock() + I64(ms) * 1000000;
+    open := true;
+    while open do
+        left := (deadline - Sys.clock()) div 1000000;
+        if left < 0 then break; end;
+        if Sys.ready(pty, INT(left)) then
+            n := Sys.read(pty, buf);
+            if (n <= 0) and (n # Sys.errIntr) then
+                open := false;
+            elsif n > 0 then
+                Buf.str(output, buf[0..n]);
+            end;
+        end;
+    end;
+    event(vtime);
+    vtime := vtime + F64(ms) / 1000.0;
+    return open;
+end;
+
+(* arno, run in dir with the environment env only, on a screen Cols by
+   Rows, with the keys of steps typed at it, each after the pause a
+   person would make; its exit status, or -1 if it didn't end within
+   five seconds of the last key. *)
+proc run(arno, dir: []const U8; env: [][]const U8): INT;
+var pty, pid, i, status: INT; open: BOOL; st: Step; k: []const U8; how: Sys.Status;
+begin
+    Buf.reset(output);
+    vtime := 0.0;
+    pty := Sys.openPty();
+    if pty < 0 then fail("no pseudo-terminal"); end;
+    _ := Sys.setTermSize(pty, Cols, Rows);
+    _ := Sys.setBlocking(pty, false);    (* a write with no room is -11, not a wait *)
+    pid := Sys.spawn({path: arno, args: [arno], env: env, onlyEnv: true, dir: dir, tty: pty});
+    if pid < 0 then fail("can't run arno"); end;
+    (* Keys typed before arno has made its terminal raw would be read by
+       the terminal's line editing, so its first prompt comes first. *)
+    _ := Sys.ready(pty, 5000);
+    open := drain(pty, 100);
+    k := Buf.bytes(keys);
+    i := 0;
+    while open and (i < steps.len) do
+        st := Steps.all(steps)[i];
+        open := drain(pty, st.pause + 70);
+        _ := Sys.write(pty, k[st.lo..st.hi]);
+        INC(i);
+    end;
+    if open then open := drain(pty, 5000); end;
+    if open then _ := Sys.kill(pid, Sys.sigKill); end;
+    _, how, status := Sys.wait(pid, true);
+    Sys.close(pty);
+    if open or (how # Sys.Status.exited) then return -1; end;
+    return status;
+end;
+
+(* A cast of arno run in dir with home as its HOME, typing the keys in
+   the file keysFile. *)
+proc cast(arno, keysFile, dir, home: []const U8);
+var b, homeVar: Buf.Buf; status: INT;
+begin
+    Buf.init(b, Heap.heap);
+    if not Files.read(keysFile, b) then fail("can't read the keys"); end;
+    parse(Buf.bytes(b));
+    Buf.init(homeVar, Heap.heap);
+    Fmt.write(homeVar, "HOME={}", [Fmt.str(home)]);
+    Fmt.print("{{\"version\": 2, \"width\": {}, \"height\": {}}}\n", [Fmt.int(Cols), Fmt.int(Rows)]);
+    Out.flush;
+    status := run(arno, dir,
+        [Buf.bytes(homeVar), "TERM=xterm-256color", "LANG=C.UTF-8", "PATH=/usr/local/bin:/usr/bin:/bin"]);
+    if status # 0 then fail("arno didn't end well"); end;
+end;
+
+proc main*;
+begin
+    Buf.init(keys, Heap.heap);
+    Buf.init(output, Heap.heap);
+    Steps.init(steps, Heap.heap);
+    if (ARGC() = 6) and Str.eq(Files.arg(1), "cast") then
+        cast(Files.arg(2), Files.arg(3), Files.arg(4), Files.arg(5));
+    else
+        fail("usage: play cast arno keys dir home");
+    end;
+end;
+
+end Play.

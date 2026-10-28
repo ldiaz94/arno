@@ -1,0 +1,10 @@
+<wait 1200>
+Hello, who are you?<Enter>
+<wait 1500>
+call read {"path":"notes.txt"}<Enter>
+<wait 2000>
+/mode review<Enter>
+<wait 1500>
+/usage<Enter>
+<wait 1800>
+<C-d>
