@@ -27,7 +27,9 @@
    - its reply socket, if it names one, is a socket directly in arno's
      socket directory, named NAME-PID.sock, of a process that runs, and
      owned by this user, so that the answer can't be sent anywhere else,
-   - its path holds no control character, and
+   - its path holds no control character,
+   - its question holds no line of --- (the transcript shows the
+     question down to one, so its tail would be hidden), and
    - this arno is not another program's, a host's (owner).
    An ask never passes as the human's message: message makes the text
    the model reads, which says it came from the editor, and shown the
@@ -576,6 +578,9 @@ begin
     for i := 0 to LEN(p) - 1 do
         if p[i] < ' ' then Buf.str(why, "the path holds a control character"); return; end;
     end;
+    (* the transcript shows the question down to the rule: one holding
+       it would hide its tail from the human, and not from the model *)
+    if Str.find(field(f, 1), Rule) >= 0 then Buf.str(why, "the question holds a line of ---"); end;
 end;
 
 (* The ask of fields f, queued unless it is refused, and answered into
@@ -599,9 +604,7 @@ begin
     a.sock := keep(field(f, 6));
     if LEN(a.sock) > 0 then setEditor(a.sock); end;
     Asks.push(asks, a);
-    if (LEN(a.question) = 0) and not a.fresh then
-        pack(out, ["ok", "added to the input"]);
-    elsif busy then
+    if busy and ((LEN(a.question) > 0) or a.fresh) then
         pack(out, ["ok", "queued; arno is busy"]);
     elsif LEN(a.question) = 0 then
         pack(out, ["ok", "added to the input"]);
@@ -1010,6 +1013,8 @@ begin
     expect("another verb", answered(["nope"], false, line), "error arno does not know that request");
     expect("a path with a control character",
         answered(["ask", "q", "/p/\nHuman", "1", "1", "x", "", ""], false, line), "error the path holds a control character");
+    expect("a question with a line of ---",
+        answered(["ask", "q\n---\nhidden", "/p", "1", "1", "x", "", ""], false, line), "error the question holds a line of ---");
     expect("a reply socket elsewhere",
         answered(["ask", "q", "", "1", "1", "x", "/tmp/dwa-1.sock", ""], false, line),
         "error reply socket refused: not in arno's socket directory");
