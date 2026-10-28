@@ -34,17 +34,25 @@
 
    run starts one of the programs config allows, asked about unless
    trusted; check runs the project's test command, the human's, without
-   asking.
+   asking; shell runs a command line the model writes, asking nothing,
+   since the sandbox is the fence: Ajail's namespaces, no network, only
+   the stage's copy (Afence.stage) and $ARNO_SCRATCH writable. Its exit
+   status comes first, as check's does, then the end of the output; a
+   command that runs past its timeout is killed, and so is one that
+   writes past 4 MB.
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git,
    run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
    Awire (for Tool), rnet's Http (search and fetch), rjson's Json.
    Delegate is the agent's, which runs the worker; it is described
    here, with the rest. A change in the conversation's scratch
-   directory (Afence.ours) needs no approval, and run and check see its
-   path as $ARNO_SCRATCH. Leaves out shell, which comes with the jail;
-   the images read shows as pictures, which come with the screen; and an
-   editor's buffers, which come with the peers. *)
+   directory (Afence.ours) needs no approval, and run, check and shell
+   see its path as $ARNO_SCRATCH. shell is offered only while the
+   stage is up (Afence.stage): in the project's own tree it could
+   rewrite .git or the Makefile, which git and check then run outside
+   the sandbox, with no diff shown. Leaves out the images read
+   shows as pictures, which come with the screen; and an editor's
+   buffers, which come with the peers. *)
 module Atools;
 import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
@@ -90,6 +98,9 @@ const
     MaxOut* = 32000;   (* bytes of a result, past which it is cut *)
     MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads, and edit changes *)
     MaxShown = 40;     (* lines of a file to be removed the human is shown *)
+    ShellTimeout = 120;      (* seconds a shell command may run unless it asks for more *)
+    ShellMost = 600;         (* and the most it may ask for *)
+    ShellFlood = 4 * 1024 * 1024;   (* bytes of output past which it is killed *)
     MaxResults = 8;    (* search's results *)
     MaxPage = 1 shl 20;   (* bytes of a page fetch reads; it shows far fewer *)
     WebWait = 30;      (* seconds search and fetch wait for a page *)
@@ -178,6 +189,16 @@ const
             "whether it passed and what it printed. Run it after changing code, and again after each " +
             "fix, until it passes. Takes no arguments.",
          params: `{"type":"object","properties":{}}`},
+        {name: "shell",
+         description: "Run a shell command line in the project, sandboxed: no network, no input, no " +
+            "display. Only the project and $ARNO_SCRATCH are writable, so what it changes is the " +
+            "project's. Use it to build, to run what you built, and to try several things in one " +
+            "command line. To look at code, read, grep and def are cheaper. Gives the exit status, " +
+            "then the end of the output.",
+         params: `{"type":"object","properties":` +
+            `{"command":{"type":"string","description":"the command line, run by /bin/sh -c in the working directory"},` +
+            `"timeout":{"type":"integer","description":"seconds it may run; default 120, at most 600"}},` +
+            `"required":["command"]}`},
         {name: "edit",
          description: "Change a file by replacing exact text, or create a new file. old must be " +
             "copied verbatim from a read of the same file, whitespace included and without the " +
@@ -249,6 +270,22 @@ const
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
     BranchOptions = " -a -r -v -vv -i --all --remotes --verbose --ignore-case --contains --no-contains " +
         "--merged --no-merged --points-at --sort --format --abbrev --no-abbrev --column --no-column ";
+
+var
+    shellOff: BOOL;         (* config's shell is no, which takes the tool away *)
+
+(* config's shell: whether the shell tool may be offered. *)
+proc shellEnabled*(on: BOOL);
+begin
+    shellOff := not on;
+end;
+
+(* Whether shell can be offered now: config allows it, the stage is
+   up, for shell works only in its copy, and the kernel allows the jail. *)
+proc shellOn*(): BOOL;
+begin
+    return not shellOff and (LEN(Afence.stage) > 0) and Arun.jails();
+end;
 
 (* Whether the tool called name only reads: a call to one made twice
    in a turn is refused the second time, as nothing it saw has
@@ -802,7 +839,7 @@ begin
         Buf.str(out, "exit ");
         j := {args: c[k].args, env: Strs.all(env), detach: true};
         Buf.init(line, a.mem);
-        status, _ := Arun.start(j, MaxOut + 1, line);
+        status, _, _ := Arun.start(j, MaxOut + 1, line);
         if (status = 127) and (line.len = 0) or (status < 0) then
             out.len := start;
             Fmt.write(out, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
@@ -814,6 +851,51 @@ begin
             Buf.add(out, '\n');
             Buf.str(out, Str.trimRight(Buf.bytes(line)));
         end;
+    end;
+end;
+
+(* The 'shell' tool: a command line run by /bin/sh in the jail (Ajail),
+   with the stage's copy and the scratch directory writable. It asks nothing and
+   its words are not fenced: the sandbox is the fence. Its output is
+   kept from the end, as check's is, and it is killed if it floods. The
+   exit status comes first, as in check and run; a sandbox that can't
+   be made is an error, never a command run outside it. *)
+proc shell(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
+var cmd: []const U8; got: Buf.Buf; rw: Strs.Vec; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
+begin
+    cmd := Str.trim(str(a, "command"));
+    if LEN(cmd) = 0 then Buf.str(out, "error: give the command line as command"); return; end;
+    limit := int(a, "timeout", ShellTimeout);
+    if limit < 1 then limit := ShellTimeout; end;
+    clipped := limit > ShellMost;
+    if clipped then limit := ShellMost; end;
+    Strs.init(rw, mem);
+    Strs.push(rw, Afence.stage);
+    if LEN(Afence.scratch) > 0 then Strs.push(rw, Afence.scratch); end;
+    Buf.init(got, mem);
+    j := {args: ["/bin/sh", "-c", cmd], env: [scratchVar(mem)], dir: Afence.stage, detach: true, tail: true,
+        jail: true, rw: Strs.all(rw), timeout: limit, flood: ShellFlood};
+    status, cut, flooded := Arun.start(j, MaxOut - 1000, got);
+    if status < 0 then Buf.str(out, "error: cannot start /bin/sh"); return; end;
+    if (status = 126) and Str.hasPrefix(Buf.bytes(got), "sandbox:") then
+        Buf.str(out, "error: ");
+        Buf.str(out, Str.trim(Buf.bytes(got)));
+        return;
+    end;
+    if clipped then Fmt.write(out, "(timeout cut to {} s, the most allowed)\n", [Fmt.int(limit)]); end;
+    if Arun.stopped() then
+        Fmt.write(out, "stopped by the human: {}", [Fmt.str(cmd)]);
+    elsif flooded then
+        Fmt.write(out, "killed: more than {} MB of output; the last of it:", [Fmt.int(ShellFlood div 1048576)]);
+    elsif status = 124 then
+        Fmt.write(out, "timed out after {} s: {}", [Fmt.int(limit), Fmt.str(cmd)]);
+    else
+        Fmt.write(out, "exit {}: {}", [Fmt.int(status), Fmt.str(cmd)]);
+    end;
+    if LEN(Str.trimRight(Buf.bytes(got))) > 0 then
+        Buf.add(out, '\n');
+        if cut then Buf.str(out, "[...]\n"); end;
+        Buf.str(out, Str.trimRight(Buf.bytes(got)));
     end;
 end;
 
@@ -838,7 +920,7 @@ begin
         return;
     end;
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
-    status, cut := Arun.start(j, MaxOut - 1000, got);
+    status, cut, _ := Arun.start(j, MaxOut - 1000, got);
     if status = 0 then
         Fmt.write(out, "passed: {}", [Fmt.str(cmd)]);
     else
@@ -1331,6 +1413,7 @@ begin
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": if LEN(Str.trim(Buf.bytes(runs))) = 0 then continue; end;
         | "check": if LEN(testFor(b)) = 0 then continue; end;
+        | "shell": if not edits or not shellOn() then continue; end;
         | else:
         end;
         Tools.push(offer, Offered[i]);
@@ -1473,6 +1556,8 @@ begin
         runTool(a, h, res);
     elsif name = "check" then
         check(mem, res);
+    elsif name = "shell" then
+        shell(a, mem, res);
     elsif name = "edit" then
         edit(a, h, mem, res);
     elsif name = "move" then
@@ -1596,7 +1681,7 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git run check edit move remove note " +
+        "error: there is no tool named \"write\". The tools are: read find grep def outline git run check shell edit move remove note " +
         "search fetch delegate");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
@@ -1625,6 +1710,28 @@ begin
     asked := 0;
     expect("granted", run("read", `{"path":"../out/g"}`, human), "    1\tfar\n");
     if asked # 0 then Out.str("Atools: a granted directory asked again\n"); failed := true; end;
+
+    (* shell, in the jail; until a stage names its place, it isn't offered *)
+    for i := 0 to LEN(offered(true, true)) - 1 do
+        if offered(true, true)[i].name = "shell" then Out.str("Atools: shell offered with no place to work\n"); failed := true; end;
+    end;
+    Afence.useStage(Afence.zone);   (* the project as the stage's copy, so shell is offered *)
+    expect("shell", run("shell", `{"command":"echo hi; echo oops >&2; exit 3"}`, nil), "exit 3: echo hi; echo oops >&2; exit 3\nhi\noops");
+    expect("shell writes in the project", run("shell", `{"command":"echo x > made && cat made"}`, nil), "exit 0: echo x > made && cat made\nx");
+    holds("made", "x\n");
+    expect("shell can't write outside", run("shell", `{"command":"touch ../out/x"}`, nil)[0..7], "exit 1:");
+    expect("shell, no command", run("shell", `{"command":" "}`, nil), "error: give the command line as command");
+    expect("shell, a timeout", run("shell", `{"command":"sleep 5","timeout":1}`, nil), "timed out after 1 s: sleep 5");
+    _ := Sys.makeDir("../scratch");
+    Afence.useScratch("../scratch");
+    expect("shell, the scratch", run("shell", `{"command":"echo y > $ARNO_SCRATCH/s && cat $ARNO_SCRATCH/s"}`, nil),
+        "exit 0: echo y > $ARNO_SCRATCH/s && cat $ARNO_SCRATCH/s\ny");
+    holds("../scratch/s", "y\n");
+    expect("shell, a flood", run("shell", `{"command":"yes"}`, nil)[0..29], "killed: more than 4 MB of out");
+    Afence.useScratch("../no-such-scratch");   (* a writable place that isn't there: no sandbox *)
+    expect("shell, no sandbox", run("shell", `{"command":"true"}`, nil)[0..15], "error: sandbox:");
+    Afence.useScratch("../scratch");
+    Afence.leaveStage;
 
     (* changes *)
     answer := 'y';

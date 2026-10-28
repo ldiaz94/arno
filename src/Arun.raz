@@ -19,13 +19,19 @@
    threads, as arno on the screen is, mustn't fork to make one; so a
    detached program is started by arno itself, run again as a helper
    (child), which makes the session and runs the program in its own
-   place. The jail, in stage 4d, is entered the same way.
+   place. The jail is entered the same way: the helper, given the
+   directories that stay writable and a time limit (JailChild), calls
+   Ajail.enter before it runs the program, and the program's
+   environment is cut to what a program needs to find its way
+   (jailEnv), since arno's holds the human's keys. A program that
+   floods, writing past what its caller will keep many times over, is
+   killed, group and all.
 
-   Depends on Sys, Buf, and the C library's setsid. Leaves out a time
-   limit and the jail, which come with shell. *)
+   Depends on Sys, Buf, Ajail, and the C library's setsid. Leaves out
+   a time limit outside the jail. *)
 module Arun;
-import Sys, Buf, Str, Files, Heap, Out, Strs := Vec([]const U8);
-import SYSTEM;
+import Sys, Buf, Str, Fmt, Files, Heap, Out, Strs := Vec([]const U8);
+import SYSTEM, Ajail;
 
 type
     (* A program to run. *)
@@ -34,25 +40,67 @@ type
         env*: [][]const U8;    (* NAME=value, each added to arno's environment for it *)
         detach*: BOOL;   (* in a session of its own, without a display *)
         tail*: BOOL;     (* what it writes kept from the end, rather than the start *)
+        dir*: []const U8;   (* its working directory; "" for arno's *)
+        jail*: BOOL;     (* in Ajail's sandbox, with a trimmed environment; implies detach *)
+        rw*: [][]const U8;  (* the directories that stay writable in the jail *)
+        timeout*: INT;   (* seconds it may run in the jail, then killed, status 124; 0 for no limit *)
+        flood*: INT;     (* bytes written past which it is killed, with tail; 0 for no limit; implies detach, so that its whole group can be killed *)
     end;
 
 const
+    EIntr = 4;   (* the errno of a call a signal broke into, given as minus this *)
     Child* = "--arno-child";   (* the first argument of arno run as the helper *)
+    (* The first argument of arno run as the helper of a jailed program:
+       then the seconds of the limit, the number of writable
+       directories, those, and the program with its arguments. *)
+    JailChild* = "--arno-jail";
+    (* What a jailed program keeps of arno's environment: the names it
+       needs to find its programs, its home and its language, and
+       nothing that grants access to anything; each is the start of a
+       variable as NAME=value. *)
+    JailEnv: []const []const U8 = ["PATH=", "HOME=", "USER=", "LOGNAME=", "LANG=", "LC_", "TZ="];
+    (* What a jailed program is given if its job doesn't say: a dumb
+       terminal and the jail's own /tmp. *)
+    JailDefaults: []const []const U8 = ["TERM=dumb", "TMPDIR=/tmp"];
 
 extern proc setsid: I32;
 
 (* If this run of the program is the helper start runs, its first
-   argument Child, the rest of the arguments are run in its place, in a
-   session of their own; it doesn't return. 127 if there is no such
-   program, 126 if it won't start. The program's main calls it first. *)
+   argument Child or JailChild, the rest of the arguments are run in
+   its place, in a session of their own, and for JailChild in the
+   sandbox; it doesn't return. 127 if there is no such program, 126 if
+   it won't start, or the sandbox won't be made, which it says on its
+   output, as "sandbox: why". The program's main calls it first. *)
 proc child*;
-var args: Strs.Vec; i: INT;
+var args, rw: Strs.Vec; i, first, timeout, n: INT; why: []const U8; jailed, ok, okDirs: BOOL; v: I64; say: Buf.Buf;
 begin
-    if (ARGC() < 3) or (Files.arg(1) # Child) then return; end;
+    if ARGC() < 3 then return; end;
+    jailed := Files.arg(1) = JailChild;
+    if not jailed and (Files.arg(1) # Child) then return; end;
     _ := setsid();
+    first := 2;
+    if jailed then
+        Strs.init(rw, Heap.heap);
+        v, ok := Str.toInt(Files.arg(2));
+        timeout := INT(v);
+        v, okDirs := Str.toInt(Files.arg(3));
+        n := INT(v);
+        if not ok or not okDirs or (timeout < 0) or (n < 0) or (4 + n >= ARGC()) then Sys.exit(126); end;
+        for i := 4 to 3 + n do Strs.push(rw, Files.arg(i)); end;
+        first := 4 + n;
+        why := Ajail.enter(Strs.all(rw), timeout);
+        if LEN(why) > 0 then
+            Buf.init(say, Heap.heap);
+            Buf.str(say, "sandbox: ");
+            Buf.str(say, why);
+            Buf.add(say, '\n');
+            _ := Sys.write(1, Buf.bytes(say));
+            Sys.exit(126);
+        end;
+    end;
     Strs.init(args, Heap.heap);
-    for i := 2 to ARGC() - 1 do Strs.push(args, Files.arg(i)); end;
-    i := Sys.exec({path: Files.arg(2), args: Strs.all(args)});
+    for i := first to ARGC() - 1 do Strs.push(args, Files.arg(i)); end;
+    i := Sys.exec({path: Files.arg(first), args: Strs.all(args)});
     if (i = -2) or (i = -13) then Sys.exit(127); end;
     Sys.exit(126);
 end;
@@ -62,38 +110,92 @@ end;
 proc reap(pid: INT): INT;
 var got, status: INT; how: Sys.Status;
 begin
-    repeat got, how, status := Sys.wait(pid, true); until got # -4;
+    repeat got, how, status := Sys.wait(pid, true); until got # -EIntr;
     if got < 0 then return got; end;
     if how = Sys.Status.killed then return 128 + status; end;
     return status;
 end;
 
+var
+    stop: proc: BOOL;   (* whether the human said to stop, asked while a program runs; nil for never *)
+
+(* Sets what says whether the human has said to stop, asked while a
+   program runs; nil for never. *)
+proc stopWhen*(f: proc: BOOL);
+begin
+    stop := f;
+end;
+
+(* Whether the human has said to stop. *)
+proc stopped*: BOOL;
+begin
+    return (stop # nil) and stop();
+end;
+
+(* Kills the program pid: its whole group if it leads one (own), since
+   a program that has been detached, jailed or flooding is started in
+   a group of its own, else only it. *)
+proc kill(pid: INT; own: BOOL);
+begin
+    if own then _ := Sys.kill(-pid, Sys.sigKill); else _ := Sys.kill(pid, Sys.sigKill); end;
+end;
+
+(* Waits for something to read from fd, as long as it takes, asking
+   the human's stop every tenth of a second, which kills the program
+   pid (see kill). False if it was stopped. *)
+proc await(fd, pid: INT; own: BOOL): BOOL;
+begin
+    while not Sys.ready(fd, 100) do
+        if stopped() then kill(pid, own); return false; end;
+    end;
+    return true;
+end;
+
+(* Of the bytes out holds from start on, keeps the last max, moved
+   down to start. *)
+proc keepLast(var out: Buf.Buf; start, max: INT);
+var s: []U8;
+begin
+    s := Buf.bytes(out);
+    COPY(s[start..start + max], s[out.len - max..out.len]);
+    out.len := start + max;
+end;
+
 (* What fd gives, read to its end, max bytes of it added to out, the
-   last; and whether any were dropped. *)
-proc last(fd, max: INT; var out: Buf.Buf): BOOL;
-var start, n: INT; s: []U8; dropped: BOOL;
+   last; whether any were dropped; and whether more than flood bytes
+   (0 for any) came, when the program pid's group is killed, since a
+   program that writes without end is not to be waited for (own: it
+   leads a group of its own). The human's stop kills it too, and
+   ends the reading. *)
+proc last(fd, pid: INT; own: BOOL; max, flood: INT; var out: Buf.Buf): (BOOL, BOOL);
+var start, n, total: INT; dropped: BOOL;
 begin
     start := out.len;
     dropped := false;
+    total := 0;
     while true do
+        if not await(fd, pid, own) then break; end;
         n := Sys.read(fd, Buf.spare(out, 4096));
-        if n = -4 then continue; end;
+        if n = -EIntr then continue; end;
         if n <= 0 then break; end;
         INC(out.len, n);
+        INC(total, n);
         if out.len - start > 2 * max then
-            s := Buf.bytes(out);
-            COPY(s[start..start + max], s[out.len - max..out.len]);
-            out.len := start + max;
+            keepLast(out, start, max);
             dropped := true;
+        end;
+        if (flood > 0) and (total > flood) then
+            kill(pid, own);
+            dropped := true;
+            if out.len - start > max then keepLast(out, start, max); end;
+            return dropped, true;
         end;
     end;
     if out.len - start > max then
-        s := Buf.bytes(out);
-        COPY(s[start..start + max], s[out.len - max..out.len]);
-        out.len := start + max;
+        keepLast(out, start, max);
         dropped := true;
     end;
-    return dropped;
+    return dropped, false;
 end;
 
 (* Whether e, a variable as NAME=value, is named in vars, of the same
@@ -109,59 +211,104 @@ begin
     return false;
 end;
 
+(* Whether e, a variable as NAME=value, starts with one of starts. *)
+proc startsWith(e: []const U8; starts: []const []const U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(starts) - 1 do
+        if Str.hasPrefix(e, starts[i]) then return true; end;
+    end;
+    return false;
+end;
+
+(* The helper's command line and environment for j: arno itself, as
+   the helper, with its program; an environment that is arno's, less
+   the display and, for a jail, all but JailEnv, and j's; j's in place
+   of arno's of the same name, since a program reading its environment
+   takes the first it finds. args and env are made, and so are the
+   two numbers a jail's arguments hold, written in secs and dirs,
+   which args points into. *)
+proc helper(const j: Job; var args, env: Strs.Vec; var secs, dirs: Buf.Buf);
+var i: INT; e: []const U8; more: BOOL;
+begin
+    Strs.push(args, "arno");
+    if j.jail then
+        Strs.push(args, JailChild);
+        Fmt.write(secs, "{}", [Fmt.int(j.timeout)]);
+        Strs.push(args, Buf.bytes(secs));
+        Fmt.write(dirs, "{}", [Fmt.int(LEN(j.rw))]);
+        Strs.push(args, Buf.bytes(dirs));
+        for i := 0 to LEN(j.rw) - 1 do Strs.push(args, j.rw[i]); end;
+    else
+        Strs.push(args, Child);
+    end;
+    for i := 0 to LEN(j.args) - 1 do Strs.push(args, j.args[i]); end;
+    i := 0;
+    e, more := Sys.envAt(0);
+    while more do
+        if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=")
+                and not named(e, j.env) and (not j.jail or startsWith(e, JailEnv)) then
+            Strs.push(env, e);
+        end;
+        INC(i);
+        e, more := Sys.envAt(i);
+    end;
+    if j.jail then
+        for i := 0 to LEN(JailDefaults) - 1 do
+            if not named(JailDefaults[i], j.env) then Strs.push(env, JailDefaults[i]); end;
+        end;
+    end;
+    for i := 0 to LEN(j.env) - 1 do Strs.push(env, j.env[i]); end;
+end;
+
 (* The program j says run: its status, 128 and the signal if one ended
    it; or minus an errno if it couldn't be started, as 127 is if there
    is no such program. At most max bytes of what it wrote are added to
-   out, and whether more were written is given. *)
-proc start*(const j: Job; max: INT; var out: Buf.Buf): (INT, BOOL);
-var p: Sys.Program; args, env: Strs.Vec; rd, wr, nul, pid, n, i, kept: INT; e: []const U8; more, cut: BOOL;
+   out, and whether more were written is given; and whether it was
+   killed for writing past j.flood. In a jail, 124 is a program that
+   ran out of time, and 126 one that couldn't be put in the sandbox,
+   which says why in out. *)
+proc start*(const j: Job; max: INT; var out: Buf.Buf): (INT, BOOL, BOOL);
+var p: Sys.Program; args, env: Strs.Vec; secs, dirs: Buf.Buf; rd, wr, nul, pid, n, kept: INT; cut, flooded, own: BOOL;
 begin
     nul := Sys.openRead("/dev/null");
-    if nul < 0 then return nul, false; end;
+    if nul < 0 then return nul, false, false; end;
     defer Sys.close(nul);
     rd, wr := Sys.pipe();
-    if rd < 0 then return rd, false; end;
-    p := {path: j.args[0], args: j.args, env: j.env, fds: [nul, wr, wr]};
-    if j.detach then
-        (* arno itself, as the helper, with an environment that is
-           arno's, less the display, and j's; j's in place of arno's
-           of the same name, since a program reading its environment
-           takes the first it finds *)
+    if rd < 0 then return rd, false, false; end;
+    own := j.detach or j.jail or (j.flood > 0);
+    p := {path: j.args[0], args: j.args, env: j.env, dir: j.dir, fds: [nul, wr, wr]};
+    if own then
         Strs.init(args, Heap.heap);
-        defer Strs.done(args);
         Strs.init(env, Heap.heap);
-        defer Strs.done(env);
-        Strs.push(args, "arno");
-        Strs.push(args, Child);
-        for i := 0 to LEN(j.args) - 1 do Strs.push(args, j.args[i]); end;
-        i := 0;
-        e, more := Sys.envAt(0);
-        while more do
-            if not Str.hasPrefix(e, "DISPLAY=") and not Str.hasPrefix(e, "WAYLAND_DISPLAY=")
-                    and not named(e, j.env) then
-                Strs.push(env, e);
-            end;
-            INC(i);
-            e, more := Sys.envAt(i);
-        end;
-        for i := 0 to LEN(j.env) - 1 do Strs.push(env, j.env[i]); end;
+        Buf.init(secs, Heap.heap);
+        Buf.init(dirs, Heap.heap);
+        helper(j, args, env, secs, dirs);
         p.path := "/proc/self/exe";
         p.args := Strs.all(args);
         p.env := Strs.all(env);
         p.onlyEnv := true;
     end;
     pid := Sys.spawn(p);
+    if own then
+        Strs.done(args);
+        Strs.done(env);
+        Buf.done(secs);
+        Buf.done(dirs);
+    end;
     Sys.close(wr);
     (* spawn says before the fork that there is no program, or no right to it *)
-    if (pid = -2) or (pid = -13) then Sys.close(rd); return 127, false; end;
-    if pid < 0 then Sys.close(rd); return pid, false; end;
+    if (pid = -2) or (pid = -13) then Sys.close(rd); return 127, false, false; end;
+    if pid < 0 then Sys.close(rd); return pid, false, false; end;
+    flooded := false;
     if j.tail then
-        cut := last(rd, max, out);
+        cut, flooded := last(rd, pid, own, max, j.flood, out);
     else
         kept := 0;
         while kept < max do
+            if not await(rd, pid, own) then break; end;
             n := Sys.read(rd, Buf.spare(out, max - kept));
-            if n = -4 then continue; end;   (* ^C: the caller sees it *)
+            if n = -EIntr then continue; end;   (* ^C: the caller sees it *)
             if n <= 0 then break; end;
             INC(out.len, n);
             INC(kept, n);
@@ -169,7 +316,7 @@ begin
         cut := kept = max;
     end;
     Sys.close(rd);
-    return reap(pid), cut;
+    return reap(pid), cut, flooded;
 end;
 
 (* The program args[0], found on PATH, run with args, as start runs
@@ -179,8 +326,29 @@ proc run*(args: [][]const U8; max: INT; var out: Buf.Buf): INT;
 var j: Job; status: INT;
 begin
     j := {args: args};
-    status, _ := start(j, max, out);
+    status, _, _ := start(j, max, out);
     return status;
+end;
+
+var
+    probed, can: BOOL;   (* whether jails has tried, and what it found *)
+
+(* Whether a program can be put in the sandbox on this machine (a
+   kernel can forbid user namespaces), found by trying one, once.
+   Called by the thread that runs the programs, after which the answer
+   is read by any. *)
+proc jails*: BOOL;
+var j: Job; b: Buf.Buf; status: INT;
+begin
+    if not probed then
+        Buf.init(b, Heap.heap);
+        j := {args: ["true"], jail: true, timeout: 10};
+        status, _, _ := start(j, 1000, b);
+        Buf.done(b);
+        can := status = 0;
+        probed := true;
+    end;
+    return can;
 end;
 
 (* The module's test. *)
@@ -204,8 +372,14 @@ begin
     failed := true;
 end;
 
+(* A stop that is always said. *)
+proc stopNow: BOOL;
+begin
+    return true;
+end;
+
 proc main*: INT;
-var b: Buf.Buf; j: Job; status: INT; cut: BOOL;
+var b: Buf.Buf; j: Job; status: INT; cut, flooded: BOOL; t0: I64;
 begin
     child();
     Buf.init(b, Heap.heap);
@@ -222,7 +396,7 @@ begin
     Buf.reset(b);
     Buf.str(b, "before:");
     j := {args: ["sh", "-c", "seq 1 10000"], tail: true};
-    status, cut := start(j, 11, b);
+    status, cut, _ := start(j, 11, b);
     expect("the tail", status, 0, Buf.bytes(b), "before:9999\n10000\n");
     if not cut then Out.str("Arun: the tail isn't said to be cut\n"); failed := true; end;
 
@@ -232,15 +406,31 @@ begin
     _ := Sys.setEnv("DISPLAY", ":9");
     j := {args: ["sh", "-c", "test \"$(cut -d' ' -f6 /proc/$$/stat)\" = $$ || exit 5"],
         env: ["ARUN_TEST=set"], detach: true};
-    status, _ := start(j, 1000, b);
+    status, _, _ := start(j, 1000, b);
     expect("detached: its own session", status, 0, Buf.bytes(b), "");
     j.args := ["sh", "-c", "echo $ARUN_TEST.$DISPLAY."];
-    status, _ := start(j, 1000, b);
+    status, _, _ := start(j, 1000, b);
     expect("detached's environment", status, 0, Buf.bytes(b), "set..\n");
     Buf.reset(b);
     j.args := ["no-such-program-of-arno"];
-    status, _ := start(j, 1000, b);
+    status, _, _ := start(j, 1000, b);
     expect("detached, no program", status, 127, Buf.bytes(b), "");
+
+    (* a flood: killed, group and all, once it writes past flood *)
+    Buf.reset(b);
+    j := {args: ["sh", "-c", "yes"], tail: true, flood: 100000, detach: true};
+    status, cut, flooded := start(j, 10, b);
+    expect("flood: killed", status, 128 + Sys.sigKill, Buf.bytes(b), "y\ny\ny\ny\ny\n");
+    if not cut or not flooded then Out.str("Arun: the flood isn't said\n"); failed := true; end;
+    (* the human's stop: a program that would run for a minute is killed in a moment *)
+    Buf.reset(b);
+    stopWhen(stopNow);
+    t0 := Sys.clock();
+    j := {args: ["sh", "-c", "sleep 60"], detach: true};
+    status, _, _ := start(j, 100, b);
+    stopWhen(nil);
+    expect("stopped", status, 128 + Sys.sigKill, Buf.bytes(b), "");
+    if Sys.clock() - t0 > 5000000000 then Out.str("Arun: the stop took too long\n"); failed := true; end;
     if failed then return 1; end;
     return 0;
 end;

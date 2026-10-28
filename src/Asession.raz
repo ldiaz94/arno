@@ -85,6 +85,7 @@ proc init*(s: ^Session; front: Agent.Front; show: Show; arg: ^U8);
 var id: Buf.Buf; n: I64; i: INT; ok: BOOL;
 begin
     s^ := {show: show, arg: arg};
+    Arun.stopWhen(front.stopped);
     Aconf.load(s^.conf);
     if not Arena.init(s^.mem, 1 shl 28) then Rt.stop("arno: out of memory"); end;
     Buf.init(s^.out, Heap.heap);
@@ -108,6 +109,7 @@ begin
         if Aprompt.Modes[i].name = Aconf.get(s^.conf, "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
     Atools.search(Aconf.get(s^.conf, "searxng"));
+    Atools.shellEnabled(Aconf.get(s^.conf, "shell") # "no");
     Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
         Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));
     stageStart(s^);
@@ -933,7 +935,7 @@ begin
     end;
     if LEN(cmd) = 0 then fail(s, "usage: /test COMMAND, or set test_cmd in config"); return; end;
     j := {args: ["sh", "-c", cmd], detach: true, tail: true};
-    status, cut := Arun.start(j, MaxTest, got);
+    status, cut, _ := Arun.start(j, MaxTest, got);
     if status = 0 then
         Fmt.write(s.out, "tests passed: {}", [Fmt.str(cmd)]);
         say(s, Buf.bytes(s.out));

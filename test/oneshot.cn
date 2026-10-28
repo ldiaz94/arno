@@ -365,6 +365,12 @@ holds('stage.json over config', 'out', 'not staged; /stage on')
 stagedRun([], '/stage on')
 holds('/stage on', 'out', 'staged: working on a copy')
 if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('the copy was not removed at the end')
+
+// shell works in the stage's copy, and what it makes is in the diff
+stagedRun(['call', 'shell', '{"command":"echo made > b.txt"}'], 'y')
+holds('a staged shell', 'out', 'the tool said: exit 0: echo made > b.txt')
+holds('a staged shell', 'out', 'applied to 1 file(s) in ' + proj)
+if `cat "$proj/b.txt"` <> 'made' then fail('the file shell made was not applied')
 configure([])
 
 if failures > 0 then halt(1)

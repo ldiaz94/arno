@@ -243,22 +243,41 @@ one or more commits that build with `-Werror`.
      (`Asession.propose`), after a turn is saved, in `/test` and a
      one-shot too; with nobody to ask, or a no, the diff stays in the
      copy and in the scratch's `stage.diff`, and `/load` and
-     `--resume` carry it back. The prompt's stage section is shorter
-     by the sentence on `shell`, which comes with 4d. Not done: the
+     `--resume` carry it back. Not done: the
      copy isn't removed on SIGTERM or SIGHUP (arno has no handler, so
      the next stage sweeps it, as after a crash), and `ours` doesn't
      refuse a hard-linked file, as for the scratch. `ours` does refuse
      the copy's `.git` and all below it, and every git command in the
      copy pins the git directory `up` recorded and turns fsmonitor off,
      since a model-written `.git` could name a program git would run
-     unjailed at the turn's end. Left out until 4d's jail: `check` and
-     a trusted `run` program (make, say) execute the copy's own files,
+     unjailed at the turn's end. Still open (4d jails only `shell`): `check`
+     and a trusted `run` program (make, say) execute the copy's own files,
      which the model edits without approval, so `edit Makefile` then
      `check` runs code nobody approved, outside the jail.
-   - [ ] d. `Ajail` and `shell`: the namespaces by raz's `SYSCALL`,
-     entered by the helper; the jail's own test, jailtest's 25 cases
-     and cases that must fail; `shell` in the stage, its timeout, the
-     tail kept, a flood past 4 MB killed.
+   - [x] d. `Ajail` and `shell`: the namespaces (user, mount, net,
+     pid, ipc) by raz's `SYSCALL`, entered by the helper. `Arun.Job`
+     gains `jail`, `rw`, `timeout`, `flood` and `dir`; the helper
+     (`--arno-jail`, `Arun.child`) calls `Ajail.enter` before it execs,
+     and the program's environment is cut to the allow-list (`PATH`,
+     `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TZ`) plus `TERM=dumb`
+     and `TMPDIR=/tmp`. `Arun.start` gives a third result, whether the
+     program was killed for a flood past `flood` (4 MB for `shell`),
+     and `Arun.jails` says, by running a jailed `true` once, whether
+     the kernel allows it; the Pascal arno probed by forking, which a
+     program with threads mustn't. `shell` is offered where `edit` is,
+     unless config's `shell` is `no` or the jail doesn't work; its
+     timeout (default 120 s, at most 600) is the jail's, status 124.
+     The jail's own test is `Ajailtest` (it can't be `Ajail`'s main,
+     as Arun imports Ajail): jailtest's 25 cases, kept, and escapes
+     that must fail added (the device, proc and run files, remounts,
+     links out of a writable directory, a secret file read). Not as
+     the Pascal arno did: the waiting parent polls (1 to 20 ms) rather
+     than sleeping on SIGALRM, as raz's signal handlers can only note
+     a signal; x86_64 only (the syscall numbers). As in the Pascal
+     arno, `shell` is offered only while the stage is up
+     (`Atools.shellOn`), and works and writes only in the stage's copy
+     (`Afence.stage`): in the project's own tree it could rewrite
+     `.git` or the Makefile, which git and `check` run outside the jail.
 5. **MCP.**
 6. **Peers, serve, attach:** `arno-peer(5)`, `--serve`, `--attach`.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`

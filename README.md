@@ -20,8 +20,8 @@ you already use. It streams replies, keeps conversations on disk, and
 shows file changes for approval.
 
 **This is the raz rebuild, under active development.** The full screen,
-agent tools, attachments, and saved conversations work. Staged edits,
-the jailed shell, MCP, and editor peers are still ahead; `--serve` and
+agent tools, attachments, staged edits, the jailed `shell` tool, and saved
+conversations work. MCP and editor peers are still ahead; `--serve` and
 `--attach` are not implemented yet. [PLAN.md](PLAN.md) tracks the work.
 
 ## What it does
@@ -171,10 +171,10 @@ Context files such as `AGENTS.md` and `CLAUDE.md` are listed for approval
 before they are read by default.
 
 The `run` tool is limited to configured programs. `/test` and the
-`check` tool use a test command you set. The jail is still planned, so
-these commands currently run without its isolation.
+`check` tool use a test command you set. The jail holds only `shell`, so
+these commands run without its isolation.
 
-Left out until the jail: while the stage's copy is up, the model edits
+Still open: while the stage's copy is up, the model edits
 the copy's files, a Makefile among them, without asking, and `check` and
 trusted `run` programs then execute them. Nothing is applied to your tree
 without your yes, but what those commands run is not approved.

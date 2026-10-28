@@ -368,6 +368,10 @@ begin
         "your turn ends, the human sees all you changed as one diff and applies it or not. So carry the work " +
         "through to a checked result in this turn, and work only in the copy, never in {}.",
         [Fmt.str(Afence.stage), Fmt.str(Afence.root), Fmt.str(Afence.root)]);
+    if Atools.shellOn() then
+        Buf.str(out, " Where shell is on offer, build and run freely in the copy: it is sandboxed, and nothing it " +
+            "does leaves the copy but the diff.");
+    end;
 end;
 
 (* The system prompt of c's next request, in mode, added to out: c's

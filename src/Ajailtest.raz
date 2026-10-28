@@ -1,0 +1,269 @@
+(* Ajailtest: the test of Ajail, which can't carry its own as the other
+   modules do, since it is Arun that runs a program in the jail (Arun
+   imports Ajail, and a module may not import the one that imports it).
+
+   Each case runs a shell command line in the sandbox and looks at its
+   status and output. Some show what the sandbox lets through (what
+   must work), the rest what it keeps out: they are the escapes, and a
+   case that must fail passes when the command fails. The 25 cases of
+   the Pascal arno's jailtest are kept, and more are added: the
+   device, run and process files, the links and mounts a program could
+   use to get out, and the one that fails if the sandbox is silently
+   not made. Prints a line for each case that fails; the status is 1
+   if any did.
+
+   Depends on Arun, Sys, Files, Buf, Str, Fmt. Leaves out the time of a
+   flood, which is Arun's test. *)
+module Ajailtest;
+import Arun, Sys, Files, Buf, Str, Fmt, Heap, Out;
+import SYSTEM;
+
+var
+    a, b: []const U8;      (* the two writable directories *)
+    home: []const U8;      (* the human's home *)
+    fails: INT;            (* cases that failed *)
+    limit: INT;            (* seconds a command may run *)
+    scratch: []const U8;   (* ARNO_SCRATCH, as a job gives it *)
+
+(* The command line cmd run in the sandbox with a and b writable: its
+   status, and what it wrote added to out. *)
+proc sh(cmd: []const U8; var out: Buf.Buf): INT;
+var j: Arun.Job; status: INT;
+begin
+    j := {args: ["/bin/sh", "-c", cmd], env: [scratch], jail: true, rw: [a, b], timeout: limit};
+    status, _, _ := Arun.start(j, 100000, out);
+    return status;
+end;
+
+(* A case that failed, with what it saw. *)
+proc report(name, detail: []const U8);
+begin
+    Out.str("FAIL ");
+    Out.str(name);
+    Out.str(": ");
+    Out.str(detail);
+    Out.ln;
+    INC(fails);
+end;
+
+(* The command line must succeed or fail as asked, and its output must
+   hold has (nothing is asked of it when has is empty). A command that
+   is not there (127) never counts as an escape that failed. *)
+proc check(name, cmd: []const U8; succeeds: BOOL; has: []const U8);
+var out: Buf.Buf; status: INT; why: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    status := sh(cmd, out);
+    if (status # 127) and ((status = 0) = succeeds) and ((LEN(has) = 0) or (Str.find(Buf.bytes(out), has) >= 0)) then return; end;
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Fmt.write(why, "status {}, output: {}", [Fmt.int(status), Fmt.str(Str.trim(Buf.bytes(out)))]);
+    report(name, Buf.bytes(why));
+end;
+
+(* The command line must succeed and write exactly want, less its
+   surrounding blank space. *)
+proc exact(name, cmd, want: []const U8);
+var out: Buf.Buf; status: INT; why: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    status := sh(cmd, out);
+    if (status = 0) and (Str.trim(Buf.bytes(out)) = want) then return; end;
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Fmt.write(why, "status {}, output: {}, wanted: {}", [Fmt.int(status), Fmt.str(Str.trim(Buf.bytes(out))), Fmt.str(want)]);
+    report(name, Buf.bytes(why));
+end;
+
+(* The command line's status must be want. *)
+proc status(name, cmd: []const U8; want: INT);
+var out: Buf.Buf; got: INT; why: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    got := sh(cmd, out);
+    if got = want then return; end;
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Fmt.write(why, "status {}, wanted {}: {}", [Fmt.int(got), Fmt.int(want), Fmt.str(Str.trim(Buf.bytes(out)))]);
+    report(name, Buf.bytes(why));
+end;
+
+(* The parts joined, for the test's own use, never freed. *)
+proc cat(parts: [][]const U8): []const U8;
+var r: Buf.Buf;
+begin
+    Buf.init(r, Heap.heap);
+    Str.join(r, parts, "");
+    return Buf.bytes(r);
+end;
+
+(* n in decimal. *)
+proc num(n: INT): []const U8;
+var r: Buf.Buf;
+begin
+    Buf.init(r, Heap.heap);
+    Fmt.write(r, "{}", [Fmt.int(n)]);
+    return Buf.bytes(r);
+end;
+
+(* The directory path made, or the test stops. *)
+proc made(path: []const U8): []const U8;
+begin
+    _ := Sys.makeDir(path);
+    if Sys.access(path, {}) # 0 then Out.str("Ajailtest: can't make "); Out.str(path); Out.ln; Sys.exit(2); end;
+    return path;
+end;
+
+(* The cases that work: what the sandbox must let through. *)
+proc allowed;
+begin
+    check("write in rw dir", cat(["echo hi > ", a, "/f && cat ", a, "/f"]), true, "hi");
+    check("write in second rw dir", cat(["touch ", b, "/g"]), true, "");
+    check("fresh /tmp is writable", "touch /tmp/y && ls /tmp", true, "y");
+    check("fresh /dev/shm is writable", "touch /dev/shm/y", true, "");
+    check("reads work", "cat /etc/hostname", true, "");
+    check("extra env passes", "echo $ARNO_SCRATCH", true, "scratch");
+    check("TERM is dumb", "echo $TERM", true, "dumb");
+    check("TMPDIR is /tmp", "echo $TMPDIR", true, "/tmp");
+    exact("pid 1 is the command", "echo $$", "1");
+    exact("only lo, and it is down", "echo $(wc -l < /proc/net/dev) $(grep -c '^ *lo:' /proc/net/dev) $(tail -n +2 /proc/net/route | wc -l)", "3 1 0");
+    check("no_new_privs is set", "grep NoNewPrivs /proc/self/status", true, "1");
+    check("uid is ours", cat(["test $(id -u) = ", num(Sys.uid())]), true, "");
+    status("exit status passes", "exit 7", 7);
+end;
+
+(* The program with a listener on loopback outside the sandbox: the same
+   connection works out here, and fails inside, where there is no
+   network at all, not even lo. bash is asked for, since its /dev/tcp
+   is what connects. *)
+proc loopback;
+var fd, port: INT; cmd: []const U8; out: Buf.Buf;
+begin
+    fd := Sys.listenTcp("127.0.0.1", 0);
+    if fd < 0 then report("no loopback", "can't listen outside"); return; end;
+    defer Sys.close(fd);
+    port := Sys.localPort(fd);
+    cmd := cat(["exec 3<>/dev/tcp/127.0.0.1/", num(port)]);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    if Arun.run(["bash", "-c", cmd], 1000, out) # 0 then report("no loopback", "the control, outside the sandbox, can't connect"); end;
+    check("no loopback", cat(["bash -c '", cmd, "'"]), false, "");
+end;
+
+(* The cases that must fail: the escapes. *)
+proc escapes;
+begin
+    check("write in parent of rw dir", cat(["touch ", b[0..Str.findLast(b, "/")], "/x"]), false, "Read-only");
+    check("write in HOME", cat(["touch ", home, "/x"]), false, "Read-only");
+    check("write in /etc", "touch /etc/x", false, "Read-only");
+    check("write in /dev", "touch /dev/x", false, "Read-only");
+    check("write in /proc", "echo x > /proc/sys/kernel/hostname", false, "");
+    check("real /tmp is hidden", "ls /tmp/jailtest.marker", false, "");
+    exact("real /run is empty", "ls -A /run | wc -l", "0");
+    loopback();
+    check("the human's terminals are out of reach", "for p in /dev/pts/[0-9]*; do test -w $p && exit 1; test -r $p && exit 1; done; ls -A /dev/pts | wc -l", true, "0");
+    check("own pid invisible", cat(["kill -0 ", num(Sys.pid())]), false, "");
+    check("remount / writable", "mount -o remount,rw /", false, "");
+    check("remount /etc writable", "mount -o remount,rw,bind /etc /etc", false, "");
+    check("unmount the read-only /usr", "umount /usr", false, "");
+    check("symlink out of a rw dir, then write", cat(["ln -s /etc/jailtest ", a, "/l && echo x > ", a, "/l"]), false, "");
+    check("hard link out", cat(["ln /etc/hostname ", a, "/h && echo x >> ", a, "/h"]), false, "");
+    check("../ out of a rw dir", cat(["touch ", a, "/../../x"]), false, "");
+    check("chmod /etc", "chmod 777 /etc", false, "");
+    check("mknod a device", cat(["mknod ", a, "/null c 1 3"]), false, "");
+    check("a secret file: ~/.claude/CLAUDE.md", cat(["cat ", home, "/.claude/CLAUDE.md"]), false, "");
+    check("DISPLAY is dropped", "test -z \"$DISPLAY\"", true, "");
+    check("SECRET_TEST is dropped", "env | grep -c SECRET_TEST", false, "0");
+    check("only the allow-list is left", "env | grep -c '^PATH='", true, "1");
+end;
+
+(* The cases of the secrets the human keeps in home: a directory that
+   is there looks empty. *)
+proc secrets;
+var i: INT; names: []const []const U8; path: Buf.Buf;
+begin
+    names := [".ssh", ".gnupg", ".password-store", ".aws", ".kube", ".docker", ".claude", ".config/gh"];
+    for i := 0 to LEN(names) - 1 do
+        Buf.init(path, Heap.heap);
+        Fmt.write(path, "{}/{}", [Fmt.str(home), Fmt.str(names[i])]);
+        if Sys.access(Buf.bytes(path), {}) = 0 then
+            check(names[i], cat(["ls -A ", Buf.bytes(path), " | wc -l"]), true, "0");
+        end;
+        Buf.done(path);
+    end;
+end;
+
+(* The cases of the limits: the time, and what dies with the sandbox. *)
+proc limits;
+var out: Buf.Buf; t0: I64; got: INT; again: Arun.Job; why: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    limit := 2;
+    t0 := Sys.clock();
+    got := sh("sleep 30", out);
+    if (got # 124) or (Sys.clock() - t0 > 8000000000) then
+        Buf.init(why, Heap.heap);
+        defer Buf.done(why);
+        Fmt.write(why, "status {} after {} ms", [Fmt.int(got), Fmt.int(INT((Sys.clock() - t0) div 1000000))]);
+        report("timeout kills at 2 s, status 124", Buf.bytes(why));
+    end;
+    limit := 5;
+    check("a background process dies with the sandbox", "sleep 100.25 & echo started", true, "started");
+    Buf.reset(out);
+    again := {args: ["pgrep", "-f", "sleep 100.2[5]"]};
+    got := Arun.run(again.args, 1000, out);
+    if got = 0 then report("a background process is left behind", Str.trim(Buf.bytes(out))); end;
+    status("no such program is 127", "no-such-program-of-arno", 127);
+end;
+
+(* A file made in a rw directory is the human's outside. *)
+proc owned;
+var info: Sys.Info; r: INT; path: Buf.Buf;
+begin
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Fmt.write(path, "{}/f", [Fmt.str(a)]);
+    info, r := Sys.info(Buf.bytes(path));
+    if (r < 0) or (info.uid # Sys.uid()) then report("file is owned by us outside", "not ours"); end;
+end;
+
+proc main*: INT;
+var base, marker, out: Buf.Buf;
+begin
+    Arun.child();
+    limit := 5;
+    scratch := "ARNO_SCRATCH=scratch";
+    home := Sys.env("HOME");
+    _ := Sys.setEnv("SECRET_TEST", "hunter2");
+    _ := Sys.setEnv("DISPLAY", ":9");
+    Buf.init(base, Heap.heap);
+    Fmt.write(base, "/tmp/ajailtest.{}", [Fmt.int(Sys.pid())]);
+    a := made(Buf.bytes(base));
+    (* a is under /tmp, which the sandbox replaces by a fresh one: it must still be there and writable; b is not *)
+    Buf.init(out, Heap.heap);
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/jailtest");
+    Fmt.write(out, "build/jailtest/b.{}", [Fmt.int(Sys.pid())]);
+    _ := made(Buf.bytes(out));
+    Buf.init(marker, Heap.heap);
+    _ := Files.realPath(Buf.bytes(out), marker);
+    b := Buf.bytes(marker);
+    _ := Files.write("/tmp/jailtest.marker", "x");
+    if not Arun.jails() then report("Works", "the kernel refuses user namespaces"); end;
+    allowed();
+    escapes();
+    secrets();
+    limits();
+    owned();
+    _ := Files.removeTree(a);
+    _ := Files.removeTree(b);
+    _ := Files.removeTree("/tmp/jailtest.marker");
+    if fails > 0 then return 1; end;
+    return 0;
+end;
+
+end Ajailtest.

@@ -1,0 +1,389 @@
+(* Ajail: a sandbox for the programs a model asks arno to run, made of
+   Linux's unprivileged namespaces: no root, no helper program, no
+   setuid binary. It needs Linux 5.12 or later (mount_setattr) on
+   x86_64.
+
+   enter is called by the helper (Arun.child), in a process of its own
+   that has just been started, right before it execs the program. After
+   it the process lives in a little world of its own:
+
+       user    the same uid and gid as outside, with no power over what
+               it doesn't own and no way to gain any (no_new_privs, so
+               a setuid program stays powerless)
+       mount   the whole file tree read-only, except the directories
+               given to enter and a fresh /tmp, /dev/shm and /run; the
+               places a login keeps its keys (Secrets) look empty
+       net     no network at all, not even the loopback interface is up
+       pid     the program sees only its own processes, and when its
+               first one ends, or the time runs out, all are killed
+       ipc     no shared memory or queues shared with the rest
+
+   What it doesn't cover: the program can read every file the user can
+   (the Secrets aside), and connect to a Unix socket that is a file
+   anywhere but /tmp, /dev/shm and /run, since a read-only mount does
+   not stop connect(2). Sockets in the abstract namespace are cut off
+   with the network.
+
+   The system calls are raz's SYSCALL, with the numbers of x86_64, as
+   the C library has no wrapper for them (mount_setattr), and the
+   process mustn't have threads, as unshare of a user namespace wants.
+   That is why the helper is arno run again, and why there is no
+   probe here: Arun.jails tries one.
+
+   Depends on Sys, Str, Buf, Fmt, Files, Heap. Leaves out the other
+   systems and architectures, seccomp, and limits on memory or tasks
+   (the timeout and the pid namespace end a runaway program, and a
+   runaway's output is Arun's to cap). *)
+module Ajail;
+import Sys, Str, Buf, Fmt, Heap;
+import SYSTEM;
+
+type
+    (* A struct mount_attr of mount_setattr(2). *)
+    MountAttr = record
+        attrSet, attrClr, propagation, userns: U64;
+    end;
+
+const
+    SysPoll = 7;
+    PollHup = 10H;         (* poll's revents bit for a pipe whose writer is gone *)
+    SysGetgid = 104;       (* the system calls, as Linux's x86_64 numbers them *)
+    SysMount = 165;
+    SysPrctl = 157;
+    SysUnshare = 272;
+    SysOpenAt = 257;
+    SysMountSetattr = 442;
+
+    NewNs = 20000H;        (* unshare's flags: mount, ipc, user, pid and net namespaces *)
+    NewIpc = 8000000H;
+    NewUser = 10000000H;
+    NewPid = 20000000H;
+    NewNet = 40000000H;
+
+    MsRdonly = 1;          (* mount's flags *)
+    MsNosuid = 2;
+    MsNodev = 4;
+    MsNoexec = 8;
+    MsBind = 4096;
+    MsRec = 16384;
+    MsPrivate = 262144;
+
+    PrSetPdeathsig = 1;    (* prctl's requests *)
+    PrSetNoNewPrivs = 38;
+    AttrRdonly = 1;        (* mount_setattr's attribute and flag *)
+    AtRecursive = 8000H;
+    AtFdcwd = -100;        (* openat's directory for a relative path *)
+    OPath = 200000H;       (* open a handle on a directory, nothing more *)
+    ODirectory = 10000H;
+
+    EIntr = 4;             (* the errnos the sandbox meets, which Sys gives as minus these *)
+    EIo = 5;
+    ENameTooLong = 36;
+    ENoSys = 38;
+    MaxRw = 8;             (* directories that may stay writable *)
+    PathMax = 4096;        (* bytes of a path, as C has it *)
+
+    (* Where a login keeps the keys to other systems, found under HOME
+       and hidden from the program, which could send them anywhere a
+       model likes or use them to act as the human. *)
+    Secrets: []const []const U8 = [".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".kube",
+        ".docker", ".claude", ".config/gcloud", ".config/gh", ".local/share/keyrings", ".mozilla",
+        ".config/chromium", ".config/google-chrome", ".netrc", ".git-credentials", ".npmrc", ".pypirc",
+        ".cargo/credentials.toml"];
+
+    (* Fresh, writable and private: sockets live here (X11, dbus,
+       docker, ssh-agent, arno's own) and the real ones must go. *)
+    Scratch: []const []const U8 = ["/tmp", "/dev/shm", "/run"];
+
+var
+    note: Buf.Buf;    (* why a step failed, which failed builds *)
+    noted: BOOL;      (* note is made *)
+
+(* What an errno says, for the few a sandbox meets; else its number. *)
+proc errText(e: INT; var b: Buf.Buf);
+begin
+    if e = 1 then Buf.str(b, "operation not permitted");
+    elsif e = 2 then Buf.str(b, "no such file or directory");
+    elsif e = 13 then Buf.str(b, "permission denied");
+    elsif e = 16 then Buf.str(b, "busy");
+    elsif e = 22 then Buf.str(b, "invalid argument");
+    elsif e = ENameTooLong then Buf.str(b, "name too long");
+    elsif e = ENoSys then Buf.str(b, "not implemented (the kernel is too old?)");
+    else Fmt.write(b, "errno {}", [Fmt.int(e)]);
+    end;
+end;
+
+(* A failure: the step that failed, what it was on ("" for nothing),
+   and r, the minus errno it gave, as one line. Good until the next. *)
+proc failed(step, what: []const U8; r: INT): []const U8;
+begin
+    if not noted then Buf.init(note, Heap.heap); noted := true; end;
+    Buf.reset(note);
+    Buf.str(note, step);
+    if LEN(what) > 0 then
+        Buf.add(note, ' ');
+        Buf.str(note, what);
+    end;
+    Buf.str(note, ": ");
+    errText(-r, note);
+    return Buf.bytes(note);
+end;
+
+(* s as a C string in buf, nil for no string; the paths here are far
+   below PathMax. *)
+proc cstr(s: []const U8; var buf: [PathMax]U8): ^U8;
+begin
+    if LEN(s) = 0 then return nil; end;
+    if LEN(s) >= PathMax then return nil; end;
+    return Str.toC(s, buf);
+end;
+
+(* mount(2): src on dst as the file system fs, with flags and data,
+   any of src, fs and data empty for none. 0, or minus an errno. *)
+proc mount(src, dst, fs: []const U8; flags: INT; data: []const U8): INT;
+var a, b, c, d: [PathMax]U8;
+begin
+    if LEN(dst) >= PathMax then return -ENameTooLong; end;
+    return SYSTEM.SYSCALL(SysMount, cstr(src, a), cstr(dst, b), cstr(fs, c), flags, cstr(data, d));
+end;
+
+(* The mount at path made read-only, or, if not on, writable again;
+   with every mount below it if deep. 0, or minus an errno. *)
+proc readOnly(path: []const U8; on, deep: BOOL): INT;
+var a: MountAttr; p: [PathMax]U8; flags: INT;
+begin
+    a := {};
+    if on then a.attrSet := AttrRdonly; else a.attrClr := AttrRdonly; end;
+    flags := 0;
+    if deep then flags := AtRecursive; end;
+    if LEN(path) >= PathMax then return -ENameTooLong; end;
+    return SYSTEM.SYSCALL(SysMountSetattr, AtFdcwd, cstr(path, p), flags, SYSTEM.ADR(a), SIZE(MountAttr));
+end;
+
+(* text written to the existing file at path: 0, or minus an errno. *)
+proc putFile(path, text: []const U8): INT;
+var fd, n: INT;
+begin
+    fd := Sys.open(path, {Sys.Access.writing});
+    if fd < 0 then return fd; end;
+    n := Sys.write(fd, text);
+    Sys.close(fd);
+    if n < 0 then return n; end;
+    if n # LEN(text) then return -EIo; end;
+    return 0;
+end;
+
+(* Step 1: the new namespaces, and the user inside mapped to the same
+   uid and gid, so the files it makes belong to the user outside too.
+   The kernel wants setgroups denied before an unprivileged gid_map.
+   "" if all went well, else why not. *)
+proc unshare(): []const U8;
+var uid, gid, r: INT; b: Buf.Buf;
+begin
+    uid := Sys.uid();
+    gid := SYSTEM.SYSCALL(SysGetgid);
+    r := SYSTEM.SYSCALL(SysPrctl, PrSetNoNewPrivs, 1, 0, 0, 0);
+    if r < 0 then return failed("no_new_privs", "", r); end;
+    r := SYSTEM.SYSCALL(SysUnshare, NewUser | NewNs | NewNet | NewPid | NewIpc);
+    if r < 0 then return failed("unshare", "", r); end;
+    r := putFile("/proc/self/setgroups", "deny");
+    if r < 0 then return failed("setgroups", "", r); end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "{} {} 1", [Fmt.int(uid), Fmt.int(uid)]);
+    r := putFile("/proc/self/uid_map", Buf.bytes(b));
+    if r < 0 then return failed("uid_map", "", r); end;
+    Buf.reset(b);
+    Fmt.write(b, "{} {} 1", [Fmt.int(gid), Fmt.int(gid)]);
+    r := putFile("/proc/self/gid_map", Buf.bytes(b));
+    if r < 0 then return failed("gid_map", "", r); end;
+    return "";
+end;
+
+(* mkdir -p: path and the directories above it, those missing made. *)
+proc makeDirs(path: []const U8);
+var i: INT;
+begin
+    for i := 1 to LEN(path) do
+        if (i = LEN(path)) or (path[i] = '/') then _ := Sys.makeDir(path[0..i]); end;
+    end;
+end;
+
+(* Hides one secret: a directory looks empty, a file looks like
+   /dev/null. Not there is fine, as there is nothing to hide. "" or
+   why not. *)
+proc hide(path: []const U8): []const U8;
+var info: Sys.Info; r: INT;
+begin
+    info, r := Sys.info(path);
+    if r < 0 then return ""; end;
+    if info.dir then
+        r := mount("tmpfs", path, "tmpfs", MsRdonly | MsNosuid | MsNodev | MsNoexec, "mode=0555,size=4k");
+    else
+        r := mount("/dev/null", path, "", MsBind, "");
+    end;
+    if r < 0 then return failed("hide", path, r); end;
+    return "";
+end;
+
+(* The directories at rw, each a handle opened and its resolved path,
+   before any mount hides them (a fresh /tmp may hide the place one is
+   in). Their paths and handles are kept for the life of the process,
+   which is short. "" or why not. *)
+proc openRw(rw: [][]const U8; var fds: [MaxRw]INT; var paths: [MaxRw][]const U8): []const U8;
+var i, r: INT; b: Buf.Buf; p: [PathMax]U8; at: []const U8;
+begin
+    for i := 0 to LEN(rw) - 1 do
+        if LEN(rw[i]) >= PathMax then return failed("open", rw[i], -ENameTooLong); end;
+        r := SYSTEM.SYSCALL(SysOpenAt, AtFdcwd, cstr(rw[i], p), OPath | ODirectory, 0);
+        if r < 0 then return failed("open", rw[i], r); end;
+        fds[i] := r;
+        (* the path is read from the handle, so it is the very directory opened *)
+        Buf.init(b, Heap.heap);
+        Fmt.write(b, "/proc/self/fd/{}", [Fmt.int(r)]);
+        at, r := Sys.readLink(Buf.bytes(b));
+        if r < 0 then return failed("resolve", rw[i], r); end;
+        paths[i], _ := Str.copy(Heap.heap, at);
+    end;
+    return "";
+end;
+
+(* Steps 2 to 5: the file tree. The order matters:
+     1. what stays writable is opened first, by a handle on the
+        directory, since the fresh /tmp may hide the place it is in;
+     2. the fresh scratch directories go on;
+     3. each writable directory is bound back, from its handle, onto
+        its own path, made again in the new /tmp if need be;
+     4. the secrets, and the human's terminals (/dev/pts), are hidden;
+     5. everything becomes read-only, and then the writable places are
+        made writable again, the rw directories one by one and not
+        deep: a mount found below one of them stays read-only, which
+        is the safe side.
+   "" or why not. *)
+proc tree(rw: [][]const U8): []const U8;
+var fds: [MaxRw]INT; paths: [MaxRw][]const U8; i, r: INT; why, home: []const U8; at: Buf.Buf;
+begin
+    if LEN(rw) > MaxRw then return "too many writable directories"; end;
+    r := mount("", "/", "", MsRec | MsPrivate, "");
+    if r < 0 then return failed("make / private", "", r); end;
+    why := openRw(rw, fds, paths);
+    if LEN(why) > 0 then return why; end;
+    for i := 0 to LEN(Scratch) - 1 do
+        r := mount("tmpfs", Scratch[i], "tmpfs", MsNosuid | MsNodev, "mode=1777");
+        if r < 0 then return failed("tmpfs", Scratch[i], r); end;
+    end;
+    for i := 0 to LEN(rw) - 1 do
+        makeDirs(paths[i]);
+        Buf.init(at, Heap.heap);
+        Fmt.write(at, "/proc/self/fd/{}", [Fmt.int(fds[i])]);
+        r := mount(Buf.bytes(at), paths[i], "", MsBind | MsRec, "");
+        if r < 0 then return failed("bind", paths[i], r); end;
+        Sys.close(fds[i]);
+    end;
+    home := Sys.env("HOME");
+    if LEN(home) > 0 then
+        for i := 0 to LEN(Secrets) - 1 do
+            Buf.init(at, Heap.heap);
+            Fmt.write(at, "{}/{}", [Fmt.str(home), Fmt.str(Secrets[i])]);
+            why := hide(Buf.bytes(at));
+            if LEN(why) > 0 then return why; end;
+        end;
+    end;
+    (* the human's terminals are device nodes of the human's: a program could read keys from them or draw on them *)
+    why := hide("/dev/pts");
+    if LEN(why) > 0 then return why; end;
+    r := readOnly("/", true, true);
+    if r < 0 then return failed("read-only /", "", r); end;
+    for i := 0 to LEN(Scratch) - 1 do
+        r := readOnly(Scratch[i], false, false);
+        if r < 0 then return failed("writable", Scratch[i], r); end;
+    end;
+    for i := 0 to LEN(rw) - 1 do
+        r := readOnly(paths[i], false, false);
+        if r < 0 then return failed("writable", paths[i], r); end;
+    end;
+    return "";
+end;
+
+(* The process that stays outside the pid namespace, which never
+   returns: it waits for the first process inside, inner, and exits as
+   it did, 128 and the signal if one ended it; if there is a timeout,
+   in seconds, and it runs out, the first process is killed, which
+   takes every one in the namespace, and this exits 124, as timeout(1)
+   does. 125 if the wait fails. The wait polls, with a delay that grows
+   to 20 ms: a signal handler can't kill from raz, and a signal coming
+   between a check and a blocking wait would be lost. If this process
+   is killed, SIGKILL from arno's group or SIGTERM, the first process
+   goes with it (PDEATHSIG, set in enter). *)
+proc supervise(inner, timeout: INT);
+var deadline: I64; delay, got, status: INT; how: Sys.Status;
+begin
+    deadline := Sys.clock() + I64(timeout) * 1000000000;
+    delay := 1;
+    while true do
+        got, how, status := Sys.wait(inner, false);
+        if (got = inner) and (how = Sys.Status.exited) then Sys.exit(status); end;
+        if (got = inner) and (how = Sys.Status.killed) then Sys.exit(128 + status); end;
+        if (got < 0) and (got # -EIntr) then Sys.exit(125); end;
+        if (timeout > 0) and (Sys.clock() >= deadline) then
+            _ := Sys.kill(inner, Sys.sigKill);
+            _, _, _ := Sys.waitExit(inner);
+            Sys.exit(124);
+        end;
+        Sys.sleep(delay);
+        if delay < 20 then delay := delay * 2; end;
+    end;
+end;
+
+(* Whether the other end of the pipe fd, which it only reads, is closed:
+   the supervisor holds the write end till it exits, so a closed one
+   says it is gone. Looks and doesn't wait: poll with no time. *)
+proc hungUp(fd: INT): BOOL;
+var p: [8]U8;
+begin
+    p := [U8(fd & 255), U8((fd shr 8) & 255), U8((fd shr 16) & 255), U8((fd shr 24) & 255), 0, 0, 0, 0];   (* struct pollfd: fd, no events asked, revents *)
+    if SYSTEM.SYSCALL(SysPoll, SYSTEM.ADR(p), 1, 0) < 0 then return false; end;
+    return (INT(p[6]) & PollHup) # 0;
+end;
+
+(* This process, a fresh one that has no threads, put in the sandbox,
+   rw the directories that stay writable and timeout the seconds the
+   first process may live, 0 for no limit. "" if it is in, and then it
+   is the first process of the sandbox and must exec the program: its
+   parent, which never returns from here, waits for it and exits as it
+   did. Else why not, and nothing is run. *)
+proc enter*(rw: [][]const U8; timeout: INT): []const U8;
+var here: Buf.Buf; cwd, why: []const U8; r, inner, rd, wr: INT;
+begin
+    Buf.init(here, Heap.heap);
+    defer Buf.done(here);
+    cwd, r := Sys.workDir();
+    if r < 0 then return failed("getcwd", "", r); end;
+    Buf.str(here, cwd);
+    why := unshare();
+    if LEN(why) > 0 then return why; end;
+    why := tree(rw);
+    if LEN(why) > 0 then return why; end;
+    (* the working directory under a fresh /tmp is still the old, hidden one *)
+    r := Sys.setWorkDir(Buf.bytes(here));
+    if r < 0 then return failed("chdir", Buf.bytes(here), r); end;
+    (* unshare of a pid namespace puts only the children in it, so one
+       more fork makes the sandbox's first process; arno dying takes
+       both along *)
+    _ := SYSTEM.SYSCALL(SysPrctl, PrSetPdeathsig, Sys.sigKill, 0, 0, 0);
+    rd, wr := Sys.pipe();
+    if rd < 0 then return failed("pipe", "", rd); end;
+    inner := Sys.fork();
+    if inner < 0 then return failed("fork", "", inner); end;
+    if inner > 0 then Sys.close(rd); supervise(inner, timeout); end;
+    _ := SYSTEM.SYSCALL(SysPrctl, PrSetPdeathsig, Sys.sigKill, 0, 0, 0);
+    (* the supervisor may have died before the line above took hold; getppid can't say, the parent being outside this pid namespace, but the pipe it held can *)
+    Sys.close(wr);
+    if hungUp(rd) then Sys.exit(125); end;
+    Sys.close(rd);
+    r := mount("proc", "/proc", "proc", MsNosuid | MsNodev | MsNoexec, "");
+    if r < 0 then return failed("mount", "/proc", r); end;
+    return "";
+end;
+
+end Ajail.

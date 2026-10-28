@@ -96,7 +96,7 @@ begin
         Strs.push(env, Buf.bytes(index));
     end;
     j := {args: Strs.all(argv), env: Strs.all(env), detach: true};
-    status, cut := Arun.start(j, max, out);
+    status, cut, _ := Arun.start(j, max, out);   (* no flood limit set, so never flooded *)
     return status, cut;
 end;
 
