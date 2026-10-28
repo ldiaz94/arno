@@ -111,6 +111,7 @@ var
 
     (* the loop's own *)
     thread: ^Thread.Thread;   (* the job running, or nil *)
+    turning: BOOL;            (* and it is a turn of the model, which busy tells *)
     pending: INT;             (* the id of the request waited on, 0 for none *)
     seq: INT;                 (* the last id given *)
     batch: Events.Vec;        (* the events being applied *)
@@ -731,6 +732,15 @@ begin
     post(ended, "", "", "", "", going);
 end;
 
+(* Whether line is a turn of the model: a message to it, or /compact; not
+   a command, nor the preparing of the session (""). Only turns are busy,
+   as in the Pascal arno, so that a host reading busy 0 as "the model
+   is done" is not fooled by a command or the start-up. *)
+proc isTurn(line: []const U8): BOOL;
+begin
+    return (LEN(line) > 0) and ((line[0] # '/') or Str.hasPrefix(line, "/compact"));
+end;
+
 (* A job started on line, "" to prepare the session. *)
 proc start(line: []const U8);
 var err: ERROR;
@@ -740,12 +750,13 @@ begin
     Thread.lock(mutex);
     stopping := false;
     Thread.unlock(mutex);
-    Aview.busied(true);
+    turning := isTurn(line);
+    if turning then Aview.busied(true); end;
     thread, err := Thread.spawn(work, nil);
     if err # nil then
         thread := nil;
         Aview.noted(Aboard.error, MSG(err));
-        Aview.busied(false);
+        if turning then Aview.busied(false); end;
     end;
 end;
 
@@ -774,7 +785,7 @@ proc over(going: BOOL);
 begin
     if thread # nil then Thread.join(thread); thread := nil; end;
     Aview.waiting("", false);
-    Aview.busied(false);
+    if turning then Aview.busied(false); end;
     if not going then quit := true; return; end;
     runHeld();
 end;

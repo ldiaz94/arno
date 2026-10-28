@@ -241,11 +241,10 @@ the same numbers.
 .It Cm status Ar text
 The status line: mode, model, context in use, tokens, cost, and the title.
 .It Cm busy Ar 0|1
-1 when a job starts and 0 when it ends, once the conversation is saved.
-A job is a turn, but also a command, or the work arno does before the first
-turn; so
-.Cm busy
-does not mean that the model is working.
+1 when a turn of the model starts and 0 when it ends, once the conversation
+is saved.
+A command, or the work arno does before the first turn, is not a turn and is
+not told.
 .It Cm ask Ar id question detail keys
 A question for the person, which the host must answer with
 .Cm answer .
@@ -479,8 +478,6 @@ host -> arno   hello 1 pad "" {"prompt":"pad is a scratch buffer.",
                                         "description":"The buffer."}]}
 arno -> host   ready 20261028-101500 deepseek-v4.1-flash:cloud 4242
 arno -> host   status "arno · chat @ ollama · ctx ..."
-arno -> host   busy 1
-arno -> host   busy 0
 .Ed
 .Pp
 A line, a streaming reply, and a question:
@@ -518,10 +515,6 @@ spoke, so that a host written for it works with this arno.
 The protocol of the editors that talk to arno by a socket of their own,
 as a peer, is a different one, and is not built.
 .Sh CAVEATS
-.Cm busy
-is sent for every job, not only the turns of the model, so a host cannot tell a
-turn from a command by it.
-.Pp
 A viewer sees that a question waits and who holds it, not the question.
 .Pp
 A viewer that is slow is sent changes when the socket takes them; a tail that

@@ -220,19 +220,21 @@ begin
     pushed(LEN(Aboard.all()) - 1);
 end;
 
-(* A piece of the model's text, added to the reply it goes on, or the
-   start of a new one. *)
+(* A piece of the model's text, appended to the reply it goes on. A new
+   reply is pushed empty first and its text arrives as appends, as
+   arnoc's hosts (and the Pascal arno) expect: a host that gets text in
+   the push as well as in appends would take it twice or lose it. *)
 proc said*(s: []const U8);
 var e: ^Aboard.Entry; d: [20]U8;
 begin
     e := Aboard.last();
-    if (e # nil) and (e^.kind = Aboard.Kind.reply) then
-        Aboard.reply(s);
-        say(["append", num(LEN(Aboard.all()) - 1, d), s]);
-    else
-        Aboard.reply(s);
+    if (e = nil) or (e^.kind # Aboard.Kind.reply) then
+        Aboard.reply("");
         pushed(LEN(Aboard.all()) - 1);
     end;
+    if LEN(s) = 0 then return; end;
+    Aboard.reply(s);
+    say(["append", num(LEN(Aboard.all()) - 1, d), s]);
 end;
 
 (* A tool call, about to run. *)
@@ -788,7 +790,7 @@ begin
     stated("ready", "a title");
     busied(true);
     expect("what the owner is told", Buf.bytes(told),
-        "23:4:push,1:0,4:user,2:hi,,24:4:push,1:1,4:asst,3:one,,20:6:append,1:1,4: two,," +
+        "23:4:push,1:0,4:user,2:hi,,21:4:push,1:1,4:asst,0:,,19:6:append,1:1,3:one,,20:6:append,1:1,4: two,," +
         "34:4:tool,1:2,4:read,12:{\"path\":\"a\"},,17:6:status,5:ready,,11:4:busy,1:1,,");
     Buf.reset(told);
 

@@ -325,9 +325,7 @@ one or more commits that build with `-Werror`.
      provider or the conversation, and are answered then (the Pascal
      arno answered mid-turn), and so does every request that comes
      while one waits, so that replies keep the order of requests, which
-     arnold pairs by; `busy 1` and `busy 0` are sent around every job,
-     the start-up one and a slash command among them, not only a model
-     turn as the Pascal arno did; a viewer is told of a waiting
+     arnold pairs by; a viewer is told of a waiting
      question only as `status · a question waits in WHO`, not with
      the question (`waiting for approval in OWNER: QUESTION`); `--attach -l`
      removes the socket of a process that has ended, not one that is

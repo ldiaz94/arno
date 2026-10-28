@@ -450,7 +450,7 @@ end;
 proc failed(const s: Session; err: ERROR; why: []const U8);
 begin
     if err = Awire.Failed then fail(s, why); end;
-    if err = Awire.Stopped then fail(s, "stopped"); end;
+    if err = Awire.Stopped then fail(s, "interrupted"); end;
 end;
 
 (* The id of the conversation arg names, into id: a number from /list,

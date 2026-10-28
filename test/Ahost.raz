@@ -117,6 +117,15 @@ begin
     end;
 end;
 
+(* A check: what has been seen since clear must not hold text. *)
+proc mustNotHave(what, text: []const U8);
+begin
+    if has(text) then
+        fail(what, text);
+        Out.str(Buf.bytes(seen));
+    end;
+end;
+
 (* What has been seen forgotten. *)
 proc clear;
 begin
@@ -366,7 +375,8 @@ begin
     send(["hello", "1", "x", "", ""]);
     _ := await("error");
     is("a second hello", "error|hello again");
-    idle();
+    _ := await("status|");
+    mustNotHave("busy is for a model turn: not the start-up", "busy|");
     clear();
 end;
 
@@ -380,10 +390,24 @@ begin
     mustHave("the line typed", "|user|hello there");
     mustHave("the model's reply", "messages");
     mustHave("a status line", "status|");
+    mustHave("a reply is pushed empty", "|asst|\n");
+    mustHave("and its text appended", "append|");
     clear();
     line("system");
     idle();
     mustHave("the hello's prompt reaches the system prompt", "Be careful.");
+end;
+
+(* A command is not a turn: busy does not tell it, for a host that reads
+   busy 0 as "the model is done" must not be fooled. *)
+proc command;
+begin
+    clear();
+    line("/help");
+    _ := await("push|");
+    _ := await("push|");
+    mustHave("the command ran", "/new");
+    mustNotHave("busy is for a model turn: not a command", "busy|");
 end;
 
 (* The host's tool called, and its result given to the model; a
@@ -409,6 +433,7 @@ begin
     send(["cancel"]);
     idle();
     mustHave("a cancel refuses a call waiting", "interrupted by user");
+    mustHave("a cancelled turn says it was interrupted", "|err|interrupted");
 end;
 
 (* A question refused with a reason, which is in the result; a question
@@ -496,7 +521,8 @@ end;
 proc saved;
 begin
     line("/new");
-    idle();
+    _ := await("reset");
+    _ := await("status|");
     send(["rename", Buf.bytes(ident), "Old one"]);
     _ := await("renamed|");
     Buf.reset(out);
@@ -589,6 +615,7 @@ begin
     beforeHello();
     greeting();
     turn();
+    command();
     hostTool();
     questions();
     requests();
