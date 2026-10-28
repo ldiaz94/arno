@@ -132,6 +132,7 @@ Directories and images work too, if the model takes images.
 |---|---|
 | RET, M-RET | send; a new line in the input |
 | C-c, C-d | stop the turn; quit |
+| C-z | stop arno as a shell does; `fg` brings it back |
 | S-Tab | change mode |
 | TAB, C-o | toggle a tool entry, all of them |
 | PgUp, PgDn; S-Up, S-Down | scroll by a page, by a line |

@@ -839,6 +839,12 @@ end;
 proc key(ev: TuiKeys.Event);
 var out: TuiLine.Outcome;
 begin
+    (* C-z stops arno as a shell does, whatever is on the screen;
+       fg brings it back, drawn whole *)
+    if ev.key = TuiKeys.ctrl('z') then
+        TuiLoop.suspend;
+        return;
+    end;
     Buf.reset(flash);
     if why.open then
         (* Esc leaves it as C-g does, as it leaves a question *)
