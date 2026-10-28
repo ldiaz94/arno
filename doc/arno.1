@@ -1,0 +1,1568 @@
+.Dd October 28, 2026
+.Dt ARNO 1
+.Os
+.Sh NAME
+.Nm arno
+.Nd a harness for language models in the terminal
+.Sh SYNOPSIS
+.Nm
+.Nm
+.Ar prompt ...
+.Nm
+.Fl \-resume Ar id prompt ...
+.Nm
+.Fl \-serve
+.Nm
+.Fl \-attach
+.Op Ar pid | Fl l
+.Nm
+.Fl h | \-help
+.Sh DESCRIPTION
+.Nm
+puts a language model in a terminal next to your code.
+You steer.
+The model reads, searches and proposes edits through a few tools, and
+every edit waits for your approval.
+.Nm
+is written in raz and is a rebuild of an older arno written in Pascal;
+it reads that arno's configuration and saved conversations as they are.
+.Pp
+With no arguments on a terminal,
+.Nm
+takes the full screen: the transcript above, a rule that shows what is
+going on or a question, then the input and a status line.
+The status line shows the mode, the model and its provider, the
+context in use, tokens and cost, and the conversation's title.
+See
+.Sx THE SCREEN .
+.Pp
+With a
+.Ar prompt ,
+or when standard input or output is not a terminal,
+.Nm
+prints plain lines instead.
+The prompt, its words joined by blanks, is one turn of a new
+conversation, and
+.Nm
+exits.
+With no prompt and no terminal, each line of standard input is a
+message to the model, or a command such as
+.Ic /help ;
+the end of the input, or
+.Ic /quit ,
+ends the session.
+See
+.Sx PLAIN MODE .
+.Pp
+.Fl \-resume Ar id
+makes a saved conversation the current one before the prompt is sent, so
+that a script can go on where a run stopped, for instance one that used
+up
+.Cm max_steps ,
+with its history, its scratch directory and the provider's prompt
+cache.
+.Ar id
+may be an id, a number from
+.Ic /list
+.Pq 1 is the conversation changed last
+or a word from a title, as for
+.Ic /load .
+.Pp
+Every turn is saved, however it ends, so a conversation can be taken up
+again later.
+Requests go straight to the provider's API, over HTTPS (HTTP for a local
+Ollama); the key is read from an environment variable and sent only to
+the provider.
+.Sh OPTIONS
+.Bl -tag -width "--attach [pid | -l]"
+.It Ar prompt ...
+One turn of a new conversation, then exit.
+An empty prompt is refused, with status 2, as a script's prompt file
+never written is a mistake and not a question.
+.It Fl \-resume Ar id prompt ...
+One more turn of the saved conversation
+.Ar id .
+An unknown one is refused, with status 1.
+.It Fl \-serve
+Run one session for the program that started
+.Nm ,
+speaking its protocol on standard input and output.
+See
+.Sx SERVE
+and
+.Xr arno-peer 5 .
+It takes no other argument.
+.It Fl \-attach Op Ar pid
+Show another arno's session in this terminal, and type into it.
+Needs a terminal.
+See
+.Sx ATTACH .
+.It Fl \-attach Fl l
+List the sessions that can be attached to: process id, owner, project
+root and title, a line each, parted by tabs; or
+.Ql "no sessions" .
+.It Fl h , \-help
+Print the usage and exit.
+Only as the first argument; anywhere else it is a word of the prompt.
+.El
+.Sh THE SCREEN
+The screen shows, from the top, the transcript, a rule, the input
+and the status line.
+Your messages, the model's, tool calls, notes and errors are told
+apart by colour.
+A tool call is one line until opened.
+The rule says what is going on: the model working, a question waiting
+for your key, or copy mode.
+.Pp
+A message is a turn, run on a thread of its own, so the screen stays
+live while the model works.
+A turn stops at the next read of the reply after you say so, not in
+the middle of a wait for the server.
+.Pp
+The keys are emacs's.
+The input is edited with the usual emacs keys for moving, deleting,
+killing and yanking, and grows to eight rows as you type.
+.Bl -tag -width "PgUp / PgDn" -compact
+.It RET
+Send.
+.It M-RET
+A new line in the input.
+Pasted text keeps its newlines.
+.It C-c
+Stop the turn; with none running, empty the input.
+.It C-d
+Quit, when the input is empty.
+.It S-Tab
+The next mode; see
+.Sx MODES .
+.It TAB
+Open or close the newest tool call.
+.It C-o
+Open or close every tool call.
+.It PgUp , PgDn
+Scroll the transcript by a page.
+.It S-Up , S-Down
+Scroll by a line.
+.It C-l
+Redraw.
+.It Up , C-p
+Recall the earlier input, on the input's first line.
+What you were typing waits at the bottom.
+.It Down , C-n
+Recall the later input, on its last line.
+.It M-p , M-n
+The earlier or later input that starts as the input does, up to the
+cursor.
+.It C-r
+Search earlier input, newest first, ignoring case: type to narrow, C-r
+again for an older match, Backspace to take a character off, C-g or Esc
+to put the input back as it was.
+Any other key keeps the match and does its usual work.
+.It C-x C-e
+Edit the input in
+.Ev VISUAL ,
+else
+.Ev EDITOR ,
+else
+.Xr vi 1 ;
+what you save comes back into the input.
+Under the input the file shows the last exchange, below the scissors
+line of
+.Ic git commit -v ,
+.Ql "# ------------------------ >8 ------------------------" :
+that line and all below it are dropped.
+Not while a turn runs.
+.It C-v
+Attach the image on the clipboard.
+Once
+.Xr xclip 1
+has found a PNG there, it is saved and an
+.Ql @
+reference to the file is typed at the cursor; otherwise the rule says
+why not.
+.It M-v
+Copy mode; see
+.Sx COPY MODE .
+.El
+.Pp
+Input is kept across runs, in
+.Pa ~/.local/share/arno/history .
+.Pp
+While a command or an
+.Ql @path
+is typed, what it may become is shown over the foot of the transcript:
+C-n, C-p and the arrows choose, TAB or RET takes the one chosen, and Esc
+hides the menu until the input changes.
+.Pp
+A question, a path outside the project, an edit, a program to run, takes
+over the rule: one of its keys answers.
+C-c, Esc or RET refuses.
+After a no to a change,
+.Nm
+asks
+.Ql "why not?" :
+RET gives the line you typed, and C-g or Esc leaves it empty.
+What you type goes to the model with the refusal, as
+.Ql "declined by user: keep the old name" ,
+so that it can try again knowing what was wrong.
+.Pp
+The mouse is not captured.
+.Sh COPY MODE
+Copy mode puts a cursor on the transcript, much as
+.Xr tmux 1
+does over a pane's scrollback, to move, search, select and copy.
+Enter it with M-v.
+New text arriving below does not move the view.
+.Pp
+Copying sets the system clipboard through the terminal with the OSC 52
+escape sequence, so it needs no helper program and works over
+.Xr ssh 1 ;
+a terminal that does not know it ignores it.
+A copied paragraph comes out as the one line it was, not as the rows it
+was wrapped into.
+Copying with nothing selected copies the cursor's line.
+.Pp
+The keys are emacs's, with vi's letters where emacs has none:
+.Bl -tag -width "C-SPC, v ; V" -compact
+.It C-b C-f C-p C-n
+Left, right, up, down; so do the arrows and h l k j.
+.It M-f , w
+A word on.
+.It M-b , b
+A word back.
+.It e
+To the end of the word.
+.It C-a , 0 , Home
+Start of the row.
+.It C-e , $ , End
+End of the row.
+.It M-m , ^
+First non-blank of the row.
+.It M-< , g
+First row.
+.It M-> , G
+Last row.
+.It M-v , PgUp
+A page back.
+.It C-v , PgDn
+A page on.
+.It C-u , C-d
+Half a page back, on.
+.It M-{ , {
+The paragraph before.
+.It M-} , }
+The paragraph after.
+.It C-SPC , v
+Select characters; V selects rows.
+.It C-x C-x , o
+Move the cursor to the selection's other end.
+.It RET , y , M-w , C-w
+Copy, and leave.
+.It C-s , /
+Search on; C-r or ? searches back; n again, N again the other way.
+.It C-g , Esc
+Drop the selection; with none, leave.
+.It q , C-c
+Leave.
+.El
+.Pp
+A word is a run of letters, digits and underscores, or of other marks.
+A search takes its text literally, ignores case, and goes round the ends
+of the transcript.
+Paragraph motions stop at blank rows, which fall between messages.
+.Sh PLAIN MODE
+In plain mode the model's text goes to standard output as it arrives.
+Everything else goes to standard error, a line each: each tool call as
+.Ql "\[u25B8] name arguments"
+and what came of it, a failure's first line or how many lines the result
+had; notes
+.Nm
+makes, as
+.Ql "arno: ..." ;
+and questions.
+A command's text goes to standard output, an error to standard error.
+.Pp
+A question is put on standard error, and answered by a line of standard
+input: the first byte of
+.Ql y ,
+.Ql n
+or, where it is offered,
+.Ql a
+for always.
+Anything else, and the end of the input, is no.
+After a no to a change the next line says why, and an empty line says
+nothing.
+With standard input a terminal, a
+.Ql "> "
+asks for each line.
+.Pp
+^C stops a turn, keeping what came, not the session.
+When a prompt on the command line has run,
+.Nm
+says on standard error
+.Ql "arno --resume ID PROMPT goes on from here" .
+.Pp
+In one-shot mode the stage's question (see
+.Sx THE STAGE )
+is answered the same way; if there is no one to answer, the diff is left
+in the scratch directory as
+.Pa stage.diff .
+.Sh COMMANDS
+Lines that start with a slash are commands for
+.Nm ,
+never sent to the model.
+.Bl -tag -width Ds
+.It Ic /help
+Commands and modes.
+.It Ic /new
+Start a new conversation, with an empty scratch directory.
+Drops the path grants and the declined changes.
+.It Ic /clear
+Trim the history to the first exchange, drop the path grants, forget the
+declined changes and empty the scratch directory.
+.It Ic /compact Op Ar focus
+Ask the model to summarize the conversation, then continue from that
+summary alone, as a new conversation titled after the old one with
+.Dq (compacted)
+appended.
+The full history stays saved under its old id; see
+.Ic /list .
+With
+.Ar focus ,
+the summary pays particular attention to it.
+Path grants are kept.
+If the request fails or is interrupted, nothing changes.
+.It Ic /list Op Ar word
+Recent conversations, the one changed last first, numbered, up to 20,
+filtered by title.
+A conversation not given a name with
+.Ic /rename
+is titled by the start of its first message.
+.It Ic /load Ar n | id | word
+Resume a conversation: a number from
+.Ic /list ,
+an id, or the one changed last whose title contains
+.Ar word .
+When the session is staged, the work the conversation left unapplied
+comes back into the copy; see
+.Sx THE STAGE .
+.It Ic /export Op Ar n | id
+Print a conversation, by default this one, as JSON.
+.It Ic /rename Ar title
+Name this conversation; with no title, clear the name.
+.It Ic /system Op Ar text | Cm \-
+Without an argument, show this conversation's own system prompt, or,
+when it has none,
+.Nm Ns 's
+own instructions.
+With
+.Ar text ,
+make that the conversation's own; with
+.Cm \- ,
+go back to
+.Nm Ns 's
+own.
+It is saved with the conversation and sent from the next request on.
+It takes the place of the instructions alone.
+What follows them stays: the working directory, the context files and
+project map, the scratch directory, the notes, the facts remembered, what
+.Nm
+says of itself, and the mode.
+.It Ic /mode Op Ar name
+Show or set the mode; see
+.Sx MODES .
+.It Ic /model Op Ar name
+Show or set the model.
+.It Ic /models
+List model names for the current provider, for
+.Ic /model
+to set: asked of the provider's server, else
+.Nm Ns 's
+own list.
+.It Ic /provider Op Ar name
+Show or set the provider; see
+.Sx PROVIDERS .
+Setting one drops the request parameters the configuration gave.
+.It Ic /tools
+List the tools on offer in this mode.
+.It Ic /usage
+This session's requests, tokens in and out, what reading from the
+provider's prompt cache saved, the cost and the price it was worked out
+at, and the context in use against the model's window.
+.It Ic /remember Oo # Ns Ar tag , Ns ... Oc Ar fact
+Remember
+.Ar fact
+for every future conversation, not just this one.
+.It Ic /forget Ar tag | word
+Forget the facts tagged with, or containing,
+.Ar word .
+.It Ic /my-memory Op Ar tag
+List what is remembered.
+.It Ic /notes Op Ic forget Ar n | word
+List the model's notes on this project, numbered (see
+.Sx Project notes ) ,
+or forget note
+.Ar n ,
+or every note containing
+.Ar word .
+.It Ic /test Op Ar command
+Run the project's test command with
+.Pa /bin/sh :
+.Ar command ,
+which becomes the project's from then on, else the one given before,
+else
+.Cm test_cmd .
+A project with a test command offers the model
+.Ic check .
+Success is only reported; a failure is put to the model, with the end of
+its output, as a turn asking what to fix.
+.It Ic /stage Op Ic on | off | drop
+Work on a copy of the project, each turn's changes coming as one diff to
+apply; see
+.Sx THE STAGE .
+.It Ic /quit
+Leave; so does
+.Ic /exit ,
+and C-d on an empty input.
+.El
+.Sh MODES
+A mode changes the instructions the model works under, and in two cases
+what it may do.
+S-Tab steps through them, and
+.Cm mode
+in the configuration chooses the first.
+.Bl -tag -width improve
+.It Cm chat
+Questions, explanations and small edits.
+The default: it answers what is asked, and proposes changes only when
+asked for one.
+.It Cm review
+Review what you name, else the uncommitted changes, and report problems
+by severity with
+.Ar path : Ns Ar line .
+Offered no tool that changes files, and no
+.Ic shell .
+.It Cm improve
+Propose a few concrete simplifications, each with a reason.
+Offered no tool that changes files, and no
+.Ic shell .
+.It Cm pair
+Build a feature with you: ask when the goal is unclear, plan, then edit
+in small steps, stopping after each.
+.El
+.Pp
+.Nm
+describes itself to the model, its commands and modes and where the
+configuration is, so you can ask it how to do something in
+.Nm .
+.Sh ATTACHMENTS
+Words starting with
+.Ql @
+in a message attach context.
+The transcript shows the message as typed; the model gets the
+attachments too.
+An
+.Ql @
+starts a reference only at the start of the text or after a blank or an
+opening parenthesis, so an email address is left alone.
+.Bl -tag -width Ds
+.It @ Ns Ar path
+The file.
+.It @ Ns Ar path : Ns Ar from Ns - Ns Ar to , @ Ns Ar path : Ns Ar line
+Those lines of it.
+.It @ Ns Ar dir Ns /
+A listing of the directory, a name a line, a subdirectory with a slash.
+.It @ Ns Qq Ar path
+The same, for a path with spaces in it; the range, if any, follows the
+closing quote.
+An unquoted path ends at the next space.
+There are no escapes in the quotes.
+.It @ Ns Ar image
+An image, a
+.Pa .png , .jpg , .jpeg , .gif
+or
+.Pa .webp ,
+for a model that can see.
+.El
+.Pp
+A file mentioned twice is attached once.
+A file that cannot be read, or holds a NUL byte, is not attached.
+Attachments are what you ask for, so they are not subject to
+.Sx THE PATH FENCE .
+.Sh CONTEXT FILES
+At the first turn
+.Nm
+looks for
+.Pa AGENTS.md
+and
+.Pa CLAUDE.md
+in your home directory,
+.Pa ~/.claude ,
+and every directory from just below home down to the working directory,
+so that a file in a parent of several projects counts for each of them.
+Outside your home directory it looks in
+.Pa ~ ,
+.Pa ~/.claude ,
+the project root and the working directory.
+It lists what it found and asks once whether to send them; if you say
+yes, they go into every request of the session as standing
+instructions, the more general first and the more specific last, where
+they read as the last word.
+Set
+.Cm context_files
+to skip the question.
+Asking is the default because a context file comes with a repository,
+not from you, and what it names may be anywhere on the disk.
+.Pp
+A context file can pull in others by naming them with
+.Ql @ ,
+as in
+.Ql "See @docs/style.md" :
+relative to the file that names them, or to your home directory with
+.Ql @~/ ,
+to five levels.
+The list you are asked about includes every import.
+.Pp
+Context files are not part of the conversation, so
+.Ic /clear ,
+.Ic /compact
+and
+.Ic /load
+keep them.
+.Sh AHEAD OF TIME
+Some of what a model would search for,
+.Nm
+can tell it before it asks, by fixed rules, with no model involved.
+Each kind works only inside a project with a version-control directory;
+outside one the project is the bare working directory, which may be your
+home.
+.Ss The project map
+At the first turn
+.Nm
+surveys the project's files and puts a map of about thirty lines into
+every request of the session: the number of files at the top level and
+in each top-level directory, up to fourteen, each with its three
+commonest extensions; the build files and manifests; where the tests
+are; and the first paragraph of the top-level README.
+It is made once, so a file added during the session is not on it.
+Hidden files are not counted.
+Set
+.Cm project_map
+to
+.Ql no
+to turn it off.
+.Ss Prefetch
+Before a message goes out,
+.Nm
+looks for names of code in what you typed: a word in backticks, or one
+shaped like code.
+It looks up the first five found as
+.Ic def
+would, and attaches the definition of each one that has exactly one,
+three at most, as if you had attached those lines with
+.Ql @ .
+Each shows in the transcript under your message as the
+.Ic def
+call it saves the model from making.
+Set
+.Cm prefetch
+to
+.Ql no
+to turn it off.
+.Ss Project notes
+What one session finds by searching, the next would otherwise search for
+again.
+The model keeps such findings with the
+.Ic note
+tool, a line each: where a feature lives, a layout it did not expect,
+how to build.
+Every request carries the project's notes, kept by project root, thirty
+at most; with thirty, a new note is refused.
+A note that names paths, none of which exist any more, is dropped, and
+you are told.
+.Pp
+A note is written without asking, as it changes nothing in the project,
+but it shows in the transcript, and
+.Ic /notes
+lists and forgets them.
+When staged, the notes a turn kept come with its diff, as lines starting
+.Ql "# note:" ,
+since a wrong note misleads every later session and the diff is where
+you look.
+Look at them after working in a repository you do not trust: a file
+there could have talked the model into a note, and a note outlives the
+session.
+.Sh TOOLS
+The model can call these on its own.
+Each call shows in the transcript, and TAB opens it.
+Calls of
+.Ic read , find , grep , def , outline , git , search
+and
+.Ic fetch
+that repeat one already made in the same turn, arguments and all, are
+not run: the model is told it already has the answer.
+.Bl -tag -width Ds
+.It Ic read
+A file, each line numbered, in part if asked: up to 2000 lines from a
+line.
+.It Ic find
+Files by glob, matched against the file's name and each directory's on
+its path, or the whole path when the glob holds a
+.Ql / .
+Hidden names, and what
+.Pa .gitignore
+and
+.Pa .ignore
+files exclude, are left out; so are binary files.
+.It Ic grep
+A fixed text, not a pattern, in one file or a tree, choosing files as
+.Ic find
+does.
+With
+.Ar context ,
+that many lines either side of each match, up to 10.
+.It Ic def
+Where a name is defined, and the whole definition with the comment above
+it, numbered as
+.Ic read
+numbers lines; at most ten, over a file or a tree.
+.It Ic outline
+The declarations of a file or a tree, a numbered line each; in Markdown,
+the headings.
+.Pp
+Both know declarations by their shape, with no parser: a line that
+starts, past modifiers such as
+.Li export
+or
+.Li static ,
+with a declaring word
+.Pq Li function , proc , procedure , class , def , fn , type , No ... ,
+or a signature followed by its body.
+A definition ends where the indentation comes back to its own.
+A shape outside these goes unseen, and the model is told to grep
+instead.
+.It Ic git
+Read-only
+.Cm status , diff , log , show , blame ,
+.Cm branch
+(listing only),
+.Cm merge-base , ls-tree
+and
+.Cm rev-list ,
+run without a shell.
+Options that would write files, run external diff or textconv
+programs, or compare files outside the repository are refused.
+.It Ic edit
+An exact, unique replacement, or a new file.
+Its diff is shown and needs your yes.
+.It Ic move , remove
+Rename or delete one file, with your yes.
+Never a directory, and never onto a file that exists.
+.It Ic check
+The project's test command, as set by
+.Ic /test
+or
+.Cm test_cmd ;
+the model gets the verdict and the end of the output.
+It takes no arguments, so it runs only what you typed yourself, and
+without asking.
+Offered only when there is a command.
+See
+.Sx CAVEATS .
+.It Ic run
+One of the programs
+.Cm run
+names; see
+.Sx RUN AND TRUST .
+.It Ic shell
+A command line, run in the jail, in the stage's copy of the project; see
+.Sx THE JAIL .
+Offered only while the stage is up and the jail can run.
+.It Ic note
+A line kept for later sessions on this project; see
+.Sx Project notes .
+Offered only inside a project.
+.It Ic search
+The web, through a SearXNG instance, as titles, URLs and snippets only;
+the model is told to read two or three of the pages with
+.Ic fetch .
+Offered only when
+.Cm searxng
+is set.
+.It Ic fetch
+A web page, by its URL, as text: its title, then its text as a text
+browser shows it, scripts and styles left out; a plain-text, JSON or
+Markdown body as it is.
+.Li http:
+and
+.Li https:
+only.
+.It Ic delegate
+One self-contained step of a larger job, given to a worker: a
+conversation of its own on the model
+.Cm worker
+names, with the brief, the reports of earlier workers of the turn (the
+newest four) and the tools of the session less
+.Ic delegate .
+Only its report goes back to the model.
+Offered only when
+.Cm worker
+is set.
+.It MCP tools
+Whatever the configured MCP servers offer, each named
+.Ar server Ns _ Ns Ar tool ;
+see
+.Sx MCP .
+.It A host's tools
+The ones a program that runs
+.Nm Fl \-serve
+gave; see
+.Sx SERVE .
+.El
+.Pp
+In
+.Cm review
+and
+.Cm improve
+modes,
+.Ic edit , move , remove
+and
+.Ic shell
+are not offered.
+.Pp
+After a no to any of these questions,
+.Nm
+asks
+.Ql "why not?" ;
+what you type goes to the model with the refusal.
+A change you declined, proposed again unchanged, is not put to you
+again: the model is told your first answer instead.
+.Ic /clear , /new
+and
+.Ic /load
+forget what was declined.
+.Pp
+A turn takes at most 30 steps of tool calls, or
+.Cm max_steps .
+Then the model is asked, with no more tools to run, to say what is done,
+what it found and what it will do next, so that a long turn ends in
+something you can read.
+Four steps in a row in which every call failed end the turn the same
+way, sooner; so does a turn that has spent
+.Cm turn_budget .
+.Pp
+A result is cut at 32000 bytes.
+Old long results are cut from the history, in the saved conversation
+too, once it passes
+.Cm prune
+bytes.
+.Sh THE PATH FENCE
+The file tools
+.Po
+.Ic read , find , grep , def , outline , edit , move , remove ,
+and paths given to
+.Ic git
+or
+.Ic run
+.Pc
+reach, without asking, only the project: the nearest directory, at most
+two levels above the working directory, that holds
+.Pa .git ,
+.Pa .sauce ,
+.Pa .hg ,
+.Pa .jj
+or
+.Pa .svn ,
+or else the working directory itself, with everything below it.
+Paths are compared after every symbolic link is followed, so neither
+.Pa ../..
+nor a link pointing out of the project gets past.
+.Pp
+For anything else you are asked, with three answers:
+.Bl -tag -width Ds -compact
+.It y
+This once.
+.It n
+No; also what RET, Esc and C-c mean.
+.It a
+Always: that path and everything below it, or for a file, the directory
+that holds it (never
+.Pa /
+or your home directory, where it stays the file), until
+.Ic /clear ,
+.Ic /new
+or
+.Ic /load .
+.El
+.Pp
+The
+.Cm grant
+key is accepted but not read in this
+.Nm ;
+answer always instead.
+.Ss The scratch directory
+Each conversation has a directory of the model's own,
+.Pa ~/.cache/arno/scratch/ Ns Ar id ,
+for fixture trees, throwaway files and output to compare, which would
+otherwise go into the project or ask to leave it.
+The system prompt names it.
+It is inside the fence, and more:
+.Ic edit ,
+.Ic move
+and
+.Ic remove
+there are not asked about, since nothing of yours is there.
+A path that resolves out of it, through a link the model's code left
+there, is judged as any other.
+.Ic check , run
+and
+.Ic shell
+get its path as
+.Ev ARNO_SCRATCH .
+.Pp
+It lasts as long as its conversation:
+.Ic /load
+brings it back,
+.Ic /compact
+takes it along,
+.Ic /clear
+empties it and
+.Ic /new
+starts another.
+At start-up those whose conversation is no longer saved, and that have
+not changed in a day, are removed.
+.Sh THE STAGE
+Staged, with
+.Ic /stage on
+or
+.Ql "stage = on"
+in the configuration,
+.Nm
+moves into a copy of the project, a
+.Xr git-worktree 1
+in
+.Pa ~/.cache/arno/stage/ Ns Ar pid ,
+and makes it the zone.
+There, as in the scratch directory, the model's edits are not asked
+about one by one,
+.Ic check
+builds and tests the copy, and your tree is not touched.
+.Ic shell
+is offered there.
+When a turn ends with anything changed, you are asked once, with the
+whole diff: yes applies it to your tree, no keeps it in the copy, to be
+offered again, with whatever comes next, after the following turn.
+The diff is also written to the scratch directory as
+.Pa stage.diff ,
+for a run with no one to answer; it is removed once applied or dropped.
+.Pp
+The copy starts from your tree as it is, not from the last commit: your
+uncommitted changes and new files come along, and the diff holds only
+the model's work.
+Ignored files, such as build output, stay behind.
+Applying is
+.Xr git-apply 1 ,
+all or nothing: if you changed one of the same lines meanwhile, nothing
+is applied and the work stays in the copy.
+git's hooks are not run, nothing is committed, and the copy is removed
+when
+.Nm
+leaves.
+It needs a git repository with at least one commit.
+A project under other version control has no stage.
+.Pp
+The copy's own
+.Pa .git
+file, which points at its git directory, is the model's to write only
+with approval, since git reads settings from it that run programs.
+.Pp
+The pending work belongs to the conversation:
+.Fl \-resume
+or
+.Ic /load ,
+staged, bring it back into the new copy from
+.Pa stage.diff ,
+to be offered again after the next turn, unless that copy already holds
+changes of its own.
+.Pp
+.Ic /stage
+with no argument says whether the session is staged and offers what the
+copy holds.
+.Ic /stage drop
+discards that, putting the copy back as it was when last applied.
+.Ic /stage off
+leaves the copy once nothing is pending.
+.Ic /stage on
+and
+.Ic /stage off
+are remembered for the project, in
+.Pa stage.json :
+its next session starts the same way, whatever
+.Cm stage
+says.
+.Pp
+A copy whose
+.Nm
+was killed by a signal or crashed is removed as the next one is made.
+.Sh THE JAIL
+.Ic shell
+runs a command line with
+.Pa /bin/sh
+.Fl c
+in the stage's copy, inside a sandbox made of Linux's unprivileged
+namespaces, with no root and no helper program:
+.Bl -tag -width "mount" -compact
+.It user
+The same uid and gid as outside, with no power over what it does not own
+and no way to gain any.
+.It mount
+The whole file tree read-only, except the copy, the scratch directory,
+and a fresh
+.Pa /tmp ,
+.Pa /dev/shm
+and
+.Pa /run .
+The places a login keeps its keys look empty.
+.It net
+No network at all, not even the loopback interface.
+.It pid
+The command sees only its own processes; when its first one ends, or
+the time runs out, all are killed.
+.It ipc
+No shared memory or queues shared with the rest.
+.El
+.Pp
+It gets no input, no terminal and no display, and its environment is cut
+to
+.Ev PATH , HOME , USER , LOGNAME , LANG ,
+every
+.Ev LC_*
+and
+.Ev TZ ,
+with
+.Ev TERM Ns = Ns Li dumb ,
+.Ev TMPDIR Ns = Ns Li /tmp
+and
+.Ev ARNO_SCRATCH .
+Your environment holds your keys, and none of them reach it.
+.Pp
+It runs without asking, since the sandbox is the fence.
+Its arguments are
+.Ar command
+and
+.Ar timeout ,
+in seconds: 120 by default, 600 at most.
+The model gets
+.Ql "exit N: COMMAND" ,
+.Ql "timed out after N s: COMMAND"
+or
+.Ql "killed: more than 4 MB of output; the last of it:" ,
+then the end of the output.
+A command that runs past its timeout is killed, as is one that prints
+more than 4 MB; ^C stops one that runs.
+A sandbox that cannot be made is an error, never a command run outside
+it.
+.Pp
+.Ic shell
+is offered only while the stage is up, where the jail can run, and not in
+.Cm review
+or
+.Cm improve
+mode or with
+.Ql "shell = no" .
+A call of it when it is not on offer is refused:
+.Ql "error: shell is not on offer" .
+In your own tree it could rewrite
+.Pa .git
+or the Makefile, which git and
+.Ic check
+then run outside the sandbox, with no diff shown.
+.Pp
+The jail needs Linux 5.12 or later, with unprivileged user namespaces
+enabled, on x86_64; where it cannot run, the tool is not offered.
+.Sh RUN AND TRUST
+.Ic run
+starts one of the programs the
+.Cm run
+key names, with the model's arguments, and gives back its exit status
+and output.
+There is no shell: the arguments go to the program as they are, so
+there is nothing to quote and no pipe or redirection.
+The program gets no input, no terminal and no display
+.Pq Ev DISPLAY , WAYLAND_DISPLAY No are unset ,
+so one that wants a person fails at once instead of waiting; ^C stops
+one that runs on.
+It sees
+.Ev ARNO_SCRATCH .
+It is not jailed.
+.Pp
+Each call shows the command and asks.
+.Ql a
+runs it and allows that program without asking until
+.Ic /clear , /new
+or
+.Ic /load .
+Programs named by
+.Cm trust
+start without asking, as if answered always; their arguments are still
+held to the fence.
+Several commands may go in one call, parted by a lone
+.Ql \&; :
+one question names the programs not yet trusted, and the commands run
+one after another, each result under its command line.
+Environment variables go in
+.Ql env ,
+but only the names
+.Cm run_env
+lists.
+.Pp
+The program is your choice; its options are the model's.
+List only programs that cannot be talked into running others:
+never a shell, an interpreter,
+.Xr env 1
+or
+.Xr xargs 1 .
+Three kinds of argument are refused whatever the program:
+.Bl -bullet
+.It
+Any option to
+.Xr man 1 :
+it takes a section and a page, and nothing else.
+.Ql "man --html=PROGRAM"
+runs any browser it is named, even with no terminal, and its pager
+option runs a pager of the caller's naming, so no option can be allowed.
+.It
+.Fl x ,
+.Fl X ,
+.Fl \-exec
+and
+.Fl \-exec\-batch
+to
+.Xr fd 1 ,
+which run any program for each file found.
+.It
+A path glued to an option without an
+.Ql = ,
+as in
+.Fl o Ns Pa ../x.png :
+the fence judges words, and would not see it.
+.El
+.Pp
+Every other argument is checked against
+.Sx THE PATH FENCE ,
+an option's after its
+.Ql = .
+For the programs
+.Cm run_ro
+lists, those that only read, only the arguments that are files or
+directories are held to the fence, as for
+.Ic git ,
+so a pattern such as
+.Ql /src$
+asks nothing.
+.Sh MCP
+MCP, the Model Context Protocol, lets
+.Nm
+offer a model tools it does not carry.
+A server is any program that speaks it over standard input and output.
+Each
+.Cm mcp
+line of the configuration,
+.Ql "mcp = NAME COMMAND ARG ..." ,
+names one; the
+.Ql =
+is required.
+.Nm
+starts each as the session begins, shakes hands, asks for its tools, and
+offers each as
+.Ar NAME Ns _ Ns Ar TOOL ,
+in every mode.
+A byte a provider would not take in a name becomes
+.Ql _ ,
+and a name is cut at 64 bytes.
+.Pp
+Every call is asked about, with the arguments shown (cut at 300 bytes),
+and runs only on a yes; MCP tools are not fenced and not subject to a
+host's list of builtins.
+A server runs in a process group of its own, so that ^C stops the turn and
+not the server; its standard error is thrown away.
+A server that does not answer when it starts is given up on.
+What goes wrong with one is shown, and the rest are attached.
+At the end every server is closed and any left is killed.
+.Pp
+A result's content blocks are joined: a text block as it is, any other
+as its type in brackets.
+A server's own error makes the result start with
+.Ql error .
+Not followed: pagination of the tool list, resources, prompts, a server's
+requests of
+.Nm ,
+and servers over HTTP.
+.Sh SERVE
+With
+.Fl \-serve ,
+.Nm
+runs one session for the program that started it, a word processor say,
+which shows the conversation in its own way and may give the model tools
+of its own.
+The two talk over
+.Nm Ns 's
+standard input and output in messages, each a netstring holding a run of
+netstrings: the program sends
+.Cm hello
+first, with its name, the project root and its tools, then lines of
+input, cancels, answers to questions and the results of its tools;
+.Nm
+sends what the terminal would have shown, and asks the program
+everything it would have asked you: an edit, a path outside the project, a
+program to run, a call of an MCP tool, the stage's diff.
+A refusal may come with its reason, which the model reads as it would
+yours.
+The whole protocol is in
+.Xr arno-peer 5 .
+.Pp
+Nothing else is written to standard output, which becomes a copy of
+standard error, so that nothing a tool or a library prints can land in
+the middle of a message.
+The session works in the root
+.Cm hello
+names, and fences tools to the project found from there.
+.Cm hello
+may withhold builtin tools, which the model then neither sees nor can
+call.
+The session ends when the program says
+.Cm bye
+or closes the pipe, with status 0, and its stage's copy is removed.
+.Sh ATTACH
+Every
+.Nm
+on a terminal, and every one run with
+.Fl \-serve ,
+is a session others can watch.
+.Nm
+.Fl \-attach
+shows one in this terminal: the transcript so far, then everything as it
+happens, on the same screen with copy mode and all.
+What you type goes to the session as if typed there, and C-c stops its
+turn.
+Questions stay with the session's owner, its terminal or the program
+driving it; while one waits, the status line here says so, and the answer
+shows in the tool call's result.
+.Pp
+With a
+.Ar pid ,
+that session is shown; without one, a session working in this directory,
+else the newest.
+.Fl l
+lists the sessions instead.
+.Ic /quit ,
+.Ic /exit
+and C-d leave the session running.
+.Pp
+A viewer that falls more than a megabyte behind is dropped, so a stuck
+terminal never holds up the session.
+The socket is
+.Pa $XDG_RUNTIME_DIR/arno/ Ns Ar pid Ns .view ,
+or, with no such directory,
+.Pa run/
+in
+.Nm Ns 's
+cache; its directory is mode 700, and a connection from another user is
+dropped.
+.Sh CONFIGURATION
+.Pa ~/.config/arno/config
+holds
+.Ar key No = Ar value
+lines; blank lines, lines starting with
+.Ql #
+and lines with no
+.Ql =
+are ignored.
+Blanks around either part are dropped.
+A key given twice is the last one's, except
+.Cm mcp ,
+which is given once for each server.
+Put
+.Cm provider
+first, since it resets the other provider settings.
+What is wrong with the file, an unknown provider or a number that is not
+one, is shown as a warning at start-up, a line each, and the rest is read
+as if the line were not there.
+.Bl -tag -width "context_window"
+.It Cm provider
+One of the names under
+.Sx PROVIDERS .
+.It Cm model
+The model's name, as the provider knows it.
+.It Cm url
+The API's base URL, to override the provider's.
+.It Cm key
+The name of the environment variable holding the API key, not the key
+itself.
+.It Cm dialect
+.Cm openai
+or
+.Cm anthropic :
+the wire format of the API at
+.Cm url .
+.It Cm timeout
+Seconds a request may take in all; 0 for no limit.
+.It Cm max_retries
+Times a request whose connection failed is made again; 0 by default.
+.It Cm retry_backoff
+Seconds before the first retry, doubled each time; 2 by default.
+.It Cm effort
+Reasoning effort per model, as
+.Ar model : Ns Ar level
+pairs separated by blanks, such as
+.Ql "kimi-k3:high deepseek-v4-pro:high" ;
+sent in place of
+.Cm reasoning_effort
+when that model is the one in use.
+.It Cm mode
+The mode a session starts in.
+.It Cm worker
+The model
+.Ic delegate Ns 's
+workers run on, on the same provider.
+Without it
+.Ic delegate
+is not offered.
+.It Cm max_steps
+Steps of tool calls a turn takes before it hands back; 30 by default.
+.It Cm prune
+Bytes of history past which old tool results are cut, 200000 by default;
+0 never cuts.
+.It Cm turn_budget
+Dollars at list price one turn may spend, workers included; past it the
+model is asked to say where it got to and stop.
+Unset, or 0, is no limit.
+.It Cm searxng
+The base URL of a SearXNG instance for
+.Ic search .
+SearXNG disables JSON output by default; add
+.Ql json
+under
+.Cm search: formats:
+in its
+.Pa settings.yml .
+.It Cm test_cmd
+What
+.Ic /test
+and
+.Ic check
+run in a project
+.Ic /test
+has not been given a command for.
+.It Cm stage
+.Ql on
+starts a session staged in every project that neither
+.Ic /stage on
+nor
+.Ic /stage off
+has been given in.
+.It Cm shell
+.Ql no
+withdraws the
+.Ic shell
+tool; it is offered otherwise, while the stage is up.
+.It Cm run
+Program names, separated by blanks, that
+.Ic run
+may start; none by default.
+.It Cm run_ro
+Of those, the ones that only read; see
+.Sx RUN AND TRUST .
+.It Cm run_env
+Environment variable names that
+.Ic run
+may set for its programs; none by default.
+.It Cm trust
+Of the programs
+.Cm run
+names, those that start without asking.
+.It Cm context_files
+.Cm ask ,
+the default,
+.Cm yes
+or
+.Cm no :
+whether to ask before sending the context files, send them without
+asking, or never look for them.
+.It Cm project_map , prefetch
+.Cm no
+turns off the map or the prefetch; both are on by default.
+.It Cm mcp
+A name, then the command that runs an MCP server; one line for each.
+.It Cm price
+.Ar in out Op Ar cached :
+dollars per million tokens of input, output and input read from the
+provider's cache, which defaults to a tenth of
+.Ar in .
+Overrides the built-in price of the configured model.
+.It Cm context_window
+The model's context window in tokens, for the status line.
+.El
+.Pp
+The keys
+.Cm keys , cache_tools , cache_ttl , find_cmd , grep_cmd
+and
+.Cm grant
+are the Pascal arno's.
+They are accepted, so that its file reads, and ignored.
+.Pp
+Any other key is passed to the provider as a request parameter, such as
+.Cm temperature , top_p , max_tokens
+or
+.Cm reasoning_effort .
+.Pp
+A reasoning model's thinking is not shown, but it is kept for the rest of
+the turn and sent back with each tool result, since some models lose the
+thread without it.
+It is dropped once the turn ends and never saved.
+.Sh PROVIDERS
+.Bl -column "ollama-cloud" "anthropic" "ANTHROPIC_API_KEY" "claude-sonnet-5-5"
+.It Em name Ta Em dialect Ta Em key variable Ta Em model
+.It Cm ollama Ta openai Ta none Ta deepseek-v4.1-flash:cloud
+.It Cm ollama-cloud Ta openai Ta Ev OLLAMA_API_KEY Ta deepseek-v4.1-flash
+.It Cm openai Ta openai Ta Ev OPENAI_API_KEY Ta gpt-5
+.It Cm gemini Ta openai Ta Ev GEMINI_API_KEY Ta gemini-3.8-flash
+.It Cm claude Ta anthropic Ta Ev ANTHROPIC_API_KEY Ta claude-sonnet-5-5
+.El
+.Pp
+The default is
+.Cm ollama ,
+whose local daemon forwards a
+.Ql :cloud
+model to Ollama Cloud once
+.Ql "ollama signin"
+has been run.
+The last column is each preset's default model.
+.Pp
+Claude caches a prompt only where asked, so
+.Nm
+marks the end of the system prompt and the newest message; each step of a
+turn then reads the conversation so far from the cache.
+The other providers cache on their own.
+.Sh USAGE AND COST
+The status line shows how full the context is and what the session has
+used:
+.Bd -literal -offset indent
+arno \(pc chat \(pc claude-sonnet-5-5 @ claude \(pc ctx 23.4k/1.0M 2% \(pc in 120k out 4.2k \(pc $0.121
+.Ed
+.Pp
+.Ql ctx
+is what the conversation filled at its last request, out of the model's
+window where that is known; until the next request after
+.Ic /new , /clear , /load
+or
+.Ic /compact
+it is a guess, marked
+.Ql ~ .
+Past 60% of the window a
+.Ql /compact
+reminder joins it.
+.Ql in
+and
+.Ql out
+add up every request this run has made, tool steps included: each step
+resends the whole conversation, so
+.Ql in
+grows much faster than
+.Ql ctx .
+.Pp
+The cost is at list price, from a table of the models
+.Nm
+knows, which is kept by hand and falls behind; the provider's own bill has
+the last word.
+A
+.Ql +
+means some requests went to a model with no known price and are left out.
+A model run locally by Ollama is free, so only tokens are shown.
+Off-peak discounts are not applied.
+For a model the table lacks, or a price that has moved, set
+.Cm price
+and
+.Cm context_window .
+.Sh EXIT STATUS
+.Nm
+exits 0 for a reply or a session that ended, 1 for a failed request or a
+conversation not found, 2 for a mistake on the command line, and 130 for a
+turn stopped by ^C.
+On the screen, and with
+.Fl \-serve ,
+it exits 0 when it ends in the ordinary way.
+.Pp
+.Fl \-attach
+exits 1 when there is no session to attach to or no terminal to use.
+.Sh ENVIRONMENT
+.Bl -tag -width XDG_RUNTIME_DIR
+.It Ev XDG_CONFIG_HOME
+Where the configuration lives, instead of
+.Pa ~/.config .
+.It Ev XDG_DATA_HOME
+Where conversations and memory live, instead of
+.Pa ~/.local/share .
+.It Ev XDG_CACHE_HOME
+Where scratch directories and the stage live, instead of
+.Pa ~/.cache .
+.It Ev XDG_RUNTIME_DIR
+Where the session sockets and pasted images are made.
+.It Ev VISUAL , EDITOR
+The editor C-x C-e runs, the first one set; else
+.Xr vi 1 .
+.It Ev ARNO_SCRATCH
+Set by
+.Nm
+for
+.Ic run , check
+and
+.Ic shell ,
+to the conversation's scratch directory.
+.It Ev OLLAMA_API_KEY , OPENAI_API_KEY , GEMINI_API_KEY , ANTHROPIC_API_KEY
+API keys, as named by the provider or by
+.Cm key .
+.El
+.Sh FILES
+.Bl -tag -width Ds -compact
+.It Pa ~/.config/arno/config
+The configuration.
+.It Pa ~/.local/share/arno/history
+Input history, one entry a line, newest last.
+.It Pa ~/.local/share/arno/ Ns Ar yyyymmdd-hhmmss Ns .json
+One conversation each, as the Pascal arno wrote it.
+Beside the messages,
+.Ql turns
+keeps a record of each turn.
+.It Pa ~/.local/share/arno/memory.json
+Remembered facts.
+.It Pa ~/.local/share/arno/notes.json
+Each project's notes, by project root.
+.It Pa ~/.local/share/arno/tests.json
+Each project's test command, by project root.
+.It Pa ~/.local/share/arno/stage.json
+Whether each project starts staged, as
+.Ic /stage on
+or
+.Ic /stage off
+last left it, by project root.
+.It Pa ~/.local/share/arno/lock
+Locked while one session changes the files above, so that two sessions at
+once keep each other's changes.
+Each of those files is written whole and renamed into place.
+.It Pa ~/.cache/arno/scratch/ Ns Ar id
+Each conversation's scratch directory, and in it
+.Pa stage.diff ,
+what the stage last offered.
+.It Pa ~/.cache/arno/stage/ Ns Ar pid
+The stage's copy of the project, while a session is staged.
+.It Pa $XDG_RUNTIME_DIR/arno/ Ns Ar pid Ns .view
+The session's socket, which
+.Fl \-attach
+talks to.
+.It Pa $XDG_RUNTIME_DIR/arno- Ns Ar pid Ns /
+The images C-v took off the clipboard, until the session ends; in
+.Pa /tmp
+when
+.Ev XDG_RUNTIME_DIR
+is unset.
+.It Pa AGENTS.md , CLAUDE.md
+Context files.
+.El
+.Sh EXAMPLES
+Ask one question and print the answer:
+.Pp
+.Dl $ arno 'where is Match defined?'
+.Pp
+Go on with the conversation that turn saved:
+.Pp
+.Dl $ arno \-\-resume 1 'now fix it'
+.Pp
+Use Claude, with a lower temperature and a test command, in
+.Pa ~/.config/arno/config :
+.Bd -literal -offset indent
+provider    = claude
+model       = claude-opus-5-5
+temperature = 0.3
+test_cmd    = make test
+.Ed
+.Pp
+Work on a copy of every project, and let the model read manuals and
+draw:
+.Bd -literal -offset indent
+stage = on
+run   = tiza arkusz man
+trust = man
+.Ed
+.Pp
+An MCP server, and a second model for workers:
+.Bd -literal -offset indent
+mcp    = files npx files-server /tmp
+worker = deepseek-v4.1-flash
+.Ed
+.Pp
+Watch, from a second terminal, the arno working in this directory, or
+list the sessions and pick one:
+.Bd -literal -offset indent
+$ arno \-\-attach
+$ arno \-\-attach \-l
+$ arno \-\-attach 4242
+.Ed
+.Pp
+Messages that attach context:
+.Bd -literal -offset indent
+Why does this fail? @src/parse.raz:120-160
+Any left? @src/
+Look at @"my notes/todo.md"
+.Ed
+.Sh SEE ALSO
+.Xr arno-peer 5 ,
+.Xr git 1 ,
+.Xr git-worktree 1 ,
+.Xr man 1 ,
+.Xr tmux 1 ,
+.Xr xclip 1
+.Sh CAVEATS
+While the stage is up,
+.Ic check
+and a trusted
+.Ic run
+program execute files in the copy, which the model has edited without
+approval, and they run outside the jail.
+A model that writes a Makefile can make the next
+.Ic check
+run what it wrote.
+Look at the diff before you apply it.
+.Pp
+The jail confines its command with Linux's unprivileged namespaces, and
+that has limits.
+The command can read every file you can, but for a fixed list of places
+where secrets live:
+.Pa ~/.ssh , ~/.gnupg , ~/.password-store , ~/.aws , ~/.azure ,
+.Pa ~/.kube , ~/.docker , ~/.claude , ~/.config/gcloud , ~/.config/gh ,
+.Pa ~/.local/share/keyrings , ~/.mozilla , ~/.config/chromium ,
+.Pa ~/.config/google-chrome , ~/.netrc , ~/.git-credentials ,
+.Pa ~/.npmrc , ~/.pypirc
+and
+.Pa ~/.cargo/credentials.toml ;
+a secret kept anywhere else is readable.
+It can connect to a Unix socket outside
+.Pa /tmp , /dev/shm
+and
+.Pa /run ,
+which are its own.
+It has no network, so installing packages fails; do that yourself before
+staging.
+.Pp
+The stage's copy is removed when
+.Nm
+ends in the ordinary way, but not on SIGTERM or SIGHUP; the next stage
+sweeps it.
+.Pp
+A turn stops at the next read of the reply, not in the middle of a wait
+for the server.
+.Pp
+Copying needs a terminal that honours OSC 52; others ignore it silently.
+.Pp
+Widths are counted in characters, so East Asian wide characters and
+combined emoji can misalign the screen.

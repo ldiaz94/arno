@@ -1,0 +1,540 @@
+.Dd October 28, 2026
+.Dt ARNO-PEER 5
+.Os
+.Sh NAME
+.Nm arno-peer
+.Nd the messages a program speaks to an arno session
+.Sh DESCRIPTION
+An
+.Xr arno 1
+session can be driven or watched by another program.
+There are two ways in, and one language for both:
+.Bl -tag -width "a viewer"
+.It "a host"
+starts
+.Ql "arno --serve"
+as a child and talks to it over the child's standard input and output.
+It owns the session: it types the lines, answers the questions, and may give
+the model tools of its own.
+A word processor and a window around arno are hosts.
+.It "a viewer"
+connects to the session's socket, and sees what the session shows.
+It may type lines and stop the turn, but it is never asked a question.
+.Ql "arno --attach"
+is one.
+.El
+.Pp
+This page is the protocol: the framing, then the host's side, then the
+viewer's.
+The text of what the model and the tools say is in
+.Xr arno 1 ;
+here are only the messages that carry it.
+.Sh FRAMING
+Every message, in both directions, is one netstring whose contents are a run
+of netstrings, the verb first.
+A netstring is a length in decimal, a colon, that many bytes and a comma:
+.Ql 5:hello, .
+So the message
+.Cm line
+with the text
+.Ql hi
+is
+.Bd -literal -offset indent
+12:4:line,2:hi,,
+.Ed
+.Pp
+and a message with an empty field, such as the answer
+.Cm ok
+with three, is written with
+.Ql 0:, .
+Numbers inside messages are decimal text.
+.Pp
+A length of more than nine digits, or of more than 64 MiB, is malformed, and
+so is a message whose netstrings do not fill it exactly.
+Whoever reads one cannot read on: a host is told
+.Cm error ,
+and the session ends; a viewer is dropped.
+.Pp
+Bytes are not interpreted: a field holds whatever text it holds, newlines and
+all.
+.Sh THE HOST
+.Ss Starting
+The host runs
+.Ql "arno --serve" ,
+which takes no other argument, with pipes for standard input and output.
+Standard error is left for crashes.
+Nothing but messages is written to the host's pipe:
+.Nm arno
+moves its own standard output to a copy of standard error, so that nothing a
+tool prints can land in the middle of a message.
+.Pp
+The session ends when the host says
+.Cm bye
+or closes the pipe, and
+.Nm arno
+exits with status 0.
+A host that goes away while a question waits refuses it.
+.Pp
+Messages that come before
+.Cm hello
+are answered with
+.Cm error
+.Ql "hello first" .
+Messages that come after
+.Cm hello
+wait until the session is made.
+.Ss Messages the host sends
+.Bl -tag -width "setsystem id text"
+.It Cm hello Ar version name root json
+First, and once.
+.Ar version
+is
+.Ql 1 ;
+any other is answered
+.Cm error
+.Ql "protocol version V unknown; this arno speaks 1"
+and the session ends.
+.Ar name
+is the host's name, which the model is told and which a viewer's lister
+shows as the owner; empty is
+.Ql "the host" .
+.Ar root
+is the project root: arno works there, and lets its file tools reach that
+project without asking, as from a terminal in that directory.
+Empty leaves it where it started; one that cannot be entered is answered
+.Cm error
+.Ql "cannot work in ROOT"
+and ends the session.
+.Pp
+.Ar json
+is an object, every member optional; an empty field is the empty object, and
+anything else ends the session with
+.Cm error
+.Ql "hello's last field must be a JSON object" :
+.Bl -tag -width "builtins"
+.It Cm prompt
+A section for the model's system prompt: what the host is, what its tools are
+for.
+.It Cm tools
+The host's own tools, an array of objects with
+.Cm name ,
+.Cm description
+and
+.Cm parameters ,
+the last a JSON Schema object, passed on to the model as it stands.
+A tool with no name, or with the name of one of arno's own tools, of an MCP
+server's, or of an earlier host tool, is refused with
+.Cm error
+.Ql "tool NAME is already arno's own"
+or the like, and the rest go ahead.
+.It Cm builtins
+An array of the names of arno's own tools that the host allows.
+A builtin left out is gone: the model neither sees it nor can call it.
+Missing allows them all; an empty array allows none.
+The tools of MCP servers are not affected.
+.El
+.It Cm line Ar text
+A line of input, as typed: a message to the model, or a command that starts
+with a slash.
+Lines that come while a turn runs wait for it to end, the host's before a
+viewer's.
+An empty line is ignored.
+.Ic /quit
+and
+.Ic /exit
+end the session.
+.It Cm cancel
+Stop the turn, as C-c does.
+A question or a tool call that waits is refused, which ends the turn too.
+With no turn running it does nothing.
+.It Cm answer Ar id key Op Ar reason
+The answer to
+.Cm ask
+number
+.Ar id .
+.Ar key
+is one byte, one of the keys the question offered; anything else is a refusal.
+.Ar reason
+may go with a refusal, and the model reads it as it would the person's:
+.Ql "declined by user: too long" .
+An answer to an id that is not waited on is dropped.
+.It Cm result Ar id text
+The result of
+.Cm call
+number
+.Ar id ,
+for the model to read.
+Dropped like an answer for an id not waited on.
+.It Cm recent Ar max filter
+.It Cm paste
+.It Cm rename Ar id title
+.It Cm forget Ar id
+.It Cm models
+.It Cm system Ar id
+.It Cm setsystem Ar id text
+Requests about the conversations; see
+.Sx Requests .
+.It Cm bye
+End the session.
+.El
+.Pp
+A message that has fewer fields than its verb needs is answered
+.Cm error
+.Ql "VERB needs N fields" ;
+extra fields are ignored.
+A verb arno does not know is answered
+.Cm error
+.Ql "unknown verb VERB" ,
+so that a host newer than this arno finds out what it may not use.
+A second
+.Cm hello
+is answered
+.Cm error
+.Ql "hello again" .
+.Ss Messages arno sends
+.Bl -tag -width "systemset id"
+.It Cm ready Ar conversation model pid
+After
+.Cm hello ,
+once the session is made.
+.Ar conversation
+is the id of the current conversation,
+.Ar model
+the model in use,
+.Ar pid
+arno's process id.
+.It Cm push Ar n kind text
+A new entry of the transcript.
+.Ar n
+is its index, from 0, the same counter for every kind of entry.
+.Ar kind
+is
+.Ql user
+for what was typed,
+.Ql asst
+for the model's reply,
+.Ql info
+for what arno says on the side, or
+.Ql err
+for an error.
+The text of a reply is often empty at first, and grows by
+.Cm append .
+.It Cm tool Ar n name args
+A new entry, number
+.Ar n ,
+for a tool call: its name and its arguments as JSON.
+It comes before the call runs, so before any
+.Cm ask
+about it: an edit's path and text are in its arguments by the time its
+question comes.
+.It Cm append Ar n text
+More text for entry
+.Ar n ,
+the reply streaming.
+.It Cm done Ar n text
+The result of tool call
+.Ar n .
+.It Cm reset
+The transcript is empty again, after
+.Ic /new ,
+.Ic /load
+or
+.Ic /clear ;
+what follows rebuilds it.
+A host that keeps the transcript appends what it is told, in order, and has
+the same numbers.
+.It Cm status Ar text
+The status line: mode, model, context in use, tokens, cost, and the title.
+.It Cm busy Ar 0|1
+1 when a job starts and 0 when it ends, once the conversation is saved.
+A job is a turn, but also a command, or the work arno does before the first
+turn; so
+.Cm busy
+does not mean that the model is working.
+.It Cm ask Ar id question detail keys
+A question for the person, which the host must answer with
+.Cm answer .
+.Ar id
+is its number, counted from 1.
+.Ar question
+is the question and
+.Ar detail
+what to show with it, an edit's diff or the lines a command would run, or
+empty.
+.Ar keys
+are the bytes that may answer it, such as
+.Ql yn
+or
+.Ql yna ;
+the first that is not
+.Ql y
+is the refusal.
+Every question is put to the host: an edit, a path outside the project, a
+program to run, a call of an MCP server's tool, whether to send the context
+files, and the stage's diff.
+.It Cm call Ar id name args
+A call of one of the host's tools, which the host must answer with
+.Cm result .
+.Ar args
+is JSON, as the model wrote it.
+The ids of
+.Cm ask
+and
+.Cm call
+share a counter, and one is waited on at a time.
+If a cancel comes, or the host goes, the call's result is
+.Ql "interrupted by user" ,
+or
+.Ql "error: NAME has gone away" .
+.It Cm error Ar text
+What arno made of the host's last message: see above; or, to a request, why it
+cannot be done.
+.El
+.Pp
+A newer arno may send verbs this page does not list; a host ignores them.
+.Pp
+The answers to requests are in the next section.
+.Ss Requests
+These are answered at once, even while a turn runs, in the order asked:
+.Cm recent ,
+.Cm paste ,
+.Cm forget ,
+and
+.Cm rename ,
+.Cm system
+and
+.Cm setsystem
+of a saved conversation.
+.Cm models
+and the same three for the current conversation, which a running job may be
+changing, wait for the job's end and are answered then.
+So that replies come in the order of the requests, every request that comes
+while another waits waits too.
+.Pp
+An empty
+.Ar id
+names the current conversation, whose id a host cannot know after
+.Ic /new
+or
+.Ic /load .
+The answer to
+.Cm rename ,
+.Cm system
+or
+.Cm setsystem
+then carries its id.
+.Bl -tag -width "setsystem id text"
+.It Cm recent Ar max filter
+At most
+.Ar max
+saved conversations, the one changed last first, those whose title or id holds
+.Ar filter ,
+ignoring case; an empty
+.Ar filter
+is all.
+Answered
+.Cm recent Ar json :
+an array of objects with
+.Cm id ,
+.Cm title
+and
+.Cm updated ,
+the time of the last change in seconds since 1970.
+A
+.Ar max
+that is not a number of 1 or more is answered
+.Cm error
+.Ql "recent needs a count of 1 or more" .
+.It Cm paste
+Save the clipboard's PNG, as C-v does in the terminal.
+Answered
+.Cm pasted Ar path ,
+the file, for a line to name with
+.Ql @path ;
+or
+.Cm error
+with why there is none.
+The file is removed as the session ends.
+.It Cm rename Ar id title
+Name a saved conversation, or the current one; an empty
+.Ar title
+clears the name.
+Answered
+.Cm renamed Ar id .
+The current one's new title shows on the status line.
+.It Cm forget Ar id
+Remove a saved conversation and its scratch directory.
+Answered
+.Cm forgot Ar id .
+The current conversation is refused:
+.Cm error
+.Ql "the current conversation cannot be forgotten" .
+.It Cm models
+The models
+.Ic /models
+would list.
+Answered
+.Cm models Ar json :
+an object with
+.Cm provider ,
+.Cm model
+and
+.Cm models ,
+an array, empty for a provider with no list.
+.It Cm system Ar id
+A conversation's own system prompt.
+Answered
+.Cm system Ar json :
+an object with
+.Cm id ,
+.Cm prompt ,
+the conversation's own, empty when it has none, and
+.Cm default ,
+arno's own instructions, which it replaces.
+.It Cm setsystem Ar id text
+Set a conversation's own system prompt, of any length and lines; empty goes
+back to arno's own.
+Answered
+.Cm systemset Ar id .
+The current conversation's takes effect from its next request.
+.El
+.Pp
+A
+.Cm rename ,
+.Cm forget ,
+.Cm system
+or
+.Cm setsystem
+of a conversation that is not saved is answered
+.Cm error
+.Ql "no conversation ID" .
+.Sh THE VIEWER
+Every arno on a terminal, and every one run with
+.Fl \-serve ,
+listens on a Unix socket for viewers:
+.Pa $XDG_RUNTIME_DIR/arno/PID.view ,
+or, with no such directory,
+.Pa run/
+in arno's cache directory,
+.Pa ~/.cache/arno/ .
+The directory is made with mode 700, so that only its user can enter it, and a
+connection from another user is dropped.
+.Pp
+A connection says what it is by its first netstring, which is not a message:
+.Bl -tag -width "3:who,"
+.It Li 6:attach,
+A viewer.
+It keeps the connection.
+arno sends it, as to a host: a
+.Cm reset ;
+the transcript so far, as
+.Cm push
+and
+.Cm tool
+and
+.Cm done ,
+a reply that is still streaming as far as it has got; the
+.Cm status ;
+and
+.Cm busy .
+From then on it gets every change, in the host's own messages
+.Pq Cm push , tool , append , done , reset , status , busy .
+.Pp
+It may send
+.Cm line ,
+as the host does, and
+.Cm cancel .
+Anything else it sends is ignored.
+A viewer is never sent
+.Cm ask ,
+.Cm call ,
+.Cm ready
+or
+.Cm error ;
+while a question waits, its
+.Cm status
+says so, with
+.Ql "a question waits in WHO"
+added, and the answer shows in the tool call's
+.Cm done .
+.It Li 3:who,
+A lister.
+It is answered with one message,
+.Cm ok Ar owner root title ,
+and the connection is closed.
+.Ar owner
+is the host's name, or
+.Ql terminal
+for an arno on a terminal;
+.Ar root
+the project root;
+.Ar title
+the conversation's title.
+.El
+.Pp
+A viewer that falls more than a megabyte behind is dropped, so that a stuck
+terminal never holds up the session.
+Any other first netstring, or a malformed message, drops the connection.
+.Sh EXAMPLES
+A host says hello with one tool, and is told the session is ready:
+.Bd -literal -offset indent
+host -> arno   hello 1 pad "" {"prompt":"pad is a scratch buffer.",
+                              "builtins":["read","grep"],
+                              "tools":[{"name":"doc_read",
+                                        "description":"The buffer."}]}
+arno -> host   ready 20261028-101500 deepseek-v4.1-flash:cloud 4242
+arno -> host   status "arno · chat @ ollama · ctx ..."
+arno -> host   busy 1
+arno -> host   busy 0
+.Ed
+.Pp
+A line, a streaming reply, and a question:
+.Bd -literal -offset indent
+host -> arno   line "fix the typo"
+arno -> host   busy 1
+arno -> host   push 0 user "fix the typo"
+arno -> host   push 1 asst ""
+arno -> host   append 1 "Looking at "
+arno -> host   tool 2 doc_read {}
+arno -> host   call 1 doc_read {}
+host -> arno   result 1 "1  teh quick fox"
+arno -> host   done 2 "1  teh quick fox"
+arno -> host   ask 2 "apply these changes?" "diff..." yn
+host -> arno   answer 2 n "keep teh"
+.Ed
+.Pp
+List the sessions, from a shell with a few lines of any language; each
+session is a socket named by its process id:
+.Bd -literal -offset indent
+$ arno \-\-attach \-l
+4242	terminal	/home/me/proj	fix the typo
+.Ed
+.Sh SEE ALSO
+.Xr arno 1
+.Pp
+D. J. Bernstein,
+.Lk https://cr.yp.to/proto/netstrings.txt "Netstrings" ,
+1997.
+.Sh HISTORY
+The framing and the host's messages are those of
+.Xr arnoc 3 ,
+the library hosts of the Pascal arno's
+.Fl \-serve
+use, byte for byte.
+.Pp
+Despite the name, this is not the protocol of the editors that talk to
+.Nm arno
+by a socket of their own; that one is not built.
+.Sh CAVEATS
+.Cm busy
+is sent for every job, not only the turns of the model, so a host cannot tell a
+turn from a command by it.
+.Pp
+A viewer sees that a question waits and who holds it, not the question.
+.Pp
+A viewer that is slow is sent changes when the socket takes them; a tail that
+is not yet sent waits for the next change.
+.Pp
+A turn stops at the next read of the model's reply, so a
+.Cm cancel
+may take as long as the model's next piece of text.
