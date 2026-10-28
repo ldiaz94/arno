@@ -626,7 +626,7 @@ end;
 proc testFor*(var b: Buf.Buf): []const U8;
 var s: []const U8;
 begin
-    s := Astore.keyed("tests.json", Afence.zone, b);
+    s := Astore.keyed("tests.json", Afence.root, b);
     if LEN(s) = 0 then
         Buf.str(b, testCmd);
         s := testCmd;
@@ -824,7 +824,9 @@ end;
    the model chooses when, never what. The verdict comes first, as a
    runner's output doesn't always say; the output is kept from the end,
    where a build's or a test's summary and the error that matters
-   are. *)
+   are. While the stage is up it runs in the copy, whose files the
+   model may edit unasked: until the jail (4d) the command can run
+   what the model wrote there (PLAN.md, stage 4c). *)
 proc check(mem: ^Mem.Allocator; var out: Buf.Buf);
 var b, got: Buf.Buf; cmd: []const U8; j: Arun.Job; status: INT; cut: BOOL;
 begin
@@ -1718,7 +1720,7 @@ begin
         "error: no test command for this project; ask the human to run /test COMMAND once");
     commands("", "", "", "", "echo testing; exit 1");
     expect("check", run("check", `{}`, nil), "FAILED, exit 1: echo testing; exit 1\n\ntesting\n");
-    _ := Astore.setKeyed("tests.json", Afence.zone, "echo ok");
+    _ := Astore.setKeyed("tests.json", Afence.root, "echo ok");
     expect("check, the project's", run("check", `{}`, nil), "passed: echo ok\n\nok\n");
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;

@@ -293,4 +293,78 @@ holds('/notes forget', 'err', 'arno: no note 1')
 answering([], '/models')
 holds('/models', 'out', 'stub-one' + #10 + 'stub-two')
 
+// the stage: in a git repository of its own, with stage = on, an edit
+// goes to the copy without a question, the human's tree untouched, and
+// the turn's diff is asked about once at its end: a no keeps it in the
+// copy and in the scratch directory's stage.diff, a yes applies it
+here := `pwd`
+proj := `realpath $dir` + '/proj'
+mkdir -p $proj
+git -C $proj init -q
+echo one > "$proj/a.txt"
+git -C $proj add a.txt
+git -C $proj -c user.name=t -c user.email=t@t commit -q -m first
+configure(['stage = on'])
+edit := '{"path":"a.txt","old":"one","new":"two"}'
+
+// arno run in the project with the arguments in the list a, the text
+// input on its standard input, and the directories of arno's files made
+// absolute for it
+function stagedRun(a, input);
+begin
+  cd $proj
+  echo $input | env XDG_CONFIG_HOME="$here/$dir/config" XDG_DATA_HOME="$here/$dir/data" XDG_CACHE_HOME="$here/$dir/cache" $here/$arno $a > "$here/$dir/out" 2> "$here/$dir/err"
+  result := status
+  cd $here
+end;
+
+// the staged edit turned to the one the list edit holds, answered with input
+function staged(input);
+begin
+  result := stagedRun(['call', 'edit', edit], input)
+end;
+
+// the file out, dir/out or dir/err, must hold no line matching the pattern
+procedure lacks(what, out, pattern);
+begin
+  grep -qE -- $pattern "$dir/$out"
+  if status = 0 then fail("$what: '$pattern' in its $out: " + `cat "$dir/$out"`)
+end;
+
+staged('n')
+holds('a staged edit', 'out', 'the tool said: ok: 1 replaced')
+holds('a declined diff', 'err', 'apply these changes to 1 file(s) in ' + proj)
+holds('a declined diff', 'out', 'kept in the copy')
+if `cat "$proj/a.txt"` <> 'one' then fail('the staged edit reached the human tree before a yes')
+staged('y')
+holds('an applied diff', 'out', 'applied to 1 file(s) in ' + proj)
+if `cat "$proj/a.txt"` <> 'two' then fail('the staged edit was not applied: ' + `cat "$proj/a.txt"`)
+if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('the copy was not removed')
+
+// a turn that only keeps a note changes no file: what is said is the
+// note's, not the start-up text left in the buffer
+stagedRun(['call', 'note', '{"text":"a staged note"}'], 'n')
+holds('a staged note', 'out', 'notes kept this turn')
+lacks('a staged note', 'out', 'working on a copy.*notes kept')
+
+// a conversation taken up again brings its pending diff back into the
+// new copy; /stage off is refused while the copy holds it, and the
+// answer, kept in stage.json, outranks config's stage = on
+edit := '{"path":"a.txt","old":"two","new":"three"}'
+staged('n')
+saved := split(`ls -t "$dir"/data/arno/*.json | head -1`)
+id := basename(saved[0], '.json')
+stagedRun([], '/load ' + id + #10 + '/stage off' + #10 + '/stage drop' + #10 + '/stage off')
+holds('a carried diff', 'out', 'is back in the copy')
+holds('/stage off', 'err', 'the copy holds changes')
+holds('/stage drop', 'out', 'the copy is back as it was')
+holds('/stage off', 'out', 'not staged: back in ' + proj)
+if `cat "$proj/a.txt"` <> 'two' then fail('the human tree changed: ' + `cat "$proj/a.txt"`)
+stagedRun([], '/stage')
+holds('stage.json over config', 'out', 'not staged; /stage on')
+stagedRun([], '/stage on')
+holds('/stage on', 'out', 'staged: working on a copy')
+if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('the copy was not removed at the end')
+configure([])
+
 if failures > 0 then halt(1)

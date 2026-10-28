@@ -231,6 +231,7 @@ begin
     if (ARGC() < 2) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
         Asession.init(SYSTEM.ADR(s), Ascreen.front(), Ascreen.show, nil);
         s.changed := Ascreen.changed;
+        defer Asession.leave;
         if Ascreen.run(SYSTEM.ADR(s)) then return 0; end;
         say("arno: the terminal can't be used\n", "", "");
         return 1;
@@ -238,6 +239,7 @@ begin
     Buf.init(answer, Heap.heap);
     Asession.init(SYSTEM.ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
         stopped: interrupted}, shown, nil);
+    defer Asession.leave;
     _ := Sys.handle(Sys.sigInt);
     ended := true;
     if ARGC() < 2 then return session(s); end;

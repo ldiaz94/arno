@@ -37,7 +37,7 @@
 
    Depends on Aahead (the map and the notes), Amemory (the facts),
    Afence, Astore (the date), Atools (how the human is asked) and Awire
-   (the provider). Leaves out what comes with later stages: the stage; te. *)
+   (the provider). Leaves out what comes with later stages: te. *)
 module Aprompt;
 import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
     Strs := Vec([]const U8);
@@ -100,6 +100,7 @@ const
         {name: "/my-memory", args: "[TAG]", desc: "list remembered facts"},
         {name: "/notes", args: "[forget N|WORD]", desc: "list the model's notes on this project, or forget some"},
         {name: "/test", args: "[COMMAND]", desc: "run the project's test command, or set it; ask about failures"},
+        {name: "/stage", args: "[on|off|drop]", desc: "work on a copy, each turn's changes one diff to apply"},
         {name: "/quit", args: "", desc: "leave (also ^D)"}];
 
     MaxDepth = 5;   (* files a context file brings, and they bring, and so on *)
@@ -357,6 +358,18 @@ begin
     end;
 end;
 
+(* The stage section of the system prompt, while the stage is up: the
+   "How to work" rule that the human approves each edit does not hold,
+   and a model not told so asks leave, or leaves the work as a plan. *)
+proc stageText(var out: Buf.Buf);
+begin
+    Fmt.write(out, "\n\n# Stage\nYou work on a copy of the human's project, at {}; their own tree at {} is not " +
+        "touched until they say so. Edit, move and remove in the copy are not asked about one by one: when " +
+        "your turn ends, the human sees all you changed as one diff and applies it or not. So carry the work " +
+        "through to a checked result in this turn, and work only in the copy, never in {}.",
+        [Fmt.str(Afence.stage), Fmt.str(Afence.root), Fmt.str(Afence.root)]);
+end;
+
 (* The system prompt of c's next request, in mode, added to out: c's
    own system prompt, or Own, then the sections. mem is for the work,
    say for a note dropped as stale. *)
@@ -385,6 +398,7 @@ begin
             "asked about, and check and run see its path as $ARNO_SCRATCH. What should last belongs in the " +
             "project instead.", [Fmt.str(Afence.scratch)]);
     end;
+    if LEN(Afence.stage) > 0 then stageText(out); end;
     at := out.len;
     Buf.str(out, "\n\n");
     Aahead.notes(mem, say, arg, out);

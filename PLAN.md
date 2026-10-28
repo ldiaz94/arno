@@ -229,10 +229,32 @@ one or more commits that build with `-Werror`.
      as the Pascal arno did: `ours` doesn't refuse a file hard-linked
      to one outside the scratch until raz has a link count, and there
      is no `Forget`, which comes with `--serve` in stage 6.
-   - [ ] c. The stage: `Astage` (the worktree, seeded from the tree as
+   - [x] c. The stage: `Astage` (the worktree, seeded from the tree as
      it stands; the diff asked about once at a turn's end; apply,
      drop, carry on resume), `/stage`, `stage.json`; the stage's copy
-     joins the scratch in `ours`.
+     joins the scratch in `ours`. `Astage` runs git as a detached
+     `Arun.Job`, which has no input, so `git apply` reads the diff
+     from a file beside the copy, where the Pascal arno wrote to
+     git's standard input; a diff past 64 MB isn't offered. `Afence`
+     keeps `root`, the human's project, beside `zone`, which is the
+     copy while the stage is up: notes and `tests.json`, as
+     `stage.json`, are kept under `root`, as the Pascal arno kept
+     them under its `Root`. The question is the session's
+     (`Asession.propose`), after a turn is saved, in `/test` and a
+     one-shot too; with nobody to ask, or a no, the diff stays in the
+     copy and in the scratch's `stage.diff`, and `/load` and
+     `--resume` carry it back. The prompt's stage section is shorter
+     by the sentence on `shell`, which comes with 4d. Not done: the
+     copy isn't removed on SIGTERM or SIGHUP (arno has no handler, so
+     the next stage sweeps it, as after a crash), and `ours` doesn't
+     refuse a hard-linked file, as for the scratch. `ours` does refuse
+     the copy's `.git` and all below it, and every git command in the
+     copy pins the git directory `up` recorded and turns fsmonitor off,
+     since a model-written `.git` could name a program git would run
+     unjailed at the turn's end. Left out until 4d's jail: `check` and
+     a trusted `run` program (make, say) execute the copy's own files,
+     which the model edits without approval, so `edit Makefile` then
+     `check` runs code nobody approved, outside the jail.
    - [ ] d. `Ajail` and `shell`: the namespaces by raz's `SYSCALL`,
      entered by the helper; the jail's own test, jailtest's 25 cases
      and cases that must fail; `shell` in the stage, its timeout, the

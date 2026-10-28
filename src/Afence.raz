@@ -18,9 +18,10 @@
    The module only decides; asking is the caller's, Atools'.
 
    The conversation's scratch directory is the model's own: inside, and
-   ours, which Atools takes as a change needing no approval. Leaves out
-   the stage, which is the model's own too and comes with its stage,
-   and config's grant.
+   ours, which Atools takes as a change needing no approval. So is the
+   stage's copy of the project, while Astage has one up: the zone is then
+   the copy, and root still the human's project, which the notes and
+   the test command are kept under. Leaves out config's grant.
 
    Depends on Sys, Buf and Str. *)
 module Afence;
@@ -31,7 +32,9 @@ const
     MaxHops = 40;   (* links followed in a path, as the kernel's own ELOOP limit *)
 
 var
-    zone*: []const U8;           (* resolved; set by init *)
+    zone*: []const U8;           (* resolved; set by init, and by useStage and leaveStage *)
+    root*: []const U8;           (* the human's project, as init found it: the zone, but while the stage is up *)
+    stage*: []U8;                (* the stage's copy, resolved, from Heap; "" for none *)
     scratch*: []U8;        (* resolved, from Heap; set by useScratch, "" before *)
     rooted*: BOOL;         (* zone holds a mark, rather than being the bare working directory *)
     grants: Strs.Vec;      (* the directories granted, resolved, each from Heap *)
@@ -120,7 +123,14 @@ begin
     Strs.reset(grants);
 end;
 
-(* The zone found from the working directory, and the grants dropped. *)
+(* The stage's memory let go, and no stage; the zone is not reset. *)
+proc dropStage;
+begin
+    if LEN(stage) > 0 then Str.free(Heap.heap, stage); end;
+    stage := stage[0..0];
+end;
+
+(* The zone found from the working directory, the stage given up, and the grants dropped. *)
 proc init*;
 var b, mark: Buf.Buf; levels, m: INT;
 begin
@@ -130,8 +140,10 @@ begin
     defer Buf.done(mark);
     if not ready then Strs.init(grants, Heap.heap); ready := true; end;
     forget;
+    dropStage;
     resolve(".", b);
     zone := keep(Buf.bytes(b));
+    root := zone;
     rooted := false;
     for levels := 0 to 2 do
         for m := 0 to LEN(Marks) - 1 do
@@ -141,6 +153,7 @@ begin
             Buf.str(mark, Marks[m]);
             if Sys.access(Buf.bytes(mark), {}) = 0 then
                 zone := keep(Buf.bytes(b));
+                root := zone;
                 rooted := true;
                 return;
             end;
@@ -180,21 +193,59 @@ begin
     scratch := keep(Buf.bytes(b));
 end;
 
-(* Whether path is in the scratch directory, the model's own, so that
-   a change there needs no approval. It is resolved like any path, so
-   a link left there that points out doesn't count. The Pascal arno
-   also refused a file with a second hard link, one sharing its
-   contents with a name elsewhere, maybe the human's; raz's Sys.Info
-   has no link count yet (proposed to raz as Info.links), so until
-   then that isn't checked. *)
-proc ours*(path: []const U8): BOOL;
+(* path, resolved, the stage's copy from now on, and the zone: the
+   model works there, and its changes are its own. *)
+proc useStage*(path: []const U8);
 var b: Buf.Buf;
 begin
-    if LEN(scratch) = 0 then return false; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     resolve(path, b);
-    return within(Buf.bytes(b), scratch);
+    dropStage;
+    stage := keep(Buf.bytes(b));
+    zone := stage;
+end;
+
+(* The stage given up: the zone is the human's project again. *)
+proc leaveStage*;
+begin
+    zone := root;
+    dropStage;
+end;
+
+(* Whether p, resolved and inside the stage, is its .git or below it. *)
+proc gitMark(p: []const U8): BOOL;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, stage);
+    Buf.str(b, "/.git");
+    return within(p, Buf.bytes(b));
+end;
+
+(* Whether path is in the scratch directory or the stage's copy, the
+   model's own, so that a change there needs no approval. It is
+   resolved like any path, so a link left there that points out
+   doesn't count. The Pascal arno
+   also refused a file with a second hard link, one sharing its
+   contents with a name elsewhere, maybe the human's; raz's Sys.Info
+   has no link count yet (proposed to raz as Info.links), so until
+   then that isn't checked. The stage's own .git, the file that points
+   it at its git directory, and all below it are not ours: git reads
+   settings from there that run programs (core.fsmonitor), so the model
+   may not write it without asking. *)
+proc ours*(path: []const U8): BOOL;
+var b: Buf.Buf; p: []const U8;
+begin
+    if (LEN(scratch) = 0) and (LEN(stage) = 0) then return false; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    resolve(path, b);
+    p := Buf.bytes(b);
+    if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
+    if LEN(stage) = 0 then return false; end;
+    return within(p, stage) and not gitMark(p);
 end;
 
 (* path, and everything below it, inside for the rest of the run;
@@ -286,6 +337,13 @@ begin
     expect("granted", yes(inside("out/z")), "yes");
     forget;
     expect("forgotten", yes(inside("out/z")), "no");
+    expect("not ours", yes(ours("../../proj2/x")), "no");
+    useStage(cat(top, "/proj2"));
+    expect("the stage is ours", yes(ours("../../proj2/x")), "yes");
+    expect("a neighbour of the stage", yes(ours("../x")), "no");
+    expect("the stage's .git is not ours", yes(ours("../../proj2/.git")), "no");
+    expect("nor below it", yes(ours("../../proj2/.git/config")), "no");
+    expect("a file like it is", yes(ours("../../proj2/.gitignore")), "yes");
     _ := Sys.setWorkDir(cat(top, "/out"));
     init;
     expect("unrooted", yes(rooted), "no");

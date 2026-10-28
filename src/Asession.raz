@@ -20,7 +20,12 @@
 
    Depends on Agent, Aprompt (the commands and modes), Amemory, Aahead
    (the notes), Aattach, Astore, Aconf, Aprice, Atools, Afence and Arun
-   (/test). Leaves out /stage, which comes with the stage.
+   (/test).
+   The stage (Astage) is up from start-up as config's stage and stage.json
+   say, or on /stage on; at the end of each turn, and on /stage, the
+   human is asked once about the copy's changes (propose). A conversation
+   taken up, by /load or --resume, brings back the work it left unapplied
+   (carry). leave ends the session's stage.
 
    /models asks the provider's server for its models, or else says
    arno's own list of them (Awire.known); what the server said is kept
@@ -32,8 +37,8 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Arun, Amsg, Buf, Str, Sys, Files, Fmt,
-    Heap, Arena, Math, Rt, Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
+import Agent, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Afence, Arun, Amsg, Buf, Str, Sys, Files, Fmt,
+Heap, Arena, Math, Rt, Msgs := Vec(Amsg.Msg), Strs := Vec([]const U8), Items := Vec(Astore.Item);
 import SYSTEM;
 
 type
@@ -54,11 +59,15 @@ type
         out: Buf.Buf;          (* what a command says *)
         listed: Buf.Buf;       (* the models /models was told, a line each *)
         listedOf: Buf.Buf;     (* by which provider *)
+        notesBefore: INT;      (* the project's notes as the turn began, which the stage shows the new ones after *)
     end;
 
 const
     Listed = 20;   (* conversations /list shows, and /load N counts in *)
     MaxTest = 50000;   (* bytes of a failed /test's output put to the model, the last *)
+
+(* Staged as stage.json says of the project, else as config says; after init. *)
+proc stageStart(var s: Session); forward;
 
 (* The tools' scratch directory made the one of s's conversation. *)
 proc useScratch(const s: Session);
@@ -101,6 +110,8 @@ begin
     Atools.search(Aconf.get(s^.conf, "searxng"));
     Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
         Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));
+    stageStart(s^);
+    Arena.reset(s^.mem);
 end;
 
 (* What lasts the session found: the context files, as config's
@@ -157,14 +168,213 @@ begin
     changed(s);
 end;
 
+(* The stage *)
+
+(* The notes the project had when the turn began, how many. *)
+proc noteCount(var s: Session): INT;
+var l: Strs.Vec;
+begin
+    Strs.init(l, SYSTEM.ADR(s.mem.base));
+    Aahead.projectNotes(SYSTEM.ADR(s.mem.base), l);
+    return l.len;
+end;
+
+(* The notes kept since the turn began, as lines starting "# note: ",
+   "" for none. A note outlives the conversation and steers every later
+   one, and it can be wrong, so the turn's notes are shown with its
+   diff, where the human looks anyway. *)
+proc newNotes(var s: Session; var out: Buf.Buf);
+var l: Strs.Vec; all: [][]const U8; i: INT;
+begin
+    Strs.init(l, SYSTEM.ADR(s.mem.base));
+    Aahead.projectNotes(SYSTEM.ADR(s.mem.base), l);
+    all := Strs.all(l);
+    for i := s.notesBefore to LEN(all) - 1 do Fmt.write(out, "# note: {}\n", [Fmt.str(all[i])]); end;
+end;
+
+(* The path of stage.diff, in the conversation's scratch directory, into b. *)
+proc stageDiff(var b: Buf.Buf): []const U8;
+begin
+    Buf.str(b, Afence.scratch);
+    Buf.str(b, "/stage.diff");
+    return Buf.bytes(b);
+end;
+
+(* Into the copy, saying where, or why not. *)
+proc stageUp(var s: Session);
+var why: Buf.Buf;
+begin
+    Buf.init(why, SYSTEM.ADR(s.mem.base));
+    Buf.reset(s.out);
+    if not Astage.up(why) then
+        Fmt.write(s.out, "stage: {}", [Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    Fmt.write(s.out, "staged: working on a copy at {}; each turn's changes come as one diff to apply to {}",
+        [Fmt.str(Afence.stage), Fmt.str(Afence.root)]);
+    say(s, Buf.bytes(s.out));
+    Buf.reset(s.out);
+end;
+
+(* The copy's changes since last asked, as one diff and one question,
+   at the end of a turn and on /stage: a yes applies them to the
+   human's tree, a no keeps them in the copy, to be asked about with the
+   next turn's. The diff is also left in the scratch directory as
+   stage.diff, for a run with no one to answer, the turn's notes before
+   it (git apply passes over what comes before the first diff). *)
+proc propose(var s: Session);
+var diff, why, shown, file: Buf.Buf; n: INT; answer: U8;
+begin
+    if LEN(Afence.stage) = 0 then return; end;
+    Buf.init(diff, SYSTEM.ADR(s.mem.base));
+    Buf.init(why, SYSTEM.ADR(s.mem.base));
+    Buf.init(shown, SYSTEM.ADR(s.mem.base));
+    Buf.init(file, SYSTEM.ADR(s.mem.base));
+    Buf.reset(s.out);
+    n := Astage.changes(diff, why);
+    if n < 0 then
+        Fmt.write(s.out, "stage: {}", [Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    newNotes(s, shown);
+    if n = 0 then
+        if shown.len > 0 then
+            Fmt.write(s.out, "notes kept this turn (/notes forgets one):\n{}", [Fmt.str(Str.trimRight(Buf.bytes(shown)))]);
+            say(s, Buf.bytes(s.out));
+        end;
+        return;
+    end;
+    Buf.str(shown, Buf.bytes(diff));
+    _ := Files.write(stageDiff(file), Buf.bytes(shown));
+    Buf.reset(s.out);
+    Fmt.write(s.out, "apply these changes to {} file(s) in {}?", [Fmt.int(n), Fmt.str(Afence.root)]);
+    answer := 0;
+    if s.agent.front.ask # nil then
+        answer := s.agent.front.ask(Buf.bytes(s.out), Buf.bytes(shown), "yn");
+    end;
+    Buf.reset(s.out);
+    if answer # 'y' then
+        Fmt.write(s.out, "kept in the copy, and offered again after the next turn; /stage drop discards them. " +
+            "The diff is in {}", [Fmt.str(Buf.bytes(file))]);
+        say(s, Buf.bytes(s.out));
+        return;
+    end;
+    if not Astage.apply(Buf.bytes(diff), why) then
+        Fmt.write(s.out, "not applied, so kept in the copy: {}", [Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    _ := Sys.remove(Buf.bytes(file));   (* nothing pending now for resume to carry *)
+    Fmt.write(s.out, "applied to {} file(s) in {}", [Fmt.int(n), Fmt.str(Afence.root)]);
+    say(s, Buf.bytes(s.out));
+end;
+
+(* A conversation taken up while staged: the work it left unapplied
+   comes back into the copy, unless the copy holds work of its own. *)
+proc carry(var s: Session);
+var diff, text, why, file: Buf.Buf; n: INT;
+begin
+    if LEN(Afence.stage) = 0 then return; end;
+    Buf.init(diff, SYSTEM.ADR(s.mem.base));
+    Buf.init(text, SYSTEM.ADR(s.mem.base));
+    Buf.init(why, SYSTEM.ADR(s.mem.base));
+    Buf.init(file, SYSTEM.ADR(s.mem.base));
+    Buf.reset(s.out);
+    if Files.load(stageDiff(file), text) # 0 then return; end;
+    n := Astage.changes(diff, why);
+    if n < 0 then
+        Fmt.write(s.out, "stage: could not tell whether the copy holds changes, so the pending ones were not " +
+            "brought in; they are in {}: {}", [Fmt.str(Buf.bytes(file)), Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+    elsif n > 0 then
+        Fmt.write(s.out, "stage: the copy holds changes, so this conversation's pending ones were not brought in; " +
+            "they are in {}", [Fmt.str(Buf.bytes(file))]);
+        fail(s, Buf.bytes(s.out));
+    elsif Astage.carry(Buf.bytes(text), why) then
+        say(s, "stage: the work this conversation left unapplied is back in the copy");
+    else
+        Fmt.write(s.out, "stage: could not bring back the unapplied work: {}", [Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+    end;
+    Buf.reset(s.out);
+end;
+
+(* /stage on, off or drop; with no argument, where things stand and
+   what the copy holds, offered. *)
+proc stage(var s: Session; arg: []const U8);
+var why, diff, file: Buf.Buf;
+begin
+    Buf.init(why, SYSTEM.ADR(s.mem.base));
+    Buf.init(diff, SYSTEM.ADR(s.mem.base));
+    Buf.init(file, SYSTEM.ADR(s.mem.base));
+    if LEN(arg) = 0 then
+        if LEN(Afence.stage) = 0 then say(s, "not staged; /stage on works on a copy"); return; end;
+        Fmt.write(s.out, "staged: working on a copy at {}", [Fmt.str(Afence.stage)]);
+        say(s, Buf.bytes(s.out));
+        Buf.reset(s.out);
+        propose(s);
+    elsif arg = "on" then
+        if LEN(Afence.stage) > 0 then
+            Fmt.write(s.out, "already staged, at {}", [Fmt.str(Afence.stage)]);
+            say(s, Buf.bytes(s.out));
+        else
+            stageUp(s);
+        end;
+        if LEN(Afence.stage) > 0 then _ := Astore.setKeyed("stage.json", Afence.root, "on"); end;
+    elsif (arg # "off") and (arg # "drop") then
+        fail(s, "usage: /stage [on|off|drop]");
+    elsif LEN(Afence.stage) = 0 then
+        fail(s, "not staged");
+    elsif arg = "drop" then
+        if Astage.drop(why) then
+            _ := Sys.remove(stageDiff(file));
+            say(s, "the copy is back as it was when last applied");
+        else
+            Fmt.write(s.out, "stage: {}", [Fmt.str(Buf.bytes(why))]);
+            fail(s, Buf.bytes(s.out));
+        end;
+    elsif Astage.changes(diff, why) < 0 then
+        Fmt.write(s.out, "stage: {}", [Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+    elsif diff.len > 0 then
+        fail(s, "the copy holds changes: /stage to apply them, /stage drop to discard them");
+    else
+        Astage.down;
+        _ := Astore.setKeyed("stage.json", Afence.root, "off");
+        Fmt.write(s.out, "not staged: back in {}", [Fmt.str(Afence.root)]);
+        say(s, Buf.bytes(s.out));
+    end;
+end;
+
+(* Staged as /stage last left this project, else as config's stage says. *)
+proc stageStart(var s: Session);
+var b: Buf.Buf; kept: []const U8;
+begin
+    Buf.init(b, SYSTEM.ADR(s.mem.base));
+    kept := Astore.keyed("stage.json", Afence.root, b);
+    if (kept = "on") or (LEN(kept) = 0) and (Aconf.get(s.conf, "stage") = "on") then stageUp(s); end;
+    s.notesBefore := noteCount(s);
+end;
+
+(* The session over: the copy removed, its pending work kept in the
+   conversation's stage.diff. *)
+proc leave*;
+begin
+    Astage.down;
+end;
+
 (* A turn of s's conversation on its last message, the human's:
    Agent.turn's error, why saying why it failed. The conversation is
    saved after. *)
 proc answer(var s: Session; var why: Buf.Buf): ERROR;
 var err: ERROR;
 begin
+    s.notesBefore := noteCount(s);
     err := Agent.turn(s.agent, s.conv, why);
     save(s);
+    propose(s);
     return err;
 end;
 
@@ -172,12 +382,14 @@ end;
    @paths bring: Agent.turn's error, why saying why it failed. The
    conversation is saved after. *)
 proc turn*(var s: Session; text: []const U8; var why: Buf.Buf): ERROR;
-var m: ^Amsg.Msg;
+var m: ^Amsg.Msg; err: ERROR;
 begin
     m := Msgs.add(s.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
     Aattach.expand(m^, text);
-    return answer(s, why);
+    err := answer(s, why);
+    Arena.reset(s.mem);
+    return err;
 end;
 
 (* A turn's failure, err, shown: why says why it failed. *)
@@ -223,6 +435,7 @@ begin
         return false;
     end;
     switch(s, c);
+    carry(s);
     return true;
 end;
 
@@ -680,7 +893,7 @@ var verb, what: []const U8;
 begin
     if LEN(arg) = 0 then
         Aahead.listNotes(SYSTEM.ADR(s.mem.base), s.out);
-        if s.out.len = 0 then Fmt.write(s.out, "no notes for {}", [Fmt.str(Afence.zone)]); end;
+        if s.out.len = 0 then Fmt.write(s.out, "no notes for {}", [Fmt.str(Afence.root)]); end;
         say(s, Buf.bytes(s.out));
         return;
     end;
@@ -709,12 +922,12 @@ begin
     cmd := arg;
     if LEN(cmd) = 0 then
         cmd := Atools.testFor(b);
-    elsif cmd # Astore.keyed("tests.json", Afence.zone, b) then
-        if Astore.setKeyed("tests.json", Afence.zone, cmd) # nil then
+    elsif cmd # Astore.keyed("tests.json", Afence.root, b) then
+        if Astore.setKeyed("tests.json", Afence.root, cmd) # nil then
             fail(s, "tests.json can't be written");
             return;
         end;
-        Fmt.write(s.out, "test command for {}: {}", [Fmt.str(Afence.zone), Fmt.str(cmd)]);
+        Fmt.write(s.out, "test command for {}: {}", [Fmt.str(Afence.root), Fmt.str(cmd)]);
         say(s, Buf.bytes(s.out));
         Buf.reset(s.out);
     end;
@@ -768,6 +981,7 @@ begin
         say(s, Buf.bytes(s.out));
     | "/notes": notes(s, arg);
     | "/test": test(s, arg);
+    | "/stage": stage(s, arg);
     | else: fail(s, "unknown command; /help lists them");
     end;
     Arena.reset(s.mem);

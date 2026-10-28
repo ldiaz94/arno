@@ -33,13 +33,15 @@
    stage.json, tests.json), which that arno listed untitled.
 
    Beside the conversations, it keeps a text for each project in a file
-   of them (keyed): tests.json, the project's test command, and, when
-   the stage comes, stage.json.
+   of them (keyed): tests.json, the project's test command, and
+   stage.json, whether its stage is on. It says where the stage's copy
+   lives, a directory a process (stageDir), and sweeps the copies of
+   processes that are gone.
 
    Depends on Amsg, rjson's Json, and rzone's Zone, for the local
    time. Leaves out the other
    files the agent keeps beside the conversations (memory, notes, the
-   tool cache), and the stage. *)
+   tool cache), and the stage's own work, which is Astage's. *)
 module Astore;
 import Amsg, Json, Zone, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Msgs := Vec(Amsg.Msg), Strs := Vec([]U8), Args := Vec([]const U8),
     Items := Vec(Item), Order := Sort(Item, before);
@@ -304,7 +306,7 @@ end;
 (* Removes path and all below it. A link is removed as a link, never
    followed, so that one the model left pointing out of the scratch
    costs nothing outside it. *)
-proc wipe(path: []const U8);
+proc wipe*(path: []const U8);
 var info: Sys.Info; names: Strs.Vec; all: [][]U8; i: INT; e: INT; b: Buf.Buf;
 begin
     info, e := Sys.linkInfo(path);
@@ -398,6 +400,53 @@ begin
         Str.free(Heap.heap, all[i]);
     end;
     Strs.done(names);
+end;
+
+(* Whether name, an entry of the stage's directory, is of an arno that
+   is no longer running: the pid it starts with, which no process has. *)
+proc gone(name: []const U8): BOOL;
+var dot: INT; pid: I64; ok: BOOL;
+begin
+    dot := Str.find(name, ".");
+    if dot < 0 then dot := LEN(name); end;
+    pid, ok := Str.toInt(name[0..dot]);
+    return ok and (pid > 0) and (Sys.kill(INT(pid), 0) = Sys.errNoProcess);
+end;
+
+(* Where this arno keeps the stage's copy of the project (Astage), with
+   no slash after it: one per arno process rather than per
+   conversation, since /new, /clear and /compact change the
+   conversation and not the work in progress. Its parent is made here;
+   the copy itself is git's to make. A copy whose arno is gone, killed
+   by a signal or a crash, is removed here as the next one is made, with
+   its index; the repository's note of that worktree stays until git's
+   own prune, which the next stage on that repository runs. *)
+proc stageDir*(var b: Buf.Buf): []const U8;
+var names: Strs.Vec; all: [][]U8; i: INT; digits: [20]U8; n: INT; parent: Buf.Buf;
+begin
+    Strs.init(names, Heap.heap);
+    Buf.init(parent, Heap.heap);
+    defer Buf.done(parent);
+    Buf.str(parent, cache());
+    Buf.str(parent, "stage/");
+    _ := Sys.makeDir(Buf.bytes(parent));
+    namesIn(Buf.bytes(parent), names);
+    all := Strs.all(names);
+    for i := 0 to LEN(all) - 1 do
+        if gone(all[i]) then
+            Buf.reset(b);
+            Buf.str(b, Buf.bytes(parent));
+            Buf.str(b, all[i]);
+            wipe(Buf.bytes(b));
+        end;
+        Str.free(Heap.heap, all[i]);
+    end;
+    Strs.done(names);
+    Buf.reset(b);
+    Buf.str(b, Buf.bytes(parent));
+    digits, n := Str.fromInt(Sys.pid());
+    Buf.str(b, digits[0..n]);
+    return Buf.bytes(b);
 end;
 
 (* A new conversation's id, now in local time, into b: yyyymmdd-hhmmss,

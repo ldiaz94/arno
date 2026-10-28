@@ -174,6 +174,11 @@ The `run` tool is limited to configured programs. `/test` and the
 `check` tool use a test command you set. The jail is still planned, so
 these commands currently run without its isolation.
 
+Left out until the jail: while the stage's copy is up, the model edits
+the copy's files, a Makefile among them, without asking, and `check` and
+trusted `run` programs then execute them. Nothing is applied to your tree
+without your yes, but what those commands run is not approved.
+
 ## Development
 
 Read [PLAN.md](PLAN.md) for the design and current stage, and

@@ -756,7 +756,7 @@ begin
     if Files.load(notesFile(path), text) # 0 then return Json.None; end;
     v := Json.parse(d, Buf.bytes(text));
     if Json.kind(d, v) # Json.Kind.object then return Json.None; end;
-    a := Json.member(d, v, Afence.zone);
+    a := Json.member(d, v, Afence.root);
     for i := 0 to Json.len(d, a) - 1 do
         if Json.kind(d, Json.item(d, a, i)) = Json.Kind.string then Strs.push(l, Json.text(d, Json.item(d, a, i))); end;
     end;
@@ -773,7 +773,7 @@ begin
     Buf.add(b, '{');
     n := 0;
     for i := 0 to Json.len(d, v) - 1 do
-        if Json.key(d, v, i) = Afence.zone then continue; end;
+        if Json.key(d, v, i) = Afence.root then continue; end;
         if n > 0 then Buf.add(b, ','); end;
         Json.quote(SYSTEM.ADR(b), Json.key(d, v, i));
         Buf.add(b, ':');
@@ -782,7 +782,7 @@ begin
     end;
     if LEN(l) > 0 then
         if n > 0 then Buf.add(b, ','); end;
-        Json.quote(SYSTEM.ADR(b), Afence.zone);
+        Json.quote(SYSTEM.ADR(b), Afence.root);
         Buf.str(b, ":[");
         for i := 0 to LEN(l) - 1 do
             if i > 0 then Buf.add(b, ','); end;
@@ -792,6 +792,16 @@ begin
     end;
     Buf.add(b, '}');
     _ := Astore.replace(notesFile(path), Buf.bytes(b));
+end;
+
+(* The project's notes, pushed on l, oldest first: all there are, as
+   the stage asks to tell the human which a turn added. Kept by the
+   human's project, Afence.root, whether or not the stage is up. *)
+proc projectNotes*(mem: ^Mem.Allocator; var l: Strs.Vec);
+var d: Json.Doc;
+begin
+    if not Afence.rooted or not Json.init(SYSTEM.ADR(d), mem) then return; end;
+    _ := readNotes(SYSTEM.ADR(d), mem, l);
 end;
 
 (* Whether a word of a note names a path, and the path: it has a / and
