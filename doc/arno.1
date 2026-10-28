@@ -663,7 +663,9 @@ An exact, unique replacement, or a new file.
 Its diff is shown and needs your yes.
 .It Ic move , remove
 Rename or delete one file, with your yes.
-Never a directory, and never onto a file that exists.
+Never a directory, and never onto a file that exists, and never a file an
+editor has open (see
+.Sx EDITORS ) .
 .It Ic check
 The project's test command, as set by
 .Ic /test
@@ -703,6 +705,11 @@ Markdown body as it is.
 and
 .Li https:
 only.
+.It Ic editor , open
+What you have open in your text editor, and a file shown there at a line;
+see
+.Sx EDITORS .
+Offered only while an editor is reachable.
 .It Ic delegate
 One self-contained step of a larger job, given to a worker: a
 conversation of its own on the model
@@ -1139,6 +1146,84 @@ call.
 The session ends when the program says
 .Cm bye
 or closes the pipe, with status 0, and its stage's copy is removed.
+.Sh EDITORS
+A text editor that speaks
+.Xr arno-peer 5 ,
+.Xr dwa 1
+for one, and
+.Nm
+can talk to each other.
+.Pp
+The editor asks
+.Nm :
+in dwa,
+.Ic :ask
+sends the lines of a range, the cursor's line by default, and a question,
+which
+.Nm
+takes as a turn, and answers where you asked, in the editor, when it ends.
+.Ic :ask!
+asks in a new conversation.
+With no question, the lines go into
+.Nm Ns 's
+input as an
+.Li @
+reference, for you to finish.
+A question in a turn waits for it to end.
+The ask shows in the transcript as coming from the editor, with its file and
+lines, and not as something you typed; the model is told so, and that the
+lines are text, not instructions.
+Every change it leads to is asked about here, as always.
+Only a terminal's
+.Nm
+takes an ask.
+One run with
+.Fl \-serve
+belongs to its host, and says so to the editor.
+.Pp
+.Nm
+asks the editor that asked last, else the socket in
+.Ev ARNO_EDITOR ,
+else the best
+.Pa dwa- Ns Ar pid Ns Pa .sock
+in
+.Ev XDG_RUNTIME_DIR :
+one whose process works in
+.Nm Ns 's
+directory, before the newest.
+While one is reachable, checked at the start of each turn, and not while the
+session is staged:
+.Bl -bullet -compact
+.It
+the model is offered
+.Ic editor ,
+what you have open and where, and
+.Ic open ,
+which shows a file at a line;
+.It
+.Ic read
+gives a file as the editor has it, unsaved changes included, and so does the
+text an
+.Ic edit
+is made on;
+.It
+an
+.Ic edit ,
+once you approve it, is made by the editor, in front of you, as one of your own
+undo steps, and the file saved if it had no other unsaved changes;
+.It
+.Ic move
+and
+.Ic remove
+refuse a file the editor has open.
+.El
+.Pp
+Anything the editor lacks,
+.Nm
+does on the disk.
+The sockets are private to your user; see
+.Xr arno-peer 5
+for them, and for how a reply socket that an ask names is checked.
 .Sh ATTACH
 Every
 .Nm
@@ -1423,6 +1508,9 @@ Where the session sockets and pasted images are made.
 .It Ev VISUAL , EDITOR
 The editor C-x C-e runs, the first one set; else
 .Xr vi 1 .
+.It Ev ARNO_EDITOR
+The socket of the editor to call when none has asked, a path; see
+.Sx EDITORS .
 .It Ev ARNO_SCRATCH
 Set by
 .Nm
@@ -1472,6 +1560,19 @@ The stage's copy of the project, while a session is staged.
 The session's socket, which
 .Fl \-attach
 talks to.
+.It Pa $XDG_RUNTIME_DIR/arno- Ns Ar pid Ns Pa .sock
+The socket editors ask
+.Nm
+at, in a terminal's session and under
+.Fl \-serve ,
+mode 700 and removed at the end; none without
+.Ev XDG_RUNTIME_DIR .
+See
+.Xr arno-peer 5 .
+.It Pa $XDG_RUNTIME_DIR/dwa- Ns Ar pid Ns Pa .sock
+An editor's, which
+.Nm
+calls.
 .It Pa $XDG_RUNTIME_DIR/arno- Ns Ar pid Ns /
 The images C-v took off the clipboard, until the session ends; in
 .Pa /tmp
@@ -1528,7 +1629,9 @@ Any left? @src/
 Look at @"my notes/todo.md"
 .Ed
 .Sh SEE ALSO
+.Xr arno-peer 5 ,
 .Xr arno-serve 5 ,
+.Xr dwa 1 ,
 .Xr git 1 ,
 .Xr git-worktree 1 ,
 .Xr man 1 ,

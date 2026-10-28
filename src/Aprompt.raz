@@ -36,10 +36,10 @@
    neither drifts from what arno does.
 
    Depends on Aahead (the map and the notes), Amemory (the facts),
-   Afence, Astore (the date), Atools (how the human is asked) and Awire
-   (the provider). Leaves out what comes with later stages: te. *)
+   Afence, Astore (the date), Atools (how the human is asked), Apeer (the
+   editor's section, while one is reachable) and Awire (the provider). *)
 module Aprompt;
-import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out, Rt,
+import Aahead, Amemory, Afence, Astore, Atools, Apeer, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out, Rt,
     Strs := Vec([]const U8);
 import SYSTEM;
 
@@ -425,6 +425,10 @@ begin
             "project instead.", [Fmt.str(Afence.scratch)]);
     end;
     if LEN(Afence.stage) > 0 then stageText(out); end;
+    if Apeer.reachable() then
+        Buf.str(out, "\n\n");
+        Buf.str(out, Apeer.SystemText);
+    end;
     if LEN(host) > 0 then
         Buf.str(out, "\n\n");
         Buf.str(out, host);

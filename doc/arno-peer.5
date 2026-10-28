@@ -1,0 +1,431 @@
+.Dd October 28, 2026
+.Dt ARNO-PEER 5
+.Os
+.Sh NAME
+.Nm arno-peer
+.Nd how arno and a text editor talk
+.Sh DESCRIPTION
+.Xr arno 1
+and a text editor, an
+.Em editor
+here, can talk over Unix sockets, each way.
+.Bl -tag -width "the editor asks"
+.It "the editor asks"
+.Nm arno
+about lines of a buffer: a question, which becomes a turn, or only the
+lines, which go into
+.Nm arno Ns 's
+input.
+.Nm arno
+answers the question when the turn ends.
+.It "arno calls"
+the editor, to see what the human has open, to read a buffer with its
+unsaved changes, to open a file at a line, and to make an edit in front of
+the human, as one of their own undo steps.
+.El
+.Pp
+The editor in the examples is
+.Xr dwa 1 ,
+and any program that speaks this page is one.
+Neither side needs the other: with no editor,
+.Nm arno
+reads and writes the disk, and with no
+.Nm arno ,
+the editor has no one to ask.
+.Pp
+This page is the protocol: the framing, the sockets and how each side finds
+the other, then each direction, then who may do what.
+The viewers of a session, and the programs that drive one, speak another
+protocol, in
+.Xr arno-serve 5 ,
+on a socket of their own.
+.Sh FRAMING
+A connection carries one request and then its answer.
+The request is netstrings back to back, the first the verb and the rest its
+arguments, and it ends where its sender shuts down its side of writing; the
+answer is netstrings too, and ends where the other side closes.
+A netstring is a length in decimal, a colon, that many bytes and a comma:
+.Ql 5:state, .
+.Pp
+The first netstring of an answer is its status:
+.Bl -tag -width "error" -compact
+.It Cm ok
+it was done.
+.It Cm no
+it was understood and the answer is no, as a
+.Cm read
+of a file that is not open.
+.It Cm error
+it was not done; the second netstring says why.
+.It Cm busy
+the human is in the middle of a command, and the request would change what
+is on the screen.
+Ask again a little later.
+.El
+.Pp
+A reader takes the comma after the last netstring as optional, and a
+netstring that is malformed, or longer than what is left, as the end of the
+fields.
+A field not sent is empty.
+Bytes are not interpreted: a field holds whatever it holds, line feeds and
+all.
+.Pp
+A connection that sends nothing is not an error and gets no answer.
+That is how
+.Nm arno
+asks whether an editor is there, and an editor may ask the same of
+.Nm arno .
+.Pp
+A reader waits two seconds at most for the other side, and refuses a request
+of more than 16 MiB.
+.Nm arno
+holds eight connections at once; a ninth pushes out the oldest, so that a
+client that connects and says nothing blocks no one.
+.Sh SOCKETS AND DISCOVERY
+.Nm arno
+listens on
+.Pa arno- Ns Ar pid Ns Pa .sock
+in
+.Ev XDG_RUNTIME_DIR ,
+made with the umask 077, so that only its user can connect, and removed when
+it ends.
+With no
+.Ev XDG_RUNTIME_DIR
+there is no socket, and never one in
+.Pa /tmp .
+This socket is not the session's viewer socket, which is
+.Pa arno/ Ns Ar pid Ns Pa .view
+in the same directory.
+It is made in a terminal's session and under
+.Ql "arno \-\-serve" ;
+not in a one-shot
+.Ql "arno PROMPT" .
+.Pp
+An editor listens on
+.Pa dwa- Ns Ar pid Ns Pa .sock
+in the same directory, likewise private and removed at its end.
+.Pp
+The editor finds
+.Nm arno
+at
+.Ev ARNO_SOCK
+if it is set, else at the best
+.Pa arno- Ns Ar pid Ns Pa .sock
+in the directory of its own socket: the one whose process works in the
+editor's directory, before the newest.
+.Pp
+.Nm arno
+calls the editor that asked last; else the socket in
+.Ev ARNO_EDITOR ;
+else the best
+.Pa dwa- Ns Ar pid Ns Pa .sock
+in
+.Ev XDG_RUNTIME_DIR ,
+chosen as above, with the roles turned: the editor whose process works in
+.Nm arno Ns 's
+directory, before the newest.
+A socket of a process that is gone, or of another user's, is passed over,
+and a socket at which no one listens is removed.
+.Pp
+The editor's tools are offered to the model only while an editor is
+reachable, which
+.Nm arno
+asks, by connecting and saying nothing, at the start of each turn, and not
+while the session works in the stage's copy, which no editor has open.
+.Sh THE EDITOR ASKS ARNO
+.Bl -tag -width Ds
+.It Cm ask Ar question Ar path Ar first Ar last Ar text Op Ar socket Op Cm new
+The lines
+.Ar first
+to
+.Ar last
+(from 1) of the file
+.Ar path
+(absolute; empty for a buffer with no name),
+.Ar text ,
+each ended by a line feed, as the editor has them, unsaved changes and all,
+and what the human typed about them,
+.Ar question .
+.Ar socket
+is the editor's own socket, where the answer goes; empty, there is none.
+.Cm new ,
+in the last field, asks for a new conversation, started first.
+.El
+.Pp
+What
+.Nm arno
+does with it:
+.Bl -tag -width Ds
+.It A question
+becomes a turn, run now or, if
+.Nm arno
+is in a turn, after it.
+The answer is
+.Cm ok
+with
+.Ql asked
+or, in a turn,
+.Ql "queued; arno is busy" ;
+the answer to the question itself comes later, as
+.Cm reply .
+.It No question
+puts a reference to the lines,
+.Ql @path:first-last
+from
+.Nm arno Ns 's directory, into
+.Nm arno Ns 's input, after what is typed there, for the human to finish.
+The answer is
+.Cm ok
+with
+.Ql "added to the input" .
+.It Cm new
+with no question starts the new conversation and puts the reference in the
+input; with one, the turn is in the new conversation.
+.El
+.Pp
+The editor that asked is the one
+.Nm arno
+calls from then on, if it named a socket.
+.Pp
+When the turn ends,
+.Nm arno
+calls the editor at
+.Ar socket
+with
+.Cm reply ,
+the question and the model's answer, as the editor's own
+.Cm reply
+below takes them.
+A turn that failed, or was stopped, sends none.
+.Pp
+An ask is refused, as
+.Cm error
+with the reason, and run as no turn and put in no input, if:
+.Bl -bullet -compact
+.It
+it has fewer than the six fields up to
+.Ar text ;
+.It
+its connection is another user's;
+.It
+this
+.Nm arno
+belongs to a host, as under
+.Ql "arno \-\-serve" :
+the answer is
+.Ql "this arno belongs to NAME; ask your own" ,
+since a question typed in the editor belongs in the human's own
+.Nm arno ,
+not in one a program is driving;
+.It
+its
+.Ar socket
+is not a socket directly in
+.Nm arno Ns 's socket directory (see
+.Sx SECURITY ) ;
+.It
+its
+.Ar path
+holds a control character.
+.El
+.Pp
+An ask never passes as something the human typed at the terminal.
+In the transcript it is a line from the editor, with the path and the lines,
+and the question under it; the model is given it under a first line that
+says it came from the editor and not from the terminal, and its system
+prompt says what that means.
+.Sh ARNO CALLS THE EDITOR
+Each request is one connection, and
+.Nm arno
+calls again a quarter of a second after a
+.Cm busy ,
+for about fifteen seconds, or until the human stops the turn.
+.Bl -tag -width Ds
+.It Cm state
+Answers
+.Cm ok
+and a text: the editor's directory, the current buffer and its line, what the
+human is doing if it is not normal mode, and every buffer open, with the
+unsaved ones marked.
+It is the text of the tool
+.Ic editor .
+.It Cm buffers
+Answers
+.Cm ok
+and then one more netstring for each buffer that holds a file, its absolute
+path.
+.Nm arno
+does not ask it.
+.It Cm read Ar path
+The whole text of the buffer of the file at
+.Ar path ,
+absolute or from the editor's directory, or of the current buffer if
+.Ar path
+is empty, unsaved changes and all, each line ended by a line feed.
+.Cm no
+if the file is not open.
+.Nm arno
+uses it for the tool
+.Ic read ,
+for the text an
+.Ic edit
+is made on, and to refuse to move or remove a file that is open.
+.It Cm open Ar path Ar line
+Shows the file at
+.Ar path ,
+the cursor on
+.Ar line
+(from 1; none or 0, where it was).
+Answers
+.Cm ok
+and what it did, or
+.Cm error
+if there is no such file.
+It is the tool
+.Ic open .
+.It Cm edit Ar path Ar old Ar new Op Cm all
+Replaces
+.Ar old
+by
+.Ar new
+in the file at
+.Ar path :
+once, and
+.Cm error
+if
+.Ar old
+is not there or is there more than once, or, with
+.Cm all
+as the last field, everywhere.
+An empty
+.Ar old
+makes the file, of
+.Ar new .
+The file is opened if it was not, and saved if it had no unsaved changes
+before; the change is one undo step.
+Answers
+.Cm ok
+and what it did, or
+.Cm error
+and why.
+The human approves the edit in
+.Nm arno
+before it is asked of the editor, as any edit; a refusal is never sent.
+.It Cm reply Ar question Ar text
+.Nm arno Ns 's answer to a question the editor asked, with the question again,
+so that the editor can show what the answer is to.
+The editor keeps it until it can show it, and answers
+.Cm ok
+at once, even when it is
+.Cm busy
+for the verbs above.
+.El
+.Pp
+A verb an editor does not know is answered
+.Cm error ,
+and
+.Nm arno
+does with the disk what the editor lacks.
+.Sh SECURITY
+The sockets are in the user's own runtime directory, made with the umask 077,
+and a connection from another user is refused: on
+.Nm arno Ns 's
+socket by asking the system who is on the other end
+.Pq Dv SO_PEERCRED ,
+and it is answered
+.Cm error
+and closed.
+Beyond that, any program of the same user that can reach the socket can send
+an ask, and the protocol does not pretend otherwise.
+So:
+.Bl -bullet
+.It
+An ask is never the human's message.
+It is shown as the editor's, is put to the model as the editor's, with the
+lines said to be quoted text, never instructions, and decides nothing:
+every edit, move, removal and program run that follows is approved at the
+terminal, as for any turn.
+.It
+The answer to a question can go only where the editor's own socket is.
+.Nm arno
+gives it to the socket the ask names, and that must be a socket directly in
+.Nm arno Ns 's
+socket directory, not in a directory below it and not outside it, whose name
+is
+.Ar name Ns Pa - Ns Ar pid Ns Pa .sock ,
+with
+.Ar pid
+the number of a process that is running and is the user's, which is the
+user's own file and not a symbolic link, nor a regular file or a directory.
+Otherwise the ask is refused, so that an ask cannot make
+.Nm arno
+send the answer, which may hold the model's reading of the user's files, to
+any other file or program.
+.It
+The path in an ask holds no control character, so that it cannot make a
+second line of the transcript or of the message.
+.It
+.Nm arno
+calls only sockets the user owns.
+What an editor answers to
+.Cm read
+goes to the model, as what the human has open does.
+.El
+.Sh EXAMPLES
+The ask of the lines 2 and 3 of
+.Pa /home/me/a.c ,
+with a question, from an editor whose socket is
+.Pa /run/user/1000/dwa-4242.sock ,
+is these netstrings, then the editor's shutdown:
+.Bd -literal -offset indent
+3:ask,4:why?,12:/home/me/a.c,1:2,1:3,8:one\entwo\en,
+31:/run/user/1000/dwa-4242.sock,0:,
+.Ed
+.Pp
+and the answer
+.Bd -literal -offset indent
+2:ok,5:asked,
+.Ed
+.Pp
+Later arno calls the editor with
+.Bd -literal -offset indent
+5:reply,4:why?,7:Because.,
+.Ed
+.Pp
+From a shell with
+.Xr nc 1 ,
+which can shut down its side of writing, a check that
+.Nm arno
+is there, and an ask with no question:
+.Bd -literal -offset indent
+printf '3:ask,0:,0:,1:1,1:1,0:,' | nc \-UN $XDG_RUNTIME_DIR/arno-4243.sock
+.Ed
+.Sh SEE ALSO
+.Xr arno 1 ,
+.Xr arno-serve 5 ,
+.Xr dwa 1
+.Pp
+D. J. Bernstein,
+.Lk https://cr.yp.to/proto/netstrings.txt "Netstrings" ,
+1997.
+.Sh HISTORY
+The framing, the verbs and the discovery are those of the Pascal arno's
+editor protocol, so that an editor written for it works with this
+.Nm arno .
+What is new is the security: the ask that cannot pass as the human's
+message, the reply socket checked, and the socket that is the user's
+alone.
+.Sh CAVEATS
+The reply socket is checked when the ask comes, and used when the turn ends.
+.Pp
+Whether the file named is a socket is not told by the system call
+.Nm arno
+uses: it refuses a symbolic link, a regular file and a directory, and a
+named pipe or a device the user owns, named like a socket, would be taken
+for one; connecting to it, which is all that is done, does nothing.
+.Pp
+The process number in the name is not checked to be the asking process's:
+an editor that asks from a helper process is allowed.
+.Pp
+The size of a Unix socket's path is limited by the system to 107 bytes; a
+runtime directory with a longer name has no socket.

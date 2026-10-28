@@ -54,12 +54,16 @@
    can't yet break into a wait for the server, since raz has no way to
    signal one thread (PLAN.md, asked of raz).
 
-   Depends on Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt,
+   An editor's ask (Apeer) arrives on the loop, as a viewer's line does:
+   a question runs as a job once none is running, shown as coming from
+   the editor, and lines with no question go to the input as a reference.
+
+   Depends on Asession, Agent, Apeer, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt,
    rtui (TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit, TuiText,
    TuiLine), rterm's Term, Thread and Sys. Leaves out, for
    the mouse, and vim's keys. *)
 module Ascreen;
-import Asession, Agent, Aboard, Aview, Aframe, Afence, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+import Asession, Agent, Apeer, Aboard, Aview, Aframe, Afence, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
     TuiText, TuiLine, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event), Fields := Vec([]const U8),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 import SYSTEM;
@@ -95,6 +99,8 @@ var
 
     (* a job's own *)
     job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
+    asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
+    editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
     because: Buf.Buf;   (* the why it was given *)
 
@@ -250,7 +256,12 @@ begin
     m := Msgs.all(c.msgs);
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
-        | user: post(typed, Aattach.shown(m[i].text), "", "", false);
+        | user:
+            if Apeer.isAsk(m[i].text) then
+                post(told, Apeer.shown(m[i].text), "", "", false);
+            else
+                post(typed, Aattach.shown(m[i].text), "", "", false);
+            end;
         | assistant:
             post(said, m[i].text, "", "", false);
             calls := Calls.all(m[i].calls);
@@ -266,7 +277,9 @@ proc work(_arg: ^U8);
 var going: BOOL;
 begin
     going := true;
-    if job.len = 0 then
+    if asking then
+        Asession.ask(session^, editorAsk);
+    elsif job.len = 0 then
         Asession.prepare(session^);
     else
         going := Asession.line(session^, Buf.bytes(job));
@@ -347,11 +360,48 @@ begin
     end;
 end;
 
-(* A viewer's socket, or the session's, is ready. *)
+(* The ask a is put in the input, as a reference to its lines, after
+   what is typed there. *)
+proc inputReference(const a: Apeer.Ask);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, TuiEdit.text(SYSTEM.ADR(editor)));
+    if (b.len > 0) and (Buf.bytes(b)[b.len - 1] # ' ') then Buf.add(b, ' '); end;
+    Apeer.reference(a, b);
+    Buf.add(b, ' ');
+    TuiEdit.setText(SYSTEM.ADR(editor), Buf.bytes(b));
+end;
+
+(* What editors asked, taken as the session can: a question, or a new
+   conversation, only with no job running, its job begun, as an ask and
+   not as the human's own message; lines to be asked about put in the
+   input. *)
+proc takeAsks;
+var a: Apeer.Ask;
+begin
+    while Apeer.take(a, thread = nil) do
+        if a.fresh and (LEN(a.question) = 0) then start("/new"); end;
+        if LEN(a.question) = 0 then
+            inputReference(a);
+            Apeer.free(a);
+        else
+            editorAsk := a;
+            asking := true;
+            start("ask");
+            if thread = nil then Apeer.free(editorAsk); asking := false; end;
+        end;
+    end;
+end;
+
+(* A socket of a viewer, or of an editor, or the session's, is ready. *)
 proc viewReady;
 begin
     Aview.serviceAll();
+    Apeer.serviceAll(thread # nil);
     takeViewers();
+    takeAsks();
 end;
 
 (* The fd of a viewer is to be watched by the loop, or no longer. *)
@@ -400,7 +450,12 @@ begin
         thread := nil;
         Aview.busied(false);
         Aview.waiting("", false);
+        if asking then
+            Apeer.free(editorAsk);
+            asking := false;
+        end;
         takeViewers();
+        takeAsks();
         if mode >= 0 then
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
@@ -1028,6 +1083,8 @@ begin
     Aview.owning("terminal", Afence.zone);
     Aview.watching(watching);
     if Aview.listen() then _ := TuiLoop.watch(Aview.listenFd(), viewReady); end;
+    Apeer.watching(watching);
+    if Apeer.listen() then _ := TuiLoop.watch(Apeer.listenFd(), viewReady); end;
     TuiLoop.after(0);
     ran := TuiLoop.run({key: key, draw: draw, woken: woken, tick: tick});
     if thread # nil then
@@ -1039,6 +1096,7 @@ begin
         Thread.join(thread);
     end;
     Aview.unlisten();
+    Apeer.unlisten();
     Aattach.drop;
     return ran;
 end;

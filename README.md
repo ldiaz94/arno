@@ -149,7 +149,8 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
-`delegate` (when the config names a `worker`) and `shell`. It reads freely inside the project; outside, it needs a
+`delegate` (when the config names a `worker`), `shell`, and, while a
+text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows. `check` runs the test command you set.
 
@@ -179,9 +180,19 @@ and output; the host can offer tools of its own. `arno --attach`
 shows any arno's session, a terminal's or a host's, in your terminal
 and types into it.
 
+**Editors.** A text editor that speaks `arno-peer(5)`, such as dwa, can
+ask arno, in dwa `:ask QUESTION` over some lines, and arno answers in the
+editor when its turn ends; without a question the lines go into arno's
+input as an `@` reference. The ask shows in the transcript as coming
+from the editor, never as something you typed. While an editor is
+reachable (the one that asked last, `$ARNO_EDITOR`, else the best
+`dwa-PID.sock` in `$XDG_RUNTIME_DIR`), `read` gives a file as the editor
+has it, unsaved changes and all, and an approved `edit` is made by the
+editor, as one of your own undo steps. The sockets are yours alone.
+
 ## How it works
 
-Six ideas, a few modules each, listed in the order to read them. Each
+Seven ideas, a few modules each, listed in the order to read them. Each
 module opens with what it is, what it needs and what it leaves out.
 
 **1. A conversation is data.** `Amsg` is the messages as records, read
@@ -217,7 +228,14 @@ transcript, `Ascreen` the full screen on rtui, with `Acopy`,
 **6. A session can be seen from elsewhere.** `Aview` makes a session
 something others can watch, and `Aframe` the messages on a pipe or
 socket that stay open. `Aserve` is `--serve` and `Aview` with `Ascreen`
-is `--attach`. `Arno` ties it together: the command line.
+is `--attach`.
+
+**7. An editor is a peer.** `Apeer` is `arno-peer(5)`: it listens for an
+editor's asks, which `Ascreen` and `Asession` run as turns shown as the
+editor's, with every forged ask refused (the reply socket must be a live
+user's socket directly in arno's socket directory), and it calls the
+editor, whose tools `Atools` offers while one is reachable. `Arno` ties
+it all together: the command line.
 
 ## Correctness
 
@@ -232,12 +250,15 @@ warning (`make man`, part of `make check`).
 is tried end to end: `test/oneshot.cn` runs one-shot turns against
 `test/Astub.raz`, a model of the test's own, with a staged shell and
 an MCP server (`test/Amcpstub.raz`); `test/serve.cn` drives `--serve`
-with a host (`test/Ahost.raz`). The README's recording is
+with a host (`test/Ahost.raz`); `test/peer.cn` drives a terminal's arno
+over a pseudo-terminal with an editor in miniature (`test/Apeerhost.raz`),
+which asks, is answered, is called, and tries every forged ask. It was
+also tried against the real dwa. The README's recording is
 made by `make cast`, which is not part of the check.
 
 ## Size
 
-14 202 lines of code in 29 modules, with 2 699 of comment, measured
+15 295 lines of code in 30 modules, with 2 905 of comment, measured
 by `make loc`.
 
 ## Left out
@@ -249,7 +270,12 @@ by `make loc`.
 - **The jail beyond x86_64.** It needs Linux 5.12 and x86_64.
 - **MCP's pages and non-text.** `tools/list` is read to its first page,
   and content that is not text shows as `[type]`.
-- **Editor peers**, and their protocol (stage 6b of the plan).
+- **An editor's buffer list for `@` completion.** The `buffers` verb is
+  in `arno-peer(5)`, but arno does not ask it.
+- **Asks in a one-shot or a plain session.** Only a terminal's arno
+  takes an editor's ask; one under `--serve` refuses it as its host's.
+- **A peer check of the process behind a reply socket.** The name's pid
+  must run and be yours, not be the asker's own.
 - **A mouse.** The screen is keys alone.
 
 [PLAN.md](PLAN.md) lists what is still open.

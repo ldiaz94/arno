@@ -296,7 +296,7 @@ one or more commits that build with `-Werror`.
    test is `Amcp`'s `main` over `test/Amcpstub.raz` (`build/mcpstub`),
    and `oneshot.cn` runs a call through the program. Also, `Atools`'s
    declined text is one `declined` for `approve`, `run` and MCP.
-6. **Peers, serve, attach:** `arno-serve(5)` (the host and viewer protocol; `arno-peer(5)`, the editors', is stage 6b), `--serve`, `--attach`.
+6. **Peers, serve, attach:** `arno-serve(5)` (the host and viewer protocol), `arno-peer(5)` (the editors'), `--serve`, `--attach`.
    - [x] a. `--serve`, `--attach` and `Forget`. `Aframe` is the
      netstring messages of `~/lib/arnoc`, byte for byte; `Aview` the
      session as others see it: every change to the Board is made
@@ -338,11 +338,42 @@ one or more commits that build with `-Werror`.
      viewers (rtui's `MaxWatch`), and a viewer's unsent tail waits for
      the next change (`TuiLoop.watch` is read-only). `--attach -l`
      prints its fields parted by tabs.
-   - [ ] b. The editors' protocol, `arno-peer(5)`: a client asks arno,
+   - [x] b. The editors' protocol, `arno-peer(5)`: a client asks arno,
      an editor serves its buffers (read, open, edit), `$ARNO_EDITOR`
-     and a directory of sockets, the forged ask closed. Left out of a:
-     it is a protocol of its own, written as a page first, and a
-     session stands without it.
+     and a directory of sockets, the forged ask closed. Written as a
+     page first (`doc/arno-peer.5`), the protocol as dwa speaks it, and
+     a session stands without it. `Apeer` is the module: the server
+     half on `$XDG_RUNTIME_DIR/arno-PID.sock` (umask 077, none without
+     the variable, removed at the end; apart from `--attach`'s
+     `PID.view`), read by the session's loop without waiting, in a
+     terminal's session (`Ascreen`) and under `--serve` (`Aserve`); the
+     client half, which calls the editor that asked last, else
+     `$ARNO_EDITOR`, else the best `dwa-PID.sock` as dwa scores arno's.
+     `Atools` offers `editor` and `open` only while an editor is
+     reachable (asked at each turn's start, and not while staged),
+     reads through it, makes an approved edit through it and refuses to
+     move or remove what it has open; `Aprompt` tells the model so.
+     `Asession.ask` runs an ask as a turn. Tests: `Apeer`'s `main` (the
+     framing, every refusal of a reply socket, the server, the client
+     against an editor played by a thread), and `test/peer.cn` with
+     `test/Apeerhost.raz`, an editor in miniature, over a pseudo-terminal
+     against the real arno; also tried by hand against the real dwa.
+     What differs from the Pascal arno: an ask is never the human's
+     message: the transcript shows it as the editor's, with its path and
+     lines, and the model's message and system prompt say so; an ask's
+     reply socket must be a live user's socket directly in the socket
+     directory, named NAME-PID.sock, or the ask is refused, as is a path
+     with a control character, a connection of another user's
+     (`Sys.peer`, SO_PEERCRED) and, under `--serve`, every ask (as the
+     Pascal arno did, with its host's name); no socket without
+     `$XDG_RUNTIME_DIR`, never in `/tmp`; the socket is read without
+     waiting, not on a thread, so a client that says nothing holds one of
+     eight slots; `$TE_SOCK` and `te-PID.sock` are gone for
+     `$ARNO_EDITOR` and `dwa-PID.sock`; the turn's answer has no
+     Sources footer, which the raz arno does not make; a file open in
+     the editor but not on the disk can't be read by `read`; the
+     `buffers` verb is not asked, so `@` completion doesn't offer the
+     editor's buffers. A one-shot and a plain session take no ask.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`
    for a while; `man desktop` updated.
 
@@ -506,7 +537,7 @@ commit in `~/lib/arno` that says more.
 - Viewers written without waiting, each with an outbox, dropped a
   megabyte behind; questions go only to the owner. 46f4b24
 - An empty id means the current conversation. dbabb29
-- **Open in the Pascal arno, to be closed here:** a forged ask on the
+- **Open in the Pascal arno, closed in 6b:** a forged ask on the
   socket becomes the human's message, and an ask's `sock` names any
   socket for the reply to dial. The socket's mode, its directory (no
   `/tmp`) and who may connect are decided in `arno-peer(5)`. 52f139f,

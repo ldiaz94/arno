@@ -43,7 +43,8 @@
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git,
    run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
-   Awire (for Tool), Amcp (the MCP servers' tools), rnet's Http (search and fetch), rjson's Json.
+   Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
+   rnet's Http (search and fetch), rjson's Json.
    Delegate is the agent's, which runs the worker; it is described
    here, with the rest. A call of an MCP server's tool is asked about
    every time, and is not fenced. A change in the conversation's scratch
@@ -51,11 +52,17 @@
    see its path as $ARNO_SCRATCH. shell is offered only while the
    stage is up (Afence.stage): in the project's own tree it could
    rewrite .git or the Makefile, which git and check then run outside
-   the sandbox, with no diff shown. Leaves out the images read
-   shows as pictures, which come with the screen; and an editor's
-   buffers, which come with the peers. *)
+   the sandbox, with no diff shown.
+
+   While an editor is reachable (Apeer), editor says what the human has
+   open, open shows them a file, read gives a file as the editor has it,
+   unsaved changes included, and an edit, once approved, is made by the
+   editor, as one of the human's own undo steps; the disk is used for
+   what the editor lacks. A file the editor has open is neither moved nor
+   removed. Leaves out the images read shows as pictures, which come
+   with the screen. *)
 module Atools;
-import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+import Afence, Afind, Apeer, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
@@ -256,6 +263,16 @@ const
          params: `{"type":"object","properties":` +
             `{"url":{"type":"string","description":"the page's URL, http:// or https://, as search gave it"}},` +
             `"required":["url"]}`},
+        {name: "editor",
+         description: "See what the human has open in their editor: the current file and line, and the other " +
+            "buffers, marked when they have unsaved changes. Takes no arguments.",
+         params: `{"type":"object","properties":{}}`},
+        {name: "open",
+         description: "Show the human a file in their editor, at a line, to point them at what you are talking about.",
+         params: `{"type":"object","properties":` +
+            `{"path":{"type":"string","description":"file path, relative to the working directory"},` +
+            `"line":{"type":"integer","description":"line to show, from 1; default 1"}},` +
+            `"required":["path"]}`},
         {name: "delegate",
          description: "Give a self-contained step of a larger job to a worker: a cheaper model with the " +
             "ordinary tools and nothing but your brief, which does the step and reports what it did, what it " +
@@ -469,12 +486,74 @@ end;
 
 (* The tools *)
 
+(* The text of the file p into text: as the editor has it, unsaved
+   changes and all, if it has the file open, else from the disk; Files.load's
+   result, 0 if it was read. *)
+proc load(p: []const U8; stopped: proc: BOOL; var text: Buf.Buf): INT;
+var full: Buf.Buf;
+begin
+    if Apeer.reachable() then
+        Buf.init(full, Heap.heap);
+        defer Buf.done(full);
+        if Apeer.contents(Apeer.absolute(p, full), stopped, text) then return 0; end;
+    end;
+    return Files.load(p, text);
+end;
+
+(* An editor's answer, its status st and text in out, made a result: the
+   text after lead if it is ok, else an error saying why. *)
+proc answered(st: Apeer.Status; lead: []const U8; var out: Buf.Buf);
+var t: Buf.Buf;
+begin
+    Buf.init(t, Heap.heap);
+    defer Buf.done(t);
+    Buf.str(t, Buf.bytes(out));
+    Buf.reset(out);
+    match st of
+    | Apeer.Status.ok: Fmt.write(out, "{}{}", [Fmt.str(lead), Fmt.str(Buf.bytes(t))]);
+    | Apeer.Status.absent: Buf.str(out, "error: no editor is running");
+    | else: Fmt.write(out, "error: {}", [Fmt.str(Buf.bytes(t))]);
+    end;
+end;
+
+(* editor: what the human has open in their editor, into out. *)
+proc editor(const h: Human; var out: Buf.Buf);
+begin
+    answered(Apeer.call(["state"], h.stopped, out), "", out);
+end;
+
+(* open: the file at the argument path shown in the editor, at the argument line. *)
+proc open(const a: Args; const h: Human; var out: Buf.Buf);
+var full: Buf.Buf; digits: [20]U8; k: INT;
+begin
+    Buf.init(full, Heap.heap);
+    defer Buf.done(full);
+    digits, k := Str.fromInt(int(a, "line", 1));
+    answered(Apeer.call(["open", Apeer.absolute(path(a, "path"), full), digits[0..k]], h.stopped, out), "", out);
+end;
+
+(* The edit of the file p, old for new, made by the editor, so that it is
+   the human's own undo step; false if there is no editor, and the file
+   is to be written here. The result, ok or an error, goes into out. *)
+proc throughEditor(p, old, new: []const U8; all: BOOL; const h: Human; var out: Buf.Buf): BOOL;
+var full: Buf.Buf; st: Apeer.Status; flag: []const U8;
+begin
+    Buf.init(full, Heap.heap);
+    defer Buf.done(full);
+    flag := "";
+    if all then flag := "all"; end;
+    st := Apeer.call(["edit", Apeer.absolute(p, full), old, new, flag], h.stopped, out);
+    if st = Apeer.Status.absent then return false; end;
+    answered(st, "ok: ", out);
+    return true;
+end;
+
 (* The file's lines, numbered: the number right-aligned in five
    columns, then a tab, as cat -n has them. With two blanks there,
    models took them for indentation and put them in an edit's old text;
    a tab can't be taken for the file's own blanks once the number is
    dropped. *)
-proc read(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
+proc read(const a: Args; const h: Human; mem: ^Mem.Allocator; var out: Buf.Buf);
 var text: Buf.Buf; s, p: []const U8; i: Sys.Info; e, at, j, k, n, first, count: INT; digits: [20]U8;
 begin
     p := path(a, "path");
@@ -499,7 +578,7 @@ begin
         return;
     end;
     Buf.init(text, mem);
-    if Files.load(p, text) # 0 then
+    if load(p, h.stopped, text) # 0 then
         Buf.str(out, "error: cannot read ");
         Buf.str(out, p);
         return;
@@ -1127,7 +1206,7 @@ begin
             Fmt.write(out, "error: {} is a directory", [Fmt.str(p)]);
             return;
         end;
-        if (e # 0) or not i.file or (i.size > MaxFile) or (Files.load(p, text) # 0) then
+        if (e # 0) or not i.file or (i.size > MaxFile) or (load(p, h.stopped, text) # 0) then
             Fmt.write(out, "error: cannot read {} (no such file? use find to locate it)", [Fmt.str(p)]);
             return;
         end;
@@ -1156,6 +1235,7 @@ begin
     end;
     marked(diff, '+', new, MaxFile);
     if not Afence.ours(p) and not approve(h, Buf.bytes(q), Buf.bytes(diff), out) then return; end;
+    if Apeer.reachable() and not Afence.ours(p) and throughEditor(p, old, new, all, h, out) then return; end;
     if LEN(old) = 0 then
         Buf.str(b, new);
         if not makeDirs(p) then
@@ -1181,8 +1261,8 @@ end;
 (* Whether path is a file that move and remove may take; if not, why
    is added to out. A directory is refused: removing one is the one
    mistake here that could take a whole tree with it. *)
-proc movable(p: []const U8; var out: Buf.Buf): BOOL;
-var i: Sys.Info; e: INT;
+proc movable(p: []const U8; const h: Human; var out: Buf.Buf): BOOL;
+var i: Sys.Info; e: INT; full, text: Buf.Buf;
 begin
     i, e := Sys.info(p);
     if (e = 0) and i.dir then
@@ -1192,6 +1272,16 @@ begin
     if e # 0 then
         Fmt.write(out, "error: no file {} (use find to locate it)", [Fmt.str(p)]);
         return false;
+    end;
+    if Apeer.reachable() then
+        Buf.init(full, Heap.heap);
+        defer Buf.done(full);
+        Buf.init(text, Heap.heap);
+        defer Buf.done(text);
+        if Apeer.contents(Apeer.absolute(p, full), h.stopped, text) then
+            Fmt.write(out, "error: {} is open in the editor; ask the human to close it there first", [Fmt.str(p)]);
+            return false;
+        end;
     end;
     return true;
 end;
@@ -1205,7 +1295,7 @@ var p, dest: []const U8; q: Buf.Buf; e: INT;
 begin
     p := path(a, "path");
     dest := path(a, "to");
-    if not movable(p, out) then return; end;
+    if not movable(p, h, out) then return; end;
     if LEN(dest) = 0 then
         Buf.str(out, "error: to, the new path, is required");
         return;
@@ -1237,7 +1327,7 @@ proc remove(const a: Args; const h: Human; mem: ^Mem.Allocator; var out: Buf.Buf
 var p, s: []const U8; text, diff, q: Buf.Buf; e: INT;
 begin
     p := path(a, "path");
-    if not movable(p, out) then return; end;
+    if not movable(p, h, out) then return; end;
     Buf.init(text, mem);
     Buf.init(diff, mem);
     Buf.init(q, mem);
@@ -1329,7 +1419,7 @@ begin
     Buf.str(res, name);
     Buf.str(res, "\". The tools are:");
     for i := 0 to LEN(Offered) - 1 do
-        if usable(Offered[i].name) then
+        if usable(Offered[i].name) and (Apeer.reachable() or (Offered[i].name # "editor") and (Offered[i].name # "open")) then
             Buf.add(res, ' ');
             Buf.str(res, Offered[i].name);
         end;
@@ -1577,6 +1667,7 @@ begin
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
+        | "editor", "open": if not Apeer.reachable() then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": if LEN(Str.trim(Buf.bytes(runs))) = 0 then continue; end;
         | "check": if LEN(testFor(b)) = 0 then continue; end;
@@ -1720,7 +1811,11 @@ begin
     elsif not fenced(name, a, h, res) then
         (* res says why *)
     elsif name = "read" then
-        read(a, mem, res);
+        read(a, h, mem, res);
+    elsif name = "editor" then
+        editor(h, res);
+    elsif name = "open" then
+        open(a, h, res);
     elsif (name = "find") or (name = "grep") or (name = "def") or (name = "outline") then
         look(name, a, mem, res);
     elsif name = "git" then

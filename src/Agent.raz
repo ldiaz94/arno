@@ -42,11 +42,14 @@
    result is copied into the conversation, which keeps its own memory
    from Heap.
 
-   Depends on Aprompt (the system prompt), Aahead, Aprice, Atools,
+   Each turn begins by asking Apeer whether an editor is reachable, which
+   decides whether its tools are offered.
+
+   Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Apeer,
    Afence, Awire, Amsg and Astore. Leaves out forking calls that only
    read, to run them side by side. *)
 module Agent;
-import Aprompt, Aahead, Aprice, Atools, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Heap, Arena, Rt, Fmt, Out,
+import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Heap, Arena, Rt, Fmt, Out,
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 import SYSTEM;
 
@@ -507,6 +510,8 @@ var sys, b: Buf.Buf; first, step, failing, calls, i, floor: INT; m: []Amsg.Msg; 
 begin
     first := c.msgs.len;
     forget(a);
+    (* the editor has the human's files open, not the stage's copy *)
+    Apeer.refresh(LEN(Afence.stage) = 0);
     Buf.init(sys, Heap.heap);
     defer Buf.done(sys);
     Buf.init(b, Heap.heap);

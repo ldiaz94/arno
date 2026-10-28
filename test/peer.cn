@@ -1,0 +1,54 @@
+// peer.cn stub arno peerhost: arno's editors' protocol, arno-peer(5):
+// arno on a pseudo-terminal, driven by test/Apeerhost.raz (build/peerhost),
+// which plays an editor, against the model's server of test/Astub.raz
+// (build/stub). The editor's dialogue is in Apeerhost.raz, which says what
+// arno must do; this sets the scene: the stub, a configuration that points
+// at it, a project with one file, and directories of their own for arno's
+// conversations and the sockets.
+//
+// Run from the top of the tree, by make check; what it makes goes under
+// build/peer.
+
+if length(args) <> 3 then begin
+  echo 'usage: concha test/peer.cn stub arno peerhost' >&2
+  halt(2)
+end
+stub := args[0]
+arno := `pwd` + '/' + args[1]
+peerhost := args[2]
+
+// absolute: arno works in the project's directory, where a relative one is another
+dir := `pwd` + '/build/peer'
+rm -rf $dir
+mkdir -p "$dir/config/arno" "$dir/data" "$dir/run" "$dir/proj"
+chmod 700 "$dir/run"
+export XDG_CONFIG_HOME := "$dir/config"
+export XDG_DATA_HOME := "$dir/data"
+export XDG_CACHE_HOME := "$dir/cache"
+export XDG_RUNTIME_DIR := "$dir/run"
+export ARNO_EDITOR := ''
+echo 'one' > "$dir/proj/f.txt"
+mkdir "$dir/proj/.git"
+server := ''
+
+procedure cleanup;
+begin
+  if server <> '' then kill -9 $server 2> /dev/null
+end;
+trap cleanup EXIT
+
+started := split(`$stub 60`)
+if length(started) <> 2 then begin
+  echo "peer: $stub did not start" >&2
+  halt(1)
+end
+server := started[1]
+echo "url = http://127.0.0.1:$(started[0])/v1" > "$dir/config/arno/config"
+echo 'context_files = no' >> "$dir/config/arno/config"
+echo 'project_map = no' >> "$dir/config/arno/config"
+
+$peerhost $arno $dir
+if status <> 0 then begin
+  echo "peer: the editor's checks failed, status $status" >&2
+  halt(1)
+end

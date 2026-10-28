@@ -328,7 +328,7 @@ edit := '{"path":"a.txt","old":"one","new":"two"}'
 function stagedRun(a, input);
 begin
   cd $proj
-  echo $input | env XDG_CONFIG_HOME="$here/$dir/config" XDG_DATA_HOME="$here/$dir/data" XDG_CACHE_HOME="$here/$dir/cache" $here/$arno $a > "$here/$dir/out" 2> "$here/$dir/err"
+  echo $input | env XDG_CONFIG_HOME="$here/$dir/config" XDG_DATA_HOME="$here/$dir/data" XDG_CACHE_HOME="$here/$dir/cache" XDG_RUNTIME_DIR="$here/$dir/run" $here/$arno $a > "$here/$dir/out" 2> "$here/$dir/err"
   result := status
   cd $here
 end;

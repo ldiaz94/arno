@@ -502,7 +502,8 @@ $ arno \-\-attach \-l
 4242	terminal	/home/me/proj	fix the typo
 .Ed
 .Sh SEE ALSO
-.Xr arno 1
+.Xr arno 1 ,
+.Xr arno-peer 5
 .Pp
 D. J. Bernstein,
 .Lk https://cr.yp.to/proto/netstrings.txt "Netstrings" ,
@@ -513,7 +514,8 @@ The framing and the host's messages are those the Pascal arno's
 spoke, so that a host written for it works with this arno.
 .Pp
 The protocol of the editors that talk to arno by a socket of their own,
-as a peer, is a different one, and is not built.
+as a peer, is a different one, in
+.Xr arno-peer 5 .
 .Sh CAVEATS
 A viewer sees that a question waits and who holds it, not the question.
 .Pp

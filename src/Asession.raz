@@ -18,7 +18,10 @@
    /test runs the project's test command, as check does, and puts a
    failure to the model as a turn.
 
-   Depends on Agent, Aprompt (the commands and modes), Amemory, Aahead
+   An ask from an editor (ask) is a turn too, put to the model as the
+   editor's message and told to the human as that; see Apeer.
+
+   Depends on Agent, Apeer, Aprompt (the commands and modes), Amemory, Aahead
    (the notes), Aattach, Astore, Aconf, Aprice, Atools, Amcp, Afence and
    Arun (/test).
    The stage (Astage) is up from start-up as config's stage and stage.json
@@ -38,7 +41,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Amcp, Afence, Arun, Amsg, Buf, Str,
+import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Amcp, Afence, Arun, Amsg, Buf, Str,
     Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
 import SYSTEM;
 
@@ -1056,6 +1059,41 @@ begin
     err := turn(s, text, why);
     failed(s, err, Buf.bytes(why));
     return true;
+end;
+
+(* The text of the last answer of c's, the model's last message; "" if none. *)
+proc lastAnswer(const c: Astore.Conv): []const U8;
+var m: []Amsg.Msg; i: INT;
+begin
+    m := Msgs.all(c.msgs);
+    for i := LEN(m) - 1 to 0 by -1 do
+        if m[i].role = Amsg.Role.assistant then return m[i].text; end;
+    end;
+    return "";
+end;
+
+(* An ask from an editor, a: said to be from the editor, as that, and put
+   to the model as the editor's message, never as the human's, with no @path
+   in it brought, in a new conversation first if the editor wants one. The
+   answer goes to the editor that asked, unless the turn failed or was
+   stopped. *)
+proc ask*(var s: Session; const a: Apeer.Ask);
+var m: ^Amsg.Msg; text, why: Buf.Buf; err: ERROR;
+begin
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    if a.fresh then renew(s); end;
+    Apeer.message(a, text);
+    say(s, Apeer.shown(Buf.bytes(text)));
+    m := Msgs.add(s.conv.msgs);
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, Buf.bytes(text));
+    err := answer(s, why);
+    Arena.reset(s.mem);
+    failed(s, err, Buf.bytes(why));
+    if err = nil then Apeer.reply(a.sock, a.question, lastAnswer(s.conv)); end;
 end;
 
 end Asession.
