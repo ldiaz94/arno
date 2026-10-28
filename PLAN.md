@@ -278,7 +278,24 @@ one or more commits that build with `-Werror`.
      (`Atools.shellOn`), and works and writes only in the stage's copy
      (`Afence.stage`): in the project's own tree it could rewrite
      `.git` or the Makefile, which git and `check` run outside the jail.
-5. **MCP.**
+5. [x] **MCP.** `Amcp`: servers from config's `mcp = NAME COMMAND ARG...`
+   lines (each its own line, which `Aconf.nth` reads), started over
+   pipes, their tools offered as `NAME_TOOL` (at most 64 bytes), every
+   call asked about (`run NAME_TOOL?`, then why after a no) and not
+   fenced, as in the Pascal arno; in every mode, as there. Not as the
+   Pascal arno did: an answer is told by its id and by having no
+   `method`, so a server's own request with the same id isn't taken for
+   it; a stop (`Human.stopped`) ends the wait for an answer, which the
+   Pascal arno also did, but every 100 ms by poll, and a late answer is
+   passed by later; a call with no content says `(no output)`; a
+   server's `tools/list` is read once, with no `nextCursor`; a tool
+   whose name the belt already has is left out; each server is in a
+   process group of its own (not a session) so that ^C leaves it, and
+   ends by SIGTERM after its input is closed (SIGKILL after a second),
+   registered with `Rt.atExit`; its standard error is thrown away. The
+   test is `Amcp`'s `main` over `test/Amcpstub.raz` (`build/mcpstub`),
+   and `oneshot.cn` runs a call through the program. Also, `Atools`'s
+   declined text is one `declined` for `approve`, `run` and MCP.
 6. **Peers, serve, attach:** `arno-peer(5)`, `--serve`, `--attach`.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`
    for a while; `man desktop` updated.

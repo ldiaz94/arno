@@ -1,0 +1,530 @@
+(* Amcp: tools from MCP servers, over standard input and output.
+
+   MCP, the Model Context Protocol, is a way for a program like arno
+   to offer a model tools it need not carry itself. A server is any
+   program that speaks it: arno starts it as a child, and the two talk
+   in JSON-RPC, a request or an answer to a line, each way:
+
+       arno  -- {"jsonrpc":"2.0","id":1,"method":"initialize",...} -->  server
+       arno  <-- {"jsonrpc":"2.0","id":1,"result":{...}} -------------  server
+
+   attach starts a server, shakes hands (initialize, then the
+   notification initialized) and asks tools/list; each tool it names is
+   then offered to the model as SERVER_TOOL, the server's name from the
+   config first, so that two servers, or a server and a built-in, never
+   offer one name; a byte a provider would not take in a name becomes _,
+   and a name is at most MaxName bytes long, as providers limit
+   it. call runs one of them with tools/call; the model's arguments go
+   to the server as they are.
+
+   A server's answers are told from the traffic between by the id of
+   the request: notifications, and requests the server makes of arno,
+   are passed by. Each server runs in a process group of its own, so
+   that ^C at the terminal stops the turn and not the server; its
+   standard error is thrown away. stop, at the end of the program,
+   closes every server's input, gives them Grace looks of Step ms to end,
+   and kills the group of any left. A server that does not answer when
+   it starts is given up on after startWait ms; a started server's call
+   can be stopped by the human, and a late answer to it is passed by on
+   the next call, as its id is not the one asked for. Writing to a server
+   that has ended relies on SIGPIPE being ignored, as Awire's HTTP has it.
+
+   A result's content blocks are joined: a text block as it is, any
+   other as its type in brackets, so that the model knows something
+   was there; a server's own isError makes the result start with
+   "error".
+
+   Depends on Awire (for Tool), Amsg (quote and compact), rjson's Json.
+   Leaves out the rest of the protocol: pagination of tools/list, other
+   content than text, resources and prompts, a server's requests of
+   arno, and servers over HTTP. Asking the human before a call is the
+   caller's. *)
+module Amcp;
+import Awire, Amsg, Json, Buf, Str, Sys, Fmt, Heap, Out, Rt, Servers := Vec(Server),
+    Belt := Vec(Awire.Tool), Origins := Vec(Origin);
+import SYSTEM;
+
+type
+    (* A server arno started. *)
+    Server = record
+        name: []const U8;   (* the config's name for it, which prefixes its tools *)
+        pid: INT;           (* its process, and its group's; 0 once it has been waited for *)
+        rd, wr: INT;        (* its output, and its input *)
+        seq: INT;           (* the id of the last request made of it *)
+        pending: Buf.Buf;   (* what it wrote, of which the first used bytes are read *)
+        used: INT;          (* how many of the bytes of pending have been read *)
+    end;
+
+    (* Where a tool on the belt is from. *)
+    Origin = record
+        server: INT;            (* an index of servers *)
+        name: []const U8;       (* its name there, which has no prefix *)
+    end;
+
+const
+    MaxName = 64;      (* bytes of a tool's name, as providers allow *)
+    Version = "2025-06-18";   (* the protocol's, as arno speaks it *)
+    Slice = 100;       (* milliseconds between looks at whether the human said to stop *)
+    Grace = 20;        (* looks, Step ms apart, a server is given to end once its input is closed, before it is killed *)
+    Step = 50;         (* milliseconds between those looks *)
+    Chunk = 4096;      (* bytes asked of a server's output at a time *)
+    IdLen = 20;        (* bytes enough for a request id, an INT in decimal *)
+    Gone = "server gone";   (* what a request says when the server ended first *)
+    Interrupted = "interrupted";   (* what it says when the human said to stop *)
+
+var
+    servers: Servers.Vec;   (* every server attached, from Heap *)
+    belt: Belt.Vec;         (* every tool they offer *)
+    origins: Origins.Vec;   (* where each tool of belt is from, in the same order *)
+
+(* Requests *)
+
+(* s written whole to fd; false if it can't be. *)
+proc send(fd: INT; s: []const U8): BOOL;
+var n: INT;
+begin
+    while LEN(s) > 0 do
+        n := Sys.write(fd, s);
+        if n = Sys.errIntr then continue; end;
+        if n <= 0 then return false; end;
+        s := s[n..LEN(s)];
+    end;
+    return true;
+end;
+
+(* The next line s wrote, into line, without its line feed. Gone if s
+   ends first; Interrupted if stopped, asked every Slice ms, says so (it
+   may be nil); "" if a line came. *)
+proc readLine(var s: Server; stopped: proc: BOOL; var line: Buf.Buf): []const U8;
+var i, n: INT; all: []U8;
+begin
+    while true do
+        all := Buf.bytes(s.pending);
+        i := Str.find(all[s.used..LEN(all)], "\n");
+        if i >= 0 then
+            Buf.reset(line);
+            Buf.str(line, all[s.used..s.used + i]);
+            INC(s.used, i + 1);
+            if s.used = LEN(all) then Buf.reset(s.pending); s.used := 0; end;
+            return "";
+        end;
+        if (stopped # nil) and stopped() then return Interrupted; end;
+        if not Sys.ready(s.rd, Slice) then continue; end;
+        n := Sys.read(s.rd, Buf.spare(s.pending, Chunk));
+        if n = Sys.errIntr then continue; end;
+        if n <= 0 then return Gone; end;
+        INC(s.pending.len, n);
+    end;
+end;
+
+(* Whether line is the answer to request id: no method, which makes
+   it a request or a notification, and that id. On an answer, res is
+   its result as compact JSON, or, if it is an error, the error's
+   message; and failed says which. *)
+proc answer(line: []U8; id: []const U8; var res: Buf.Buf; var failed: BOOL): BOOL;
+var d: Json.Doc; v, e: Json.Value;
+begin
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), line);
+    if (Json.kind(SYSTEM.ADR(d), v) # Json.Kind.object) or (Json.member(SYSTEM.ADR(d), v, "method") # Json.None) or
+            (Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "id")) # id) then
+        return false;
+    end;
+    Buf.reset(res);
+    e := Json.member(SYSTEM.ADR(d), v, "error");
+    failed := e # Json.None;
+    if failed then
+        Buf.str(res, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), e, "message")));
+        if res.len = 0 then Buf.str(res, "the server answered with an error"); end;
+    else
+        Amsg.compact(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "result"), res);
+    end;
+    return true;
+end;
+
+(* The method of s asked with params, a JSON object, and the answer
+   waited for. true, and res the result as compact JSON; or false, and
+   res says what went wrong. *)
+proc request(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
+var q, line: Buf.Buf; id: [IdLen]U8; n: INT; why: []const U8; failed: BOOL;
+begin
+    Buf.init(q, Heap.heap);
+    defer Buf.done(q);
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    INC(s.seq);
+    id, n := Str.fromInt(s.seq);
+    Buf.str(q, "{\"jsonrpc\":\"2.0\",\"id\":");
+    Buf.str(q, id[0..n]);
+    Buf.str(q, ",\"method\":");
+    Amsg.quote(q, method);
+    Buf.str(q, ",\"params\":");
+    Buf.str(q, params);
+    Buf.str(q, "}\n");
+    Buf.reset(res);
+    if not send(s.wr, Buf.bytes(q)) then Buf.str(res, Gone); return false; end;
+    while true do
+        why := readLine(s, stopped, line);
+        if LEN(why) > 0 then Buf.str(res, why); return false; end;
+        if answer(Buf.bytes(line), id[0..n], res, failed) then return not failed; end;
+    end;
+end;
+
+(* Starting and stopping *)
+
+(* argv started as a server in a process group of its own, its input
+   and output pipes to s; false if it can't be started. *)
+proc start(argv: [][]const U8; var s: Server): BOOL;
+var p: Sys.Program; inRd, outWr, nul: INT;
+begin
+    s.rd := -1;
+    s.wr := -1;
+    nul := Sys.open("/dev/null", {Sys.Access.writing});
+    if nul < 0 then return false; end;
+    defer Sys.close(nul);
+    inRd, s.wr := Sys.pipe();
+    if inRd < 0 then return false; end;
+    s.rd, outWr := Sys.pipe();
+    if s.rd < 0 then Sys.close(inRd); Sys.close(s.wr); return false; end;
+    p := {path: argv[0], args: argv, fds: [inRd, outWr, nul], group: -1};
+    s.pid := Sys.spawn(p);
+    Sys.close(inRd);
+    Sys.close(outWr);
+    if s.pid > 0 then return true; end;
+    Sys.close(s.rd);
+    Sys.close(s.wr);
+    return false;
+end;
+
+(* Whether s has ended, and if it has, its pid made 0. *)
+proc ended(var s: Server): BOOL;
+var got: INT;
+begin
+    if s.pid = 0 then return true; end;
+    got, _, _ := Sys.wait(s.pid, false);
+    if got > 0 then s.pid := 0; end;
+    return got > 0;
+end;
+
+(* s's input closed, which says to end; once only. *)
+proc closeInput(var s: Server);
+begin
+    if s.wr >= 0 then Sys.close(s.wr); s.wr := -1; end;
+end;
+
+(* s ended: its input closed, then, if it is still there after polls
+   looks Step ms apart, its whole group killed (a launcher such as npx
+   may have started the real server under it); its output closed. *)
+proc finish(var s: Server; polls: INT);
+var got, i: INT;
+begin
+    closeInput(s);
+    for i := 1 to polls do
+        if ended(s) then break; end;
+        Sys.sleep(Step);
+    end;
+    if not ended(s) then
+        _ := Sys.kill(-s.pid, Sys.sigKill);
+        repeat got, _, _ := Sys.wait(s.pid, true); until got # Sys.errIntr;
+    end;
+    Sys.close(s.rd);
+    Buf.done(s.pending);
+end;
+
+(* Every server ended, as the program ends: all inputs closed first and
+   Grace looks taken for them all together, so that servers slow to end
+   do not add up. *)
+proc stop*;
+var i, k: INT; all: []Server; waiting: BOOL;
+begin
+    all := Servers.all(servers);
+    for i := 0 to LEN(all) - 1 do closeInput(all[i]); end;
+    for k := 1 to Grace do
+        waiting := false;
+        for i := 0 to LEN(all) - 1 do
+            if not ended(all[i]) then waiting := true; end;
+        end;
+        if not waiting then break; end;
+        Sys.sleep(Step);
+    end;
+    for i := 0 to LEN(all) - 1 do finish(all[i], 0); end;
+    Servers.reset(servers);
+    Belt.reset(belt);
+    Origins.reset(origins);
+end;
+
+(* Tools *)
+
+(* Whether the belt has a tool called name. *)
+proc owns*(name: []const U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to belt.len - 1 do
+        if Belt.all(belt)[i].name = name then return true; end;
+    end;
+    return false;
+end;
+
+(* The tool name for a tool of the server called server: SERVER_TOOL,
+   each byte a provider would not take (it takes letters, digits, _ and
+   -) made _, and cut at MaxName bytes; put into b. *)
+proc toolName(server, tool: []const U8; var b: Buf.Buf);
+var i: INT; c: U8;
+begin
+    Buf.reset(b);
+    Buf.str(b, server);
+    Buf.add(b, '_');
+    Buf.str(b, tool);
+    if b.len > MaxName then b.len := MaxName; end;
+    for i := 0 to b.len - 1 do
+        c := Buf.bytes(b)[i];
+        if not (((c >= 'a') and (c <= 'z')) or ((c >= 'A') and (c <= 'Z')) or ((c >= '0') and (c <= '9')) or
+                (c = '_') or (c = '-')) then
+            Buf.bytes(b)[i] := '_';
+        end;
+    end;
+end;
+
+(* s's tools, from the result of tools/list, a JSON text, put on the belt as the server index
+   at says; how many were put. A tool whose name the belt has is left out. *)
+proc offer(const s: Server; at: INT; res: []const U8): INT;
+var d: Json.Doc; list, t, schema: Json.Value; i, added: INT; text, b, params: Buf.Buf; name: []const U8;
+begin
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(params, Heap.heap);
+    defer Buf.done(params);
+    Buf.str(text, res);
+    added := 0;
+    list := Json.member(SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), Buf.bytes(text)), "tools");
+    for i := 0 to Json.len(SYSTEM.ADR(d), list) - 1 do
+        t := Json.item(SYSTEM.ADR(d), list, i);
+        name := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), t, "name"));
+        if LEN(name) = 0 then continue; end;
+        toolName(s.name, name, b);
+        if owns(Buf.bytes(b)) then continue; end;
+        schema := Json.member(SYSTEM.ADR(d), t, "inputSchema");
+        Buf.reset(params);
+        if schema = Json.None then
+            Buf.str(params, "{\"type\":\"object\"}");
+        else
+            Amsg.compact(SYSTEM.ADR(d), schema, params);
+        end;
+        Belt.push(belt, {name: Amsg.keep(Buf.bytes(b)), params: Amsg.keep(Buf.bytes(params)), description:
+            Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), t, "description")))});
+        Origins.push(origins, {server: at, name: Amsg.keep(name)});
+        INC(added);
+    end;
+    return added;
+end;
+
+var startWait*: INT;   (* milliseconds a starting server is given to answer; a test shortens it *)
+var startBy: I64;   (* the time, on Sys.clock, by which a server starting must answer *)
+var late: BOOL;     (* whether it didn't *)
+
+(* Whether the start's time is up; a request's stopped while a server starts. *)
+proc startedLate: BOOL;
+begin
+    late := Sys.clock() > startBy;
+    return late;
+end;
+
+(* A server started by argv, called name, and its tools put on the belt.
+   "" if it is attached; else what went wrong, which names the server. *)
+proc attach*(name: []const U8; argv: [][]const U8): []const U8;
+var s: Server; res, why: Buf.Buf; ok: BOOL; params: []const U8;
+begin
+    Buf.init(res, Heap.heap);
+    defer Buf.done(res);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Buf.str(why, name);
+    Buf.str(why, ": ");
+    s := {name: Amsg.keep(name)};
+    Buf.init(s.pending, Heap.heap);
+    if not start(argv, s) then
+        Buf.done(s.pending);
+        Buf.str(why, "cannot start");
+        return Amsg.keep(Buf.bytes(why));
+    end;
+    params := "{\"protocolVersion\":\"" + Version + "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"arno\",\"version\":\"0.1\"}}";
+    late := false;
+    startBy := Sys.clock() + I64(startWait) * 1000000;
+    ok := request(s, "initialize", params, startedLate, res);
+    if ok then
+        _ := send(s.wr, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
+        ok := request(s, "tools/list", "{}", startedLate, res);
+    end;
+    if not ok then
+        if late then Buf.reset(res); Buf.str(res, "no answer in time"); end;
+        Buf.str(why, Buf.bytes(res));
+        finish(s, Grace);
+        return Amsg.keep(Buf.bytes(why));
+    end;
+    if offer(s, servers.len, Buf.bytes(res)) = 0 then
+        Buf.str(why, "offers no tool that is new");
+        finish(s, Grace);
+        return Amsg.keep(Buf.bytes(why));
+    end;
+    Servers.push(servers, s);
+    return "";
+end;
+
+(* The tools the attached servers offer. *)
+proc tools*: []Awire.Tool;
+begin
+    return Belt.all(belt);
+end;
+
+(* The tool name run with the arguments v of d, an object: its result
+   added to out. stopped, which may be nil, says whether the human
+   said to stop. Whether the human agrees to the call is asked
+   before. *)
+proc call*(name: []const U8; d: ^Json.Doc; v: Json.Value; stopped: proc: BOOL; var out: Buf.Buf);
+var i, k: INT; q, res: Buf.Buf; r, c, t: Json.Value; kind: []const U8; failed: BOOL; o: Origin;
+    rd: Json.Doc; text: Buf.Buf;
+begin
+    for i := 0 to belt.len - 1 do
+        if Belt.all(belt)[i].name = name then o := Origins.all(origins)[i]; end;
+    end;
+    Buf.init(q, Heap.heap);
+    defer Buf.done(q);
+    Buf.init(res, Heap.heap);
+    defer Buf.done(res);
+    Buf.str(q, "{\"name\":");
+    Amsg.quote(q, o.name);
+    Buf.str(q, ",\"arguments\":");
+    Amsg.compact(d, v, q);
+    Buf.add(q, '}');
+    if not request(Servers.all(servers)[o.server], "tools/call", Buf.bytes(q), stopped, res) then
+        Buf.str(out, "error: ");
+        Buf.str(out, Buf.bytes(res));
+        return;
+    end;
+    if not Json.init(SYSTEM.ADR(rd), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(rd));
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    r := Json.parse(SYSTEM.ADR(rd), Buf.bytes(res));
+    c := Json.member(SYSTEM.ADR(rd), r, "content");
+    for k := 0 to Json.len(SYSTEM.ADR(rd), c) - 1 do
+        t := Json.item(SYSTEM.ADR(rd), c, k);
+        kind := Json.text(SYSTEM.ADR(rd), Json.member(SYSTEM.ADR(rd), t, "type"));
+        if kind = "text" then
+            Buf.str(text, Json.text(SYSTEM.ADR(rd), Json.member(SYSTEM.ADR(rd), t, "text")));
+        else
+            Fmt.write(text, "[{}]", [Fmt.str(kind)]);
+        end;
+        Buf.add(text, '\n');
+    end;
+    failed := Json.member(SYSTEM.ADR(rd), r, "isError") = Json.True;
+    if failed then Buf.str(out, "error: "); end;
+    if text.len = 0 then Buf.str(text, "(no output)"); end;
+    Buf.str(out, Buf.bytes(text));
+end;
+
+(* The module's test, which starts build/mcpstub (test/Amcpstub.raz). *)
+
+var failed: BOOL;   (* whether any check of the test failed *)
+var digits: [IdLen]U8;   (* num's digits *)
+
+(* n in decimal, good until the next call. *)
+proc num(n: INT): []const U8;
+var k: INT;
+begin
+    digits, k := Str.fromInt(n);
+    return digits[0..k];
+end;
+
+(* A failure noted, and said, if got is not want. *)
+proc expect(what, got, want: []const U8);
+begin
+    if got = want then return; end;
+    Out.str("Amcp: ");
+    Out.str(what);
+    Out.str(": got \"");
+    Out.str(got);
+    Out.str("\", wanted \"");
+    Out.str(want);
+    Out.str("\"\n");
+    failed := true;
+end;
+
+var calls: INT;   (* how many times soon has been asked *)
+
+(* Says to stop from its third look on, as a human would. *)
+proc soon: BOOL;
+begin
+    INC(calls);
+    return calls > 2;
+end;
+
+(* The tool name run with the arguments text, its result. *)
+proc run(name, text: []const U8; stopped: proc: BOOL): []const U8;
+var d: Json.Doc; b: Buf.Buf; own: []U8;
+begin
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    own := Amsg.keep(text);
+    Buf.init(b, Heap.heap);
+    call(name, SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), own), stopped, b);
+    return Buf.bytes(b);
+end;
+
+(* Runs the checks; 0 if all hold. *)
+proc main*: INT;
+var t: []Awire.Tool; err: []const U8;
+begin
+    err := attach("none", ["no-such-server-of-arno"]);
+    expect("no such program", err, "none: cannot start");
+    startWait := 300;
+    err := attach("mute", ["build/mcpstub", "mute"]);
+    expect("a server that never answers", err, "mute: no answer in time");
+    startWait := 10000;
+    err := attach("quit", ["build/mcpstub", "quit"]);
+    expect("a server that quits", err, "quit: server gone");
+    err := attach("odd", ["build/mcpstub", "odd"]);
+    expect("a server that errs", err, "odd: no tools here");
+    expect("nothing offered yet", num(LEN(tools())), "0");
+    err := attach("stub", ["build/mcpstub"]);
+    expect("attach", err, "");
+    t := tools();
+    expect("tools", num(LEN(t)), "8");
+    expect("a name", t[0].name, "stub_echo");
+    expect("a description", t[0].description, "Say the text back.");
+    expect("a schema", t[0].params, "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}");
+    expect("no schema", t[1].params, "{\"type\":\"object\"}");
+    expect("a name cut", num(LEN(t[6].name)), "64");
+    expect("a name made fit", t[7].name, "stub_odd_name_");
+    expect("owns", num(INT(owns("stub_echo"))), "1");
+    expect("owns not", num(INT(owns("echo"))), "0");
+    err := attach("stub", ["build/mcpstub"]);
+    expect("the same again", err, "stub: offers no tool that is new");
+    expect("no duplicates", num(LEN(tools())), "8");
+    expect("echo", run("stub_echo", "{\"text\":\"hi \\\"there\\\"\"}", nil), "hi \"there\"\n");
+    expect("an error", run("stub_fail", "{}", nil), "error: boom\n");
+    expect("a picture", run("stub_picture", "{}", nil), "[image]\nseen\n");
+    expect("a server's error", run("stub_nope", "{}", nil), "error: no such tool");
+    expect("empty", run("stub_empty", "{}", nil), "(no output)");
+    expect("stopped", run("stub_hang", "{}", soon), "error: interrupted");
+    expect("after being stopped", run("stub_echo", "{\"text\":\"again\"}", nil), "again\n");
+    expect("gone", run("stub_die", "{}", nil), "error: server gone");
+    expect("gone for good", run("stub_echo", "{}", nil), "error: server gone");
+    stop();
+    expect("stopped all", num(LEN(tools())), "0");
+    if failed then return 1; end;
+    return 0;
+end;
+
+begin
+    Servers.init(servers, Heap.heap);
+    Belt.init(belt, Heap.heap);
+    Origins.init(origins, Heap.heap);
+    startWait := 10000;
+    _ := Rt.atExit(stop);   (* the servers end with the program, whichever way it ends *)
+end Amcp.

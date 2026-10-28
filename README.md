@@ -20,8 +20,8 @@ you already use. It streams replies, keeps conversations on disk, and
 shows file changes for approval.
 
 **This is the raz rebuild, under active development.** The full screen,
-agent tools, attachments, staged edits, the jailed `shell` tool, and saved
-conversations work. MCP and editor peers are still ahead; `--serve` and
+agent tools, attachments, staged edits, the jailed `shell` tool, MCP
+servers, and saved conversations work. Editor peers are still ahead; `--serve` and
 `--attach` are not implemented yet. [PLAN.md](PLAN.md) tracks the work.
 
 ## What it does
@@ -178,6 +178,29 @@ Still open: while the stage's copy is up, the model edits
 the copy's files, a Makefile among them, without asking, and `check` and
 trusted `run` programs then execute them. Nothing is applied to your tree
 without your yes, but what those commands run is not approved.
+
+### MCP servers
+
+A server of the Model Context Protocol, a program that offers tools over
+standard input and output, is added in the config, a line for each:
+
+    mcp = NAME COMMAND ARG...
+
+The `=` is required. `NAME` is yours to choose, and `COMMAND ARG...` is
+the program and its arguments, split at spaces, for example
+`mcp = files npx -y @modelcontextprotocol/server-filesystem /home/me/work`.
+arno starts each server when a session begins and offers its tools to
+the model as `NAME_TOOL` (so `files_read_file`), in every mode. Bytes a
+provider would not take in a name become `_`, and a name is cut at 64
+bytes. A server that fails to start, does not answer within ten seconds,
+or offers nothing new is reported and left out; the others still attach.
+Servers end with arno.
+
+A server is somebody else's program and may do anything. Every call to
+one of its tools asks `run NAME_TOOL?` and shows the call's arguments
+(the first 300 bytes), and nothing runs without a `y`. These calls are
+not fenced: the project boundary and the grant rules above do not apply
+to what a server does, so the question is the only guard.
 
 ## Development
 

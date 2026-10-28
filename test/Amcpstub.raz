@@ -1,0 +1,137 @@
+(* Amcpstub: an MCP server for Amcp's test, over standard input and
+   output, JSON-RPC a line each way.
+
+       build/mcpstub [quit | mute | odd]
+
+   It answers initialize (after a notification, which a client must
+   pass by) and tools/list with eight tools: echo, which says its text
+   back; fail, whose result is an error; picture, whose result is an
+   image and a text; empty, with no content; hang, which answers late,
+   after 1.5 s; die, which ends the server; a tool whose name is too
+   long; and one with bytes a provider would not take. Before each answer
+   to initialize and tools/list it makes a request of its own with the same
+   id, which a client must not take for the answer. Given quit it ends at
+   its first request; given mute, it never answers; given odd, it
+   answers tools/list with an error.
+
+   Depends on Amsg (quote) and rjson's Json. *)
+module Amcpstub;
+import Amsg, Json, Buf, Sys, Files, Heap;
+import SYSTEM;
+
+const
+    Tools = "{\"tools\":[" +
+        "{\"name\":\"echo\",\"description\":\"Say the text back.\"," +
+        "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}}," +
+        "{\"name\":\"fail\",\"description\":\"Fail.\"}," +
+        "{\"name\":\"picture\"},{\"name\":\"empty\"},{\"name\":\"hang\"},{\"name\":\"die\"}," +
+        "{\"name\":\"a-name-that-is-far-too-long-for-any-provider-to-take-as-it-is-given\"}," +
+        "{\"name\":\"odd.name?\"}]}";
+
+var out, body: Buf.Buf;   (* the line to write; a result being made *)
+
+(* s written to standard output. *)
+proc say(s: []const U8);
+begin
+    _ := Sys.write(Sys.stdout, s);
+end;
+
+(* A line of standard input into line; false at the end. *)
+proc readLine(var line: Buf.Buf): BOOL;
+var c: [1]U8;
+begin
+    Buf.reset(line);
+    while Sys.read(Sys.stdin, c) = 1 do
+        if c[0] = '\n' then return true; end;
+        Buf.add(line, c[0]);
+    end;
+    return false;
+end;
+
+(* A request of the server's own, with id, which is not an answer. *)
+proc ping(id: []const U8);
+begin
+    say("{\"jsonrpc\":\"2.0\",\"id\":");
+    say(id);
+    say(",\"method\":\"ping\"}\n");
+end;
+
+(* The answer to request id: a result, or an error if message is not "". *)
+proc reply(id, result, message: []const U8);
+begin
+    Buf.reset(out);
+    Buf.str(out, "{\"jsonrpc\":\"2.0\",\"id\":");
+    Buf.str(out, id);
+    if LEN(message) > 0 then
+        Buf.str(out, ",\"error\":{\"code\":-32000,\"message\":\"");
+        Buf.str(out, message);
+        Buf.str(out, "\"}}\n");
+    else
+        Buf.str(out, ",\"result\":");
+        Buf.str(out, result);
+        Buf.str(out, "}\n");
+    end;
+    say(Buf.bytes(out));
+end;
+
+(* The answer to a call of tool name, with the text argument. *)
+proc call(id, name, text: []const U8);
+begin
+    match name of
+    | "echo":
+        Buf.reset(body);
+        Buf.str(body, "{\"content\":[{\"type\":\"text\",\"text\":");
+        Amsg.quote(body, text);
+        Buf.str(body, "}]}");
+        reply(id, Buf.bytes(body), "");
+    | "fail": reply(id, "{\"content\":[{\"type\":\"text\",\"text\":\"boom\"}],\"isError\":true}", "");
+    | "picture":
+        reply(id, "{\"content\":[{\"type\":\"image\",\"data\":\"x\"},{\"type\":\"text\",\"text\":\"seen\"}]}", "");
+    | "empty": reply(id, "{\"content\":[]}", "");
+    | "hang":
+        Sys.sleep(1500);
+        reply(id, "{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}", "");
+    | "die": Sys.exit(0);
+    | else: reply(id, "", "no such tool");
+    end;
+end;
+
+(* Serves standard input until it ends. *)
+proc main*: INT;
+var d: Json.Doc; line: Buf.Buf; v, p: Json.Value; id, method, mode: []const U8;
+begin
+    mode := "";
+    if ARGC() > 1 then mode := Files.arg(1); end;
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then return 1; end;
+    Buf.init(line, Heap.heap);
+    Buf.init(out, Heap.heap);
+    Buf.init(body, Heap.heap);
+    while readLine(line) do
+        Json.reset(SYSTEM.ADR(d));
+        v := Json.parse(SYSTEM.ADR(d), Buf.bytes(line));
+        id := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "id"));
+        method := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "method"));
+        if (LEN(id) = 0) or (mode = "quit") or (mode = "mute") then
+            if mode = "quit" then return 0; end;
+            if mode = "mute" then Sys.sleep(2000); end;
+            continue;
+        end;
+        p := Json.member(SYSTEM.ADR(d), v, "params");
+        match method of
+        | "initialize":
+            ping(id);
+            say("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n");
+            reply(id, "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"stub\"}}", "");
+        | "tools/list":
+            ping(id);
+            if mode = "odd" then reply(id, "", "no tools here"); else reply(id, Tools, ""); end;
+        | "tools/call":
+            call(id, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), p, "name")),
+                Json.text(SYSTEM.ADR(d), Json.get(SYSTEM.ADR(d), p, "arguments.text")));
+        | else: reply(id, "", "no such method");
+        end;
+    end;
+    return 0;
+end;
+
+end Amcpstub.

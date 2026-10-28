@@ -3,7 +3,8 @@
 
    The file is the Pascal arno's: a setting to a line, key = value,
    blanks around either taken off; a line that is empty, begins with #
-   or has no = is passed by. A key given twice is the last one's.
+   or has no = is passed by. A key given twice is the last one's, except for mcp, which
+   may be given for each server, and which nth reads.
 
    The keys that say which provider and how to ask it are read into a
    provider, an Awire.Prov:
@@ -94,6 +95,21 @@ begin
         if keys[i] = key then return Strs.all(c.values)[i]; end;
     end;
     return "";
+end;
+
+(* The nth value, from 0, of key, as the file gave it each time, for a
+   key that may be given again, such as mcp; false past the last. *)
+proc nth*(const c: Conf; key: []const U8; n: INT): ([]const U8, BOOL);
+var i: INT; keys: [][]const U8;
+begin
+    keys := Strs.all(c.keys);
+    for i := 0 to LEN(keys) - 1 do
+        if keys[i] = key then
+            if n = 0 then return Strs.all(c.values)[i], true; end;
+            DEC(n);
+        end;
+    end;
+    return "", false;
 end;
 
 proc warn(var c: Conf; a, b: []const U8);
@@ -245,7 +261,7 @@ begin
 end;
 
 proc main*: INT;
-var c: Conf; b: Buf.Buf;
+var c: Conf; b: Buf.Buf; v: []const U8; ok: BOOL;
 begin
     init(c);
     read(c, `
@@ -256,6 +272,8 @@ begin
         not a setting
         max_steps = 60
         run = tiza man fd
+        mcp = files npx files-server /tmp
+        mcp = web uvx web-server
         effort = kimi-k3:high deepseek-v4.1-flash:cloud:low
         anthropic_version = 2023-06-01
         timeout = 600
@@ -276,6 +294,10 @@ begin
         "reasoning_effort@kimi-k3=high reasoning_effort@deepseek-v4.1-flash:cloud=low anthropic_version=2023-06-01");
     expect("a key kept for the rest of arno", get(c, "run"), "tiza man fd");
     expect("a key not set", get(c, "worker"), "");
+    v, ok := nth(c, "mcp", 1);
+    expect("the second mcp", v, "web uvx web-server");
+    _, ok := nth(c, "mcp", 2);
+    if ok then expect("a third mcp", "there is one", "none"); end;
     expect("the warnings", Buf.bytes(c.warnings),
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
     expect("the effort for a model", Awire.param(c.prov, "reasoning_effort@kimi-k3"), "high");

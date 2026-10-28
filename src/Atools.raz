@@ -43,9 +43,10 @@
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git,
    run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
-   Awire (for Tool), rnet's Http (search and fetch), rjson's Json.
+   Awire (for Tool), Amcp (the MCP servers' tools), rnet's Http (search and fetch), rjson's Json.
    Delegate is the agent's, which runs the worker; it is described
-   here, with the rest. A change in the conversation's scratch
+   here, with the rest. A call of an MCP server's tool is asked about
+   every time, and is not fenced. A change in the conversation's scratch
    directory (Afence.ours) needs no approval, and run, check and shell
    see its path as $ARNO_SCRATCH. shell is offered only while the
    stage is up (Afence.stage): in the project's own tree it could
@@ -54,7 +55,7 @@
    shows as pictures, which come with the screen; and an editor's
    buffers, which come with the peers. *)
 module Atools;
-import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+import Afence, Afind, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
@@ -71,6 +72,7 @@ type
     Human* = record
         ask*: Ask;
         why*: Why;
+        stopped*: proc: BOOL;   (* whether the human said to stop; or nil *)
         arg*: ^U8;
     end;
 
@@ -95,6 +97,7 @@ type
 const
     Failed: ERROR = "the server answered with an error";
 
+    MaxAsked = 300;   (* bytes of an MCP call's arguments shown when the human is asked *)
     MaxOut* = 32000;   (* bytes of a result, past which it is cut *)
     MaxFile = 64 * 1024 * 1024;   (* bytes of a file read reads, and edit changes *)
     MaxShown = 40;     (* lines of a file to be removed the human is shown *)
@@ -724,6 +727,22 @@ begin
     return Buf.bytes(b);
 end;
 
+(* "declined by user" added to out, then the human's reason if they give
+   one, then ending, which says what was left undone. *)
+proc declined(const h: Human; ending: []const U8; var out: Buf.Buf);
+var why: []const U8;
+begin
+    Buf.str(out, "declined by user");
+    why := "";
+    if h.why # nil then why := Str.trim(h.why()); end;
+    if LEN(why) > 0 then
+        Buf.str(out, ": ");
+        Buf.str(out, why);
+    end;
+    Buf.str(out, ". ");
+    Buf.str(out, ending);
+end;
+
 (* The 'run' tool: one of the programs config's run names, with the
    model's arguments, its exit status and output, so that a model can
    use the human's own tools (render a drawing, read a manual) without
@@ -739,7 +758,7 @@ end;
    test suite 22 times only to see a program's colours under one. *)
 proc runTool(const a: Args; const h: Human; var out: Buf.Buf);
 var args: [][]const U8; cmds: Cmds.Vec; c: []Cmd; env: Strs.Vec; ask, lines, line, q: Buf.Buf; e, v: Json.Value;
-    x, why: []const U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
+    x: []const U8; i, k, start, status: INT; j: Arun.Job; answer: U8;
 begin
     Strs.init(env, a.mem);
     e := Json.member(a.d, a.v, "env");
@@ -820,14 +839,7 @@ begin
             Buf.str(trust, x);
             Buf.add(trust, ' ');
         elsif answer # 'y' then
-            Buf.str(out, "declined by user");
-            why := "";
-            if h.why # nil then why := Str.trim(h.why()); end;
-            if LEN(why) > 0 then
-                Buf.str(out, ": ");
-                Buf.str(out, why);
-            end;
-            Buf.str(out, ". Nothing was run.");
+            declined(h, "Nothing was run.", out);
             return;
         end;
     end;
@@ -863,6 +875,11 @@ end;
 proc shell(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
 var cmd: []const U8; got: Buf.Buf; rw: Strs.Vec; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
 begin
+    (* a call is not always of a tool offered: a one-shot call, or a name the model made up *)
+    if not shellOn() then
+        Buf.str(out, "error: shell is not on offer: it runs only in the stage's copy, in the jail");
+        return;
+    end;
     cmd := Str.trim(str(a, "command"));
     if LEN(cmd) = 0 then Buf.str(out, "error: give the command line as command"); return; end;
     limit := int(a, "timeout", ShellTimeout);
@@ -939,21 +956,13 @@ end;
    what is added to out says so: the reason, if they give one, after
    "declined by user", and that nothing was changed. *)
 proc approve(const h: Human; question, detail: []const U8; var out: Buf.Buf): BOOL;
-var why: []const U8;
 begin
     if h.ask = nil then
         Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
         return false;
     end;
     if h.ask(question, detail, "yn") = 'y' then return true; end;
-    Buf.str(out, "declined by user");
-    why := "";
-    if h.why # nil then why := Str.trim(h.why()); end;
-    if LEN(why) > 0 then
-        Buf.str(out, ": ");
-        Buf.str(out, why);
-    end;
-    Buf.str(out, ". Nothing was changed: the file is as it was before.");
+    declined(h, "Nothing was changed: the file is as it was before.", out);
     return false;
 end;
 
@@ -1395,10 +1404,38 @@ begin
     if out.len = 0 then Buf.str(out, "(empty)"); end;
 end;
 
+(* s cut to at most max bytes, at where a character starts. *)
+proc cutAt(s: []const U8; max: INT): []const U8;
+begin
+    if LEN(s) <= max then return s; end;
+    while (max > 0) and (s[max] & 0C0H = 80H) do DEC(max); end;   (* where a character starts *)
+    return s[0..max];
+end;
+
+(* The tool name, one an MCP server offers, run with a's arguments, once
+   the human says yes: an MCP server is a program of someone else's,
+   which may do anything, so every call is asked about, with its
+   arguments (cut at MaxAsked bytes) shown. *)
+proc mcp(name: []const U8; const a: Args; const h: Human; var out: Buf.Buf);
+var q, shown: Buf.Buf;
+begin
+    if h.ask = nil then Buf.str(out, "declined: there is nobody to ask. Nothing was run."); return; end;
+    Buf.init(q, a.mem);
+    Buf.init(shown, a.mem);
+    Fmt.write(q, "run {}?", [Fmt.str(name)]);
+    Amsg.compact(a.d, a.v, shown);
+    if h.ask(Buf.bytes(q), cutAt(Buf.bytes(shown), MaxAsked), "yn") # 'y' then
+        declined(h, "Nothing was run.", out);
+        return;
+    end;
+    Amcp.call(name, a.d, a.v, h.stopped, out);
+end;
+
 (* The tools a request offers: Offered, less those that change files
    unless edits, a mode's say, and those that could only fail: search
    without a SearXNG, note outside a project, delegate unless lead, a
-   session with a worker model, which a worker isn't. *)
+   session with a worker model, which a worker isn't; and then the MCP
+   servers' tools, in every mode. *)
 proc offered*(lead, edits: BOOL): []Awire.Tool;
 var b: Buf.Buf; i: INT;
 begin
@@ -1418,6 +1455,7 @@ begin
         end;
         Tools.push(offer, Offered[i]);
     end;
+    for i := 0 to LEN(Amcp.tools()) - 1 do Tools.push(offer, Amcp.tools()[i]); end;
     return Tools.all(offer);
 end;
 
@@ -1572,6 +1610,8 @@ begin
         fetch(a, mem, res);
     elsif name = "delegate" then
         Buf.str(res, "error: there are no workers here");
+    elsif Amcp.owns(name) then
+        mcp(name, a, h, res);
     else
         (* an invented name gets the real ones back, the one thing it lacked *)
         Buf.str(res, "error: there is no tool named \"");
@@ -1580,6 +1620,10 @@ begin
         for i := 0 to LEN(Offered) - 1 do
             Buf.add(res, ' ');
             Buf.str(res, Offered[i].name);
+        end;
+        for i := 0 to LEN(Amcp.tools()) - 1 do
+            Buf.add(res, ' ');
+            Buf.str(res, Amcp.tools()[i].name);
         end;
     end;
     s := Buf.bytes(res);
@@ -1715,6 +1759,8 @@ begin
     for i := 0 to LEN(offered(true, true)) - 1 do
         if offered(true, true)[i].name = "shell" then Out.str("Atools: shell offered with no place to work\n"); failed := true; end;
     end;
+    expect("shell, no stage", run("shell", `{"command":"true"}`, nil),
+        "error: shell is not on offer: it runs only in the stage's copy, in the jail");
     Afence.useStage(Afence.zone);   (* the project as the stage's copy, so shell is offered *)
     expect("shell", run("shell", `{"command":"echo hi; echo oops >&2; exit 3"}`, nil), "exit 3: echo hi; echo oops >&2; exit 3\nhi\noops");
     expect("shell writes in the project", run("shell", `{"command":"echo x > made && cat made"}`, nil), "exit 0: echo x > made && cat made\nx");

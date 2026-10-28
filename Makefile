@@ -23,7 +23,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Atools Agent Aboard Ahistory Aattach Acomplete
+MODS = Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Atools Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)
@@ -42,8 +42,11 @@ build/arno: $(SRC) $(LIBS) | build
 build/stub: test/Astub.raz $(LIBS) | build
 	$(RAZ) -Werror -o $@ test/Astub.raz
 
+build/mcpstub: test/Amcpstub.raz $(LIBS) | build
+	$(RAZ) -Werror -I src -o $@ test/Amcpstub.raz
+
 # each module's main is its test; then the program's, test/oneshot.cn
-check: build/arno build/stub
+check: build/arno build/stub build/mcpstub
 	@for m in $(MODS); do \
 	    $(RAZ) -Werror $(INC) -o build/$$m src/$$m.raz && build/$$m || exit 1; \
 	done
@@ -61,7 +64,7 @@ compat: | build
 # the sources are as raz's formatter lays them out
 fmt: | build
 	$(RAZ) -o build/Pretty $(RAZTOOLS)/Pretty.raz
-	@fail=0; for f in $(SRC) test/Astub.raz; do \
+	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz; do \
 	    build/Pretty $$f | cmp -s - $$f || { echo "not formatted: $$f"; fail=1; }; \
 	done; test $$fail = 0
 

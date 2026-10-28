@@ -20,6 +20,8 @@
 //     failed calls, or at the step cap; ask about a path outside the
 //     project, and about a change after its diff, a line of the
 //     standard input the answer, and the next the reason for a no;
+//   - offer an MCP server's tools, run one after a yes and not after
+//     a no, and say of a server that will not start;
 //   - in a session, go on with the conversation from line to line,
 //     and run the commands: switch, list, load, rename, clear and
 //     compact conversations; set the mode, which the system prompt
@@ -221,6 +223,19 @@ holds('an edit', 'err', 'create ' + dir + '/made? [y/N]')
 edit := '{"path":"' + dir + '/made","old":"hello","new":"bye"}'
 answering(['call', 'edit', edit], 'n' + #10 + 'not now')
 holds('a declined edit', 'out', 'the tool said: declined by user: not now. Nothing was changed')
+
+// an MCP server's tool: asked about each call, never fenced; a server
+// that won't start is said, and the rest go on
+configure(['mcp = stub build/mcpstub', 'mcp = bad no-such-server-of-arno'])
+answering(['call', 'stub_echo', '{"text":"hi"}'], 'y')
+holds('an mcp call', 'out', 'the tool said: hi')
+holds('an mcp call', 'err', 'run stub_echo? [y/N]')
+holds('a bad server', 'err', 'mcp bad: cannot start')
+answering(['call', 'stub_echo', '{"text":"hi"}'], 'n' + #10 + 'not now')
+holds('an mcp no', 'out', 'the tool said: declined by user: not now. Nothing was run.')
+answering([], '/tools')
+holds('mcp in /tools', 'out', 'stub_echo  ')
+configure([])
 
 // a session: each line a turn of the same conversation, or a command
 configure([])
