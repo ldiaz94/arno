@@ -23,7 +23,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Atools Agent Aboard Ahistory Aattach Acomplete
+MODS = Aframe Aview Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Atools Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)
@@ -42,15 +42,22 @@ build/arno: $(SRC) $(LIBS) | build
 build/stub: test/Astub.raz $(LIBS) | build
 	$(RAZ) -Werror -o $@ test/Astub.raz
 
+# an MCP server, for Amcp's test and oneshot.cn
 build/mcpstub: test/Amcpstub.raz $(LIBS) | build
 	$(RAZ) -Werror -I src -o $@ test/Amcpstub.raz
 
-# each module's main is its test; then the program's, test/oneshot.cn
-check: build/arno build/stub build/mcpstub
+# a host in miniature, which drives arno --serve
+build/host: test/Ahost.raz src/Aframe.raz | build
+	$(RAZ) -Werror -I src -o $@ test/Ahost.raz
+
+# each module's main is its test; then the program's, test/oneshot.cn and
+# test/serve.cn
+check: build/arno build/stub build/mcpstub build/host
 	@for m in $(MODS); do \
 	    $(RAZ) -Werror $(INC) -o build/$$m src/$$m.raz && build/$$m || exit 1; \
 	done
 	@$(CONCHA) test/oneshot.cn build/stub build/arno
+	@$(CONCHA) test/serve.cn build/stub build/arno build/host
 
 # the conversations the Pascal arno saved, each read and written back
 # byte for byte: their messages, then the whole file
@@ -64,7 +71,7 @@ compat: | build
 # the sources are as raz's formatter lays them out
 fmt: | build
 	$(RAZ) -o build/Pretty $(RAZTOOLS)/Pretty.raz
-	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz; do \
+	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz test/Ahost.raz; do \
 	    build/Pretty $$f | cmp -s - $$f || { echo "not formatted: $$f"; fail=1; }; \
 	done; test $$fail = 0
 

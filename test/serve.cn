@@ -1,0 +1,52 @@
+// serve.cn stub arno host: arno --serve driven by a host, test/Ahost.raz
+// (build/host), against the model's server of test/Astub.raz (build/stub),
+// as a program like arnold drives it through ~/lib/arnoc. The host's
+// dialogue is in Ahost.raz, which says what arno must do; this sets the
+// scene: the stub, a configuration that points at it, a project with one
+// file, and directories of their own for arno's conversations and the
+// session's socket.
+//
+// Run from the top of the tree, by make check; what it makes goes under
+// build/serve.
+
+if length(args) <> 3 then begin
+  echo 'usage: concha test/serve.cn stub arno host' >&2
+  halt(2)
+end
+stub := args[0]
+arno := args[1]
+host := args[2]
+
+// absolute: arno works in the project's directory, where a relative one is another
+dir := `pwd` + '/build/serve'
+rm -rf $dir
+mkdir -p "$dir/config/arno" "$dir/data" "$dir/run" "$dir/proj"
+export XDG_CONFIG_HOME := "$dir/config"
+export XDG_DATA_HOME := "$dir/data"
+export XDG_CACHE_HOME := "$dir/cache"
+export XDG_RUNTIME_DIR := "$dir/run"
+echo 'one' > "$dir/proj/f.txt"
+mkdir "$dir/proj/.git"
+server := ''
+
+procedure cleanup;
+begin
+  if server <> '' then kill -9 $server 2> /dev/null
+end;
+trap cleanup EXIT
+
+started := split(`$stub 60`)
+if length(started) <> 2 then begin
+  echo "serve: $stub did not start" >&2
+  halt(1)
+end
+server := started[1]
+echo "url = http://127.0.0.1:$(started[0])/v1" > "$dir/config/arno/config"
+echo 'context_files = no' >> "$dir/config/arno/config"
+echo 'project_map = no' >> "$dir/config/arno/config"
+
+$host $arno "$dir/proj"
+if status <> 0 then begin
+  echo "serve: the host's checks failed, status $status" >&2
+  halt(1)
+end

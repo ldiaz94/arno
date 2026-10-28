@@ -1,0 +1,193 @@
+(* Aframe: messages on a pipe or a socket that stays open.
+
+   A message is one netstring holding a run of netstrings, the verb
+   first, so that it has an end of its own where the stream has none:
+
+       15:4:line,2:hi,0:,,       line, with the fields "hi" and ""
+       |  |      |   |
+       |  |      |   one netstring: its length, a colon, the bytes, a comma
+       |  |      the fields, one netstring each
+       |  the bytes of the fields
+       the length of the message
+
+   Numbers are decimal text. A length of more than nine digits, or over
+   MaxNet, is malformed, and so is a message whose netstrings don't
+   fill it exactly: whoever reads one can't read on, and ends the
+   connection. This is the framing of ~/lib/arnoc, which hosts of
+   `arno --serve` speak, byte for byte.
+
+   pack writes a message; take reads the first of a buffer, its fields
+   pointing into it. sendPipe and sendSocket write whole bytes to a
+   descriptor that waits for them: the host's pipe, or a socket.
+
+   Depends on Buf, Str, Sys and Vec. Leaves out whatever a message
+   means, which is its reader's. *)
+module Aframe;
+import Buf, Str, Sys, Heap, Out, Rt, Fields := Vec([]const U8);
+import SYSTEM;
+
+const
+    MaxNet* = 64 * 1024 * 1024;   (* the longest netstring read; a longer claim is malformed *)
+    MaxDigits = 9;                (* digits a length may have *)
+
+(* The digits of n, appended to b. *)
+proc number(var b: Buf.Buf; n: INT);
+var d: [20]U8; k: INT;
+begin
+    d, k := Str.fromInt(n);
+    Buf.str(b, d[0..k]);
+end;
+
+(* How many bytes the netstring of s takes. *)
+proc size(s: []const U8): INT;
+var k: INT;
+begin
+    _, k := Str.fromInt(LEN(s));
+    return k + LEN(s) + 2;
+end;
+
+(* The netstring of s, appended to b. *)
+proc put(var b: Buf.Buf; s: []const U8);
+begin
+    number(b, LEN(s));
+    Buf.add(b, ':');
+    Buf.str(b, s);
+    Buf.add(b, ',');
+end;
+
+(* The message of fields, verb first, appended to b. *)
+proc pack*(var b: Buf.Buf; fields: [][]const U8);
+var n, i: INT;
+begin
+    n := 0;
+    for i := 0 to LEN(fields) - 1 do n := n + size(fields[i]); end;
+    number(b, n);
+    Buf.add(b, ':');
+    for i := 0 to LEN(fields) - 1 do put(b, fields[i]); end;
+    Buf.add(b, ',');
+end;
+
+(* The first netstring of src: its bytes, and how many bytes of src it
+   took; 0 if it isn't all there yet, -1 if it is no netstring. *)
+proc net*(src: []const U8): ([]const U8, INT);
+var i, n: INT;
+begin
+    i := 0;
+    n := 0;
+    while (i < LEN(src)) and (src[i] >= '0') and (src[i] <= '9') do
+        if i = MaxDigits then return "", -1; end;
+        n := n * 10 + INT(src[i] - '0');
+        INC(i);
+    end;
+    if n > MaxNet then return "", -1; end;
+    if i = LEN(src) then return "", 0; end;
+    if (i = 0) or (src[i] # ':') then return "", -1; end;
+    if i + 1 + n >= LEN(src) then return "", 0; end;
+    if src[i + 1 + n] # ',' then return "", -1; end;
+    return src[i + 1..i + 1 + n], i + n + 2;
+end;
+
+(* The first message of src, its fields put in f, made empty first:
+   how many bytes of src it took; 0 if it isn't all there yet, -1 if
+   src doesn't start with a message. The fields point into src. *)
+proc take*(src: []const U8; var f: Fields.Vec): INT;
+var outer, one: []const U8; used, at, k: INT;
+begin
+    Fields.reset(f);
+    outer, used := net(src);
+    if used <= 0 then return used; end;
+    at := 0;
+    while at < LEN(outer) do
+        one, k := net(outer[at..LEN(outer)]);
+        if k <= 0 then return -1; end;
+        Fields.push(f, one);
+        at := at + k;
+    end;
+    return used;
+end;
+
+(* The first n bytes of b dropped, the rest moved to the front. *)
+proc drop*(var b: Buf.Buf; n: INT);
+var d: []U8; i: INT;
+begin
+    d := Buf.bytes(b);
+    for i := n to LEN(d) - 1 do d[i - n] := d[i]; end;
+    Buf.cut(b, LEN(d) - n);
+end;
+
+(* s written to fd, a pipe or a socket as sock says, waiting as long as
+   it takes, and the short writes and interruptions taken as they come;
+   false when the other end is gone. A socket is written with send,
+   which never raises SIGPIPE; a pipe, whose reader going away raises
+   it, is written by a program that ignores it. *)
+proc sendAll(fd: INT; s: []const U8; sock: BOOL): BOOL;
+var n: INT;
+begin
+    while LEN(s) > 0 do
+        if sock then n := Sys.send(fd, s); else n := Sys.write(fd, s); end;
+        if n = Sys.errIntr then continue; end;
+        if n <= 0 then return false; end;
+        s := s[n..LEN(s)];
+    end;
+    return true;
+end;
+
+(* s written whole to the pipe fd; false when its reader is gone. *)
+proc sendPipe*(fd: INT; s: []const U8): BOOL;
+begin
+    return sendAll(fd, s, false);
+end;
+
+(* s written whole to the socket fd; false when its peer is gone. *)
+proc sendSocket*(fd: INT; s: []const U8): BOOL;
+begin
+    return sendAll(fd, s, true);
+end;
+
+(* The module's test: messages packed and read back, a message cut in
+   two, and what is no message. *)
+
+var failed: BOOL;
+
+proc expect(what: []const U8; ok: BOOL);
+begin
+    if ok then return; end;
+    Out.str("Aframe: ");
+    Out.str(what);
+    Out.ln;
+    failed := true;
+end;
+
+proc main*: INT;
+var b: Buf.Buf; f: Fields.Vec; msg: []const U8; n: INT;
+begin
+    Buf.init(b, Heap.heap);
+    Fields.init(f, Heap.heap);
+    pack(b, ["line", "hi", ""]);
+    expect("the example of arnoc(3)", Buf.bytes(b) = "15:4:line,2:hi,0:,,");
+    msg := Buf.bytes(b);
+    n := take(msg, f);
+    expect("a message taken", (n = LEN(msg)) and (f.len = 3));
+    expect("its fields", (Fields.all(f)[0] = "line") and (Fields.all(f)[1] = "hi") and (Fields.all(f)[2] = ""));
+    expect("a message cut short waits", take(msg[0..LEN(msg) - 1], f) = 0);
+    expect("a length that waits", take("1", f) = 0);
+    expect("nothing waits", take("", f) = 0);
+    expect("no digits", take(":abc,", f) = -1);
+    expect("ten digits", take("1234567890:", f) = -1);
+    expect("a netstring with no comma", take("2:ab;", f) = -1);
+    expect("a length past the most", take("999999999:", f) = -1);
+    expect("netstrings that don't fill the message", take("5:1:a,x,", f) = -1);
+    expect("a field cut by its message", take("4:3:ab,,", f) = -1);
+    Buf.reset(b);
+    pack(b, ["x"]);
+    pack(b, ["status", "a\nb"]);
+    msg := Buf.bytes(b);
+    n := take(msg, f);
+    expect("two messages, the first", (n = 7) and (f.len = 1));
+    n := take(msg[n..LEN(msg)], f);
+    expect("the second", (f.len = 2) and (Fields.all(f)[1] = "a\nb"));
+    if failed then Rt.stop("Aframe: failed"); end;
+    return 0;
+end;
+
+end Aframe.

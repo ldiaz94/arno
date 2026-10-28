@@ -1,0 +1,854 @@
+(* Aview: a session as others see it, and the screen of one that is
+   watched.
+
+   Every arno on a terminal, and every one run with --serve, is a
+   session others can watch: arno --attach shows it in another
+   terminal, the transcript so far and then each change, and types into
+   it. The session keeps its Board, the transcript (Aboard), and this
+   module is how the Board changes and how that is told:
+
+       the session ----> Aview.said, called, ... ----> the Board
+                                   |
+                                   +--> the owner's copy (a host, with --serve)
+                                   +--> every viewer on the session's socket
+
+   A change is made through this module, not on the Board, so that
+   none is missed. What is told is a message (Aframe), verb first:
+
+       push N KIND TEXT   a new entry, N its index, which starts again
+                          from 0 after a reset; KIND is user, asst,
+                          info or err
+       tool N NAME ARGS   a new entry for a tool call
+       append N TEXT      more of entry N's text
+       done N TEXT        tool call N's result
+       reset              the transcript was cleared
+       status TEXT        the status line
+       busy 0|1           a turn ended or started
+
+   Whoever keeps a copy of the transcript appends what it is told, in
+   order, and has the same numbers; apply is that, for a viewer. These
+   are the messages of ~/lib/arnoc's protocol, which a host of --serve
+   reads, and the viewers' too.
+
+   The session's socket is $XDG_RUNTIME_DIR/arno/PID.view, or, with no
+   such directory, run/ in arno's cache, a directory of mode 700 that
+   only its user can enter; a connection from another user is dropped
+   as well. A viewer opens with the netstring 6:attach, and keeps the
+   connection: it is sent a reset, the transcript so far, the status
+   line and busy, then every change; it may send line and cancel. A
+   connection that sends 3:who, is answered with one message, ok, the
+   owner, the project root and the title, and closed: that is how
+   sessions are listed and found. A question is never sent to a
+   viewer, only that one waits, as a status line. A viewer is written
+   without waiting, each with an outbox, and dropped when it falls a
+   megabyte behind, so that a stuck terminal never holds up the
+   session.
+
+   The viewers' sockets are read by the session's own loop: it
+   watches listenFd, and the fds of viewers, tells service when one is
+   ready, and takes what viewers typed with heard and cancelled.
+
+   Depends on Aboard, Aframe, Astore and Sys. Leaves out the editors'
+   protocol of arno-peer(5), which has a socket of its own. *)
+module Aview;
+import Aboard, Aframe, Astore, Buf, Str, Sys, Fmt, Heap, Out, Rt,
+    Strs := Vec([]U8), Fields := Vec([]const U8), Viewers := Vec(Viewer), Polls := Vec(Sys.Poll);
+import SYSTEM;
+
+type
+    (* Where the owner's own copy of what is told goes: a message. *)
+    Sink* = proc(msg: []const U8);
+    (* The owner is told a viewer's fd is to be watched, or not now; it
+   says false if it can't watch one more, and the viewer is turned away. *)
+    Watch* = proc(fd: INT; on: BOOL): BOOL;
+
+    (* What a connection is until it says: a viewer, or a who. *)
+    Role = (fresh, viewing);
+
+    (* One connection to the session's socket. *)
+    Viewer = record
+        fd: INT;
+        role: Role;
+        inbox: Buf.Buf;    (* what it sent that isn't a whole message yet *)
+        outbox: Buf.Buf;   (* what is waiting to go to it *)
+    end;
+
+const
+    Backlog = 1024 * 1024;   (* bytes a viewer may fall behind before it is dropped *)
+    Ext = ".view";           (* the end of a session socket's file name *)
+    Hail = "attach";         (* what a viewer opens with, as a netstring *)
+    Who = "who";             (* and what a lister does *)
+    Patience = 1000;         (* ms the one asking who waits for the answer *)
+
+var
+    kinds: [5][]const U8;   (* Aboard.Kind's names on the wire, by Kind *)
+    sink: Sink;
+    watch: Watch;
+    viewers: Viewers.Vec;
+    listener: INT;            (* the session's socket, -1 for none *)
+    path: Buf.Buf;            (* its path *)
+    out: Buf.Buf;             (* the message being made *)
+    heardLines: Strs.Vec;     (* lines viewers typed, not yet taken *)
+    cancelling: BOOL;         (* a viewer said cancel *)
+    owner, root, title: Buf.Buf;   (* what who answers *)
+    status: Buf.Buf;          (* the status line last told *)
+    busy: BOOL;               (* a turn is running, as last told *)
+
+(* Telling *)
+
+(* The owner's copy goes to s, until told otherwise; nil for none. *)
+proc owned*(s: Sink);
+begin
+    sink := s;
+end;
+
+(* The owner wants to hear of viewers' fds, to watch them; nil if it
+   polls for them itself, with waitOn. *)
+proc watching*(w: Watch);
+begin
+    watch := w;
+end;
+
+(* Drops viewer i: its socket closed, and the owner told to stop watching. *)
+proc drop(i: INT);
+var v: ^Viewer;
+begin
+    v := SYSTEM.ADR(Viewers.all(viewers)[i]);
+    if watch # nil then _ := watch(v^.fd, false); end;
+    Sys.close(v^.fd);
+    Buf.done(v^.inbox);
+    Buf.done(v^.outbox);
+    Viewers.remove(viewers, i, 1);
+end;
+
+(* What waits in viewer i's outbox sent as far as the socket takes it,
+   without waiting; false if the viewer is gone. *)
+proc flush(i: INT): BOOL;
+var v: ^Viewer; n, sent: INT;
+begin
+    v := SYSTEM.ADR(Viewers.all(viewers)[i]);
+    sent := 0;
+    while sent < v^.outbox.len do
+        n := Sys.sendNow(v^.fd, Buf.bytes(v^.outbox)[sent..v^.outbox.len]);
+        if n = Sys.errIntr then continue; end;
+        if n = Sys.errAgain then break; end;
+        if n <= 0 then return false; end;
+        sent := sent + n;
+    end;
+    (* what went is forgotten, so that a viewer that keeps up never builds a backlog *)
+    Aframe.drop(v^.outbox, sent);
+    return v^.outbox.len <= Backlog;
+end;
+
+(* msg to every viewer that has attached, and to the owner. *)
+proc tell(msg: []const U8);
+var i: INT;
+begin
+    if sink # nil then sink(msg); end;
+    i := 0;
+    while i < viewers.len do
+        if Viewers.all(viewers)[i].role = viewing then
+            Buf.str(Viewers.all(viewers)[i].outbox, msg);
+            if not flush(i) then drop(i); continue; end;
+        end;
+        INC(i);
+    end;
+end;
+
+(* The message of fields, told. *)
+proc say(fields: [][]const U8);
+begin
+    Buf.reset(out);
+    Aframe.pack(out, fields);
+    tell(Buf.bytes(out));
+end;
+
+(* n in decimal text, in digits, as a field. *)
+proc num(n: INT; var digits: [20]U8): []const U8;
+var k: INT;
+begin
+    digits, k := Str.fromInt(n);
+    return digits[0..k];
+end;
+
+(* Entry i's message, appended to b: push, or tool, with its result's
+   done if it has come. *)
+proc entry(i: INT; var b: Buf.Buf);
+var e: ^Aboard.Entry; d: [20]U8; n: []const U8;
+begin
+    e := SYSTEM.ADR(Aboard.all()[i]);
+    n := num(i, d);
+    if e^.kind = Aboard.tool then
+        Aframe.pack(b, ["tool", n, Buf.bytes(e^.text), Buf.bytes(e^.args)]);
+        if e^.done then Aframe.pack(b, ["done", n, Buf.bytes(e^.res)]); end;
+    else
+        Aframe.pack(b, ["push", n, kinds[INT(e^.kind)], Buf.bytes(e^.text)]);
+    end;
+end;
+
+(* Entry i, the last, told as a new one. *)
+proc pushed(i: INT);
+begin
+    Buf.reset(out);
+    entry(i, out);
+    tell(Buf.bytes(out));
+end;
+
+(* What a viewer that arrives is told: the transcript so far, a reply
+   still streaming as far as it has got, then the status line and busy. *)
+proc snapshot(var b: Buf.Buf);
+var i: INT;
+begin
+    Aframe.pack(b, ["reset"]);
+    for i := 0 to LEN(Aboard.all()) - 1 do entry(i, b); end;
+    Aframe.pack(b, ["status", Buf.bytes(status)]);
+    if busy then Aframe.pack(b, ["busy", "1"]); else Aframe.pack(b, ["busy", "0"]); end;
+end;
+
+(* The snapshot for the owner, a host that starts listening late: the
+   entries so far. *)
+proc entries*(var b: Buf.Buf);
+var i: INT;
+begin
+    for i := 0 to LEN(Aboard.all()) - 1 do entry(i, b); end;
+end;
+
+(* What the human typed, a new entry. *)
+proc typed*(s: []const U8);
+begin
+    _ := Aboard.push(Aboard.user, s);
+    pushed(LEN(Aboard.all()) - 1);
+end;
+
+(* A piece of the model's text, added to the reply it goes on, or the
+   start of a new one. *)
+proc said*(s: []const U8);
+var e: ^Aboard.Entry; d: [20]U8;
+begin
+    e := Aboard.last();
+    if (e # nil) and (e^.kind = Aboard.Kind.reply) then
+        Aboard.reply(s);
+        say(["append", num(LEN(Aboard.all()) - 1, d), s]);
+    else
+        Aboard.reply(s);
+        pushed(LEN(Aboard.all()) - 1);
+    end;
+end;
+
+(* A tool call, about to run. *)
+proc called*(name, args: []const U8);
+begin
+    Aboard.call(name, args);
+    pushed(LEN(Aboard.all()) - 1);
+end;
+
+(* res, the result of the first call still running. *)
+proc answered*(res: []const U8);
+var e: []Aboard.Entry; i: INT; d: [20]U8;
+begin
+    e := Aboard.all();
+    for i := 0 to LEN(e) - 1 do
+        if (e[i].kind = Aboard.tool) and not e[i].done then
+            Aboard.result(res);
+            say(["done", num(i, d), res]);
+            return;
+        end;
+    end;
+end;
+
+(* What arno says, as information or as an error. *)
+proc noted*(k: Aboard.Kind; s: []const U8);
+begin
+    _ := Aboard.push(k, s);
+    pushed(LEN(Aboard.all()) - 1);
+end;
+
+(* The transcript cleared. *)
+proc cleared*;
+begin
+    Aboard.clear;
+    say(["reset"]);
+end;
+
+(* The status line is s, and the conversation's title t. *)
+proc stated*(s, t: []const U8);
+begin
+    Buf.reset(status);
+    Buf.str(status, s);
+    Buf.reset(title);
+    Buf.str(title, t);
+    say(["status", s]);
+end;
+
+(* A turn has begun or ended. *)
+proc busied*(yes: BOOL);
+begin
+    busy := yes;
+    if yes then say(["busy", "1"]); else say(["busy", "0"]); end;
+end;
+
+(* A question waits for its owner, who, or no longer does: told to
+   viewers only, as the status line, which the owner's own is. *)
+proc waiting*(who: []const U8; yes: BOOL);
+var b: Buf.Buf; i: INT;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, Buf.bytes(status));
+    if yes then Fmt.write(b, " \u{B7} a question waits in {}", [Fmt.str(who)]); end;
+    Buf.reset(out);
+    Aframe.pack(out, ["status", Buf.bytes(b)]);
+    i := 0;
+    while i < viewers.len do
+        if Viewers.all(viewers)[i].role = viewing then
+            Buf.str(Viewers.all(viewers)[i].outbox, Buf.bytes(out));
+            if not flush(i) then drop(i); continue; end;
+        end;
+        INC(i);
+    end;
+end;
+
+(* The session is run by o, in the project r, until told otherwise. *)
+proc owning*(o, r: []const U8);
+begin
+    Buf.reset(owner);
+    Buf.str(owner, o);
+    Buf.reset(root);
+    Buf.str(root, r);
+end;
+
+(* The session's socket *)
+
+(* Where the sockets are: $XDG_RUNTIME_DIR/arno, else run/ in arno's
+   cache, made with mode 700, into b. *)
+proc socketDir(var b: Buf.Buf): []const U8;
+begin
+    Buf.reset(b);
+    if LEN(Sys.env("XDG_RUNTIME_DIR")) > 0 then
+        Buf.str(b, Sys.env("XDG_RUNTIME_DIR"));
+        Buf.str(b, "/arno");
+    else
+        Buf.str(b, Astore.cache());
+        Buf.str(b, "run");
+    end;
+    _ := Sys.makeDirMode(Buf.bytes(b), 1C0H);
+    Buf.add(b, '/');
+    return Buf.bytes(b);
+end;
+
+(* The path of the socket of the session of process pid, into b. *)
+proc socketOf(pid: INT; var b: Buf.Buf): []const U8;
+var d: [20]U8; k: INT;
+begin
+    _ := socketDir(b);
+    d, k := Str.fromInt(pid);
+    Buf.str(b, d[0..k]);
+    Buf.str(b, Ext);
+    return Buf.bytes(b);
+end;
+
+(* The session's socket made, taking viewers: false if it can't be. *)
+proc listen*: BOOL;
+begin
+    if listener >= 0 then return true; end;
+    Buf.reset(path);
+    Buf.str(path, socketOf(Sys.pid(), out));
+    _ := Sys.remove(Buf.bytes(path));
+    listener := Sys.listen(Buf.bytes(path));
+    if listener < 0 then return false; end;
+    _ := Sys.chmod(Buf.bytes(path), 180H);
+    _ := Sys.keepOnExec(listener, false);
+    return true;
+end;
+
+(* The socket and every viewer closed, its file removed. *)
+proc unlisten*;
+begin
+    while viewers.len > 0 do drop(viewers.len - 1); end;
+    if listener < 0 then return; end;
+    Sys.close(listener);
+    listener := -1;
+    _ := Sys.remove(Buf.bytes(path));
+end;
+
+(* The socket to watch for connections, -1 if there is none. *)
+proc listenFd*: INT;
+begin
+    return listener;
+end;
+
+(* Every fd of a viewer, and the listener, added to fds to wait on:
+   read, and write too for one with bytes waiting. *)
+proc waitOn*(var fds: Polls.Vec);
+var i: INT;
+begin
+    if listener >= 0 then Polls.push(fds, {fd: listener, read: true}); end;
+    for i := 0 to viewers.len - 1 do
+        Polls.push(fds, {fd: Viewers.all(viewers)[i].fd, read: true,
+            write: Viewers.all(viewers)[i].outbox.len > 0});
+    end;
+end;
+
+(* A connection taken from the listener, if it is from this user. *)
+proc accept;
+var fd, e: INT; r: Sys.Remote; v: ^Viewer;
+begin
+    fd := Sys.accept(listener);
+    if fd < 0 then return; end;
+    r, e := Sys.peer(fd);
+    if (e # 0) or (r.uid # Sys.uid()) or (Sys.setBlocking(fd, false) < 0) then Sys.close(fd); return; end;
+    _ := Sys.keepOnExec(fd, false);
+    if (watch # nil) and not watch(fd, true) then Sys.close(fd); return; end;
+    v := Viewers.add(viewers);
+    v^ := {fd: fd, role: fresh};
+    Buf.init(v^.inbox, Heap.heap);
+    Buf.init(v^.outbox, Heap.heap);
+end;
+
+(* The answer to who, put to viewer i as far as the socket takes it; the
+   caller closes the connection. *)
+proc answerWho(i: INT);
+begin
+    Buf.reset(out);
+    Aframe.pack(out, ["ok", Buf.bytes(owner), Buf.bytes(root), Buf.bytes(title)]);
+    Buf.str(Viewers.all(viewers)[i].outbox, Buf.bytes(out));
+    _ := flush(i);
+end;
+
+(* Viewer i's inbox read as far as it makes whole messages: a hail
+   or a who first, then lines and cancels. false if it sent what is no
+   message, or a who is answered, and it is to be dropped. *)
+proc read(i: INT): BOOL;
+var v: ^Viewer; f: Fields.Vec; one: []const U8; used: INT; s: []U8; ok: BOOL;
+begin
+    v := SYSTEM.ADR(Viewers.all(viewers)[i]);
+    Fields.init(f, Heap.heap);
+    defer Fields.done(f);
+    while v^.inbox.len > 0 do
+        if v^.role = fresh then
+            one, used := Aframe.net(Buf.bytes(v^.inbox));
+            if used <= 0 then return used = 0; end;
+            if one = Who then answerWho(i); return false; end;
+            if one # Hail then return false; end;
+            v^.role := viewing;
+            Buf.reset(out);
+            snapshot(out);
+            Buf.str(v^.outbox, Buf.bytes(out));
+        else
+            used := Aframe.take(Buf.bytes(v^.inbox), f);
+            if used <= 0 then return used = 0; end;
+            if f.len > 0 then
+                if (Fields.all(f)[0] = "line") and (f.len >= 2) then
+                    s, ok := Str.copy(Heap.heap, Fields.all(f)[1]);
+                    if ok then Strs.push(heardLines, s); end;
+                elsif Fields.all(f)[0] = "cancel" then
+                    cancelling := true;
+                end;
+            end;
+        end;
+        Aframe.drop(v^.inbox, used);
+    end;
+    return true;
+end;
+
+(* The fd is ready: a connection to take, or a viewer to read from or
+   write to. *)
+proc service*(fd: INT);
+var i, n: INT; chunk: [16384]U8; v: ^Viewer;
+begin
+    if fd = listener then accept(); return; end;
+    for i := 0 to viewers.len - 1 do
+        if Viewers.all(viewers)[i].fd = fd then
+            v := SYSTEM.ADR(Viewers.all(viewers)[i]);
+            n := Sys.read(fd, chunk);
+            if n = 0 then drop(i); return; end;
+            if n > 0 then
+                Buf.str(v^.inbox, chunk[0..n]);
+                if not read(i) then drop(i); return; end;
+            end;
+            if (n >= 0) or (n = Sys.errAgain) or (n = Sys.errIntr) then
+                if not flush(i) then drop(i); end;
+            else
+                drop(i);
+            end;
+            return;
+        end;
+    end;
+end;
+
+(* Every fd that is ready now serviced, for an owner that watches
+   them but not which. *)
+proc serviceAll*;
+var fds: Polls.Vec; i: INT; p: []Sys.Poll;
+begin
+    Polls.init(fds, Heap.heap);
+    defer Polls.done(fds);
+    waitOn(fds);
+    p := Polls.all(fds);
+    if (LEN(p) = 0) or (Sys.poll(p, 0) <= 0) then return; end;
+    for i := 0 to LEN(p) - 1 do
+        if p[i].ready then service(p[i].fd); end;
+    end;
+end;
+
+(* The next line a viewer typed, into line; false if there is none. *)
+proc heard*(var line: Buf.Buf): BOOL;
+var s: []U8;
+begin
+    if heardLines.len = 0 then return false; end;
+    s := Strs.all(heardLines)[0];
+    Strs.remove(heardLines, 0, 1);
+    Buf.reset(line);
+    Buf.str(line, s);
+    Str.free(Heap.heap, s);
+    return true;
+end;
+
+(* Whether a viewer said cancel since this was last asked. *)
+proc cancelled*: BOOL;
+var c: BOOL;
+begin
+    c := cancelling;
+    cancelling := false;
+    return c;
+end;
+
+(* Watching a session *)
+
+(* Index n of the board is the entry a message tells of, which a viewer
+   keeps in step: n past the end is added anyway, rather than lost. *)
+proc kindOf(s: []const U8): Aboard.Kind;
+var k: INT;
+begin
+    for k := 0 to LEN(kinds) - 1 do
+        if kinds[k] = s then return Aboard.Kind(k); end;
+    end;
+    return Aboard.info;
+end;
+
+(* One message of the session applied to the Board here: status is
+   the status line it set, busy whether a turn runs. A message that is
+   not understood, or an entry that isn't there, is left out. *)
+proc apply*(f: [][]const U8; var statusLine: Buf.Buf; var running: BOOL);
+var n: I64; ok: BOOL; e: []Aboard.Entry;
+begin
+    if LEN(f) = 0 then return; end;
+    n := -1;
+    if LEN(f) >= 2 then
+        n, ok := Str.toInt(f[1]);
+        if not ok then n := -1; end;
+    end;
+    e := Aboard.all();
+    match f[0] of
+    | "reset": Aboard.clear;
+    | "push": if (LEN(f) >= 4) and (n >= LEN(e)) then _ := Aboard.push(kindOf(f[2]), f[3]); end;
+    | "tool": if (LEN(f) >= 4) and (n >= LEN(e)) then Aboard.call(f[2], f[3]); end;
+    | "append": if (LEN(f) >= 3) and (n >= 0) and (n < LEN(e)) then Buf.str(e[n].text, f[2]); end;
+    | "done":
+        if (LEN(f) >= 3) and (n >= 0) and (n < LEN(e)) then
+            Buf.str(e[n].res, f[2]);
+            e[n].done := true;
+        end;
+    | "status": if LEN(f) >= 2 then Buf.reset(statusLine); Buf.str(statusLine, f[1]); end;
+    | "busy": if LEN(f) >= 2 then running := f[1] = "1"; end;
+    | else:
+    end;
+end;
+
+(* Sessions *)
+
+(* The session at path asked who, over a connection of its own: its
+   owner, root and title into f, and true; false if there is none
+   there, or it doesn't answer. Its bytes are kept in b. *)
+proc ask(socket: []const U8; var b: Buf.Buf; var f: Fields.Vec): BOOL;
+var fd, n: INT; chunk: [4096]U8;
+begin
+    fd := Sys.connect(socket);
+    if fd < 0 then return false; end;
+    defer Sys.close(fd);
+    Buf.reset(out);
+    Buf.str(out, "3:who,");
+    if Sys.send(fd, Buf.bytes(out)) < 0 then return false; end;
+    Buf.reset(b);
+    while Aframe.take(Buf.bytes(b), f) = 0 do
+        if not Sys.ready(fd, Patience) then return false; end;
+        n := Sys.read(fd, chunk);
+        if n <= 0 then return false; end;
+        Buf.str(b, chunk[0..n]);
+    end;
+    return (f.len >= 4) and (Fields.all(f)[0] = "ok");
+end;
+
+(* The sockets of the sessions, each kept: their paths into names. *)
+proc found(var names: Strs.Vec);
+var d: Sys.Dir; name: []const U8; more, ok: BOOL; b: Buf.Buf; copy: []U8;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    if Sys.openDir(d, socketDir(b)) < 0 then return; end;
+    name, more := Sys.nextEntry(d);
+    while more do
+        if Str.hasSuffix(name, Ext) then
+            copy, ok := Str.copy(Heap.heap, name);
+            if ok then Strs.push(names, copy); end;
+        end;
+        name, more := Sys.nextEntry(d);
+    end;
+    Sys.closeDir(d);
+end;
+
+(* Whether the socket file called name, PID.view, is of a process that
+   no longer exists: one that is only slow to answer, stopped with ^Z
+   or busy in a long call, is still a session. *)
+proc dead(name: []const U8): BOOL;
+var pid: I64; ok: BOOL;
+begin
+    pid, ok := Str.toInt(name[0..LEN(name) - LEN(Ext)]);
+    return ok and (pid > 0) and (Sys.kill(INT(pid), 0) = Sys.errNoProcess);
+end;
+
+(* Every other session that answers, a line each, into b: its process
+   id, owner, project root and title, parted by tabs. A socket of a
+   process that has ended without taking it away is removed. *)
+proc sessions*(var b: Buf.Buf);
+var names: Strs.Vec; all: [][]U8; i: INT; p, got: Buf.Buf; f: Fields.Vec; me: [20]U8; k: INT;
+begin
+    Strs.init(names, Heap.heap);
+    Buf.init(p, Heap.heap);
+    Buf.init(got, Heap.heap);
+    Fields.init(f, Heap.heap);
+    defer Buf.done(p);
+    defer Buf.done(got);
+    defer Fields.done(f);
+    found(names);
+    all := Strs.all(names);
+    me, k := Str.fromInt(Sys.pid());
+    for i := 0 to LEN(all) - 1 do
+        Buf.reset(p);
+        Buf.str(p, socketDir(got));
+        Buf.str(p, all[i]);
+        if all[i][0..LEN(all[i]) - LEN(Ext)] # me[0..k] then
+            if ask(Buf.bytes(p), got, f) then
+                Buf.str(b, all[i][0..LEN(all[i]) - LEN(Ext)]);
+                Buf.add(b, '\t');
+                Buf.str(b, Fields.all(f)[1]);
+                Buf.add(b, '\t');
+                Buf.str(b, Fields.all(f)[2]);
+                Buf.add(b, '\t');
+                Buf.str(b, Fields.all(f)[3]);
+                Buf.add(b, '\n');
+            elsif dead(all[i]) then
+                _ := Sys.remove(Buf.bytes(p));
+            end;
+        end;
+        Str.free(Heap.heap, all[i]);
+    end;
+    Strs.done(names);
+end;
+
+(* The socket of the session to attach to, into pick, when no pid is
+   given: one working in this directory beats any other, then the
+   newest. pick stays empty if no session answers. *)
+proc best(var pick: Buf.Buf);
+var names: Strs.Vec; all: [][]U8; i, chosen, e: INT; p, got: Buf.Buf; f: Fields.Vec; here: []const U8;
+    info: Sys.Info; newest: I64; near, seen: BOOL;
+begin
+    Strs.init(names, Heap.heap);
+    Buf.init(p, Heap.heap);
+    Buf.init(got, Heap.heap);
+    Fields.init(f, Heap.heap);
+    defer Buf.done(p);
+    defer Buf.done(got);
+    defer Fields.done(f);
+    here, e := Sys.workDir();
+    found(names);
+    all := Strs.all(names);
+    chosen := -1;
+    newest := -1;
+    seen := false;
+    for i := 0 to LEN(all) - 1 do
+        Buf.reset(p);
+        Buf.str(p, socketDir(got));
+        Buf.str(p, all[i]);
+        if ask(Buf.bytes(p), got, f) then
+            info, e := Sys.info(Buf.bytes(p));
+            near := Fields.all(f)[2] = here;
+            if (e = 0) and ((chosen < 0) or (near and not seen) or ((near = seen) and (info.mtime > newest))) then
+                chosen := i;
+                newest := info.mtime;
+                seen := near;
+            end;
+        end;
+    end;
+    if chosen >= 0 then
+        Buf.str(pick, socketDir(got));
+        Buf.str(pick, all[chosen]);
+    end;
+    for i := 0 to LEN(all) - 1 do Str.free(Heap.heap, all[i]); end;
+    Strs.done(names);
+end;
+
+(* A connection to the session of process pid, or, if pid is "", to
+   the best of the sessions (best); the 6:attach, already sent. -1 if
+   there is none. pid must be digits: it goes into a path. *)
+proc attach*(pid: []const U8): INT;
+var fd: INT; got, pick: Buf.Buf;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(pick, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(pick);
+    if LEN(pid) > 0 then
+        Buf.str(pick, socketDir(got));
+        Buf.str(pick, pid);
+        Buf.str(pick, Ext);
+    else
+        best(pick);
+    end;
+    if pick.len = 0 then return -1; end;
+    fd := Sys.connect(Buf.bytes(pick));
+    if fd < 0 then return -1; end;
+    Buf.reset(out);
+    Buf.str(out, "6:attach,");
+    if Sys.send(fd, Buf.bytes(out)) < 0 then Sys.close(fd); return -1; end;
+    return fd;
+end;
+
+(* The module's test: a session's changes told to its owner, and to a
+   viewer over the socket, which also types, and one who asked. *)
+
+var failed: BOOL;
+
+proc expect(what, got, want: []const U8);
+begin
+    if got = want then return; end;
+    Out.str("Aview: ");
+    Out.str(what);
+    Out.str(":\n");
+    Out.str(got);
+    Out.str("\nnot\n");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+var told: Buf.Buf;   (* what the owner's copy got *)
+
+proc copied(msg: []const U8);
+begin
+    Buf.str(told, msg);
+end;
+
+(* What came to fd, each message as its verb and fields parted by
+   bars, one a line, when nothing more comes for a moment. *)
+proc received(fd: INT; var b: Buf.Buf);
+var buf, text: Buf.Buf; chunk: [4096]U8; n, used, i: INT; f: Fields.Vec;
+begin
+    Buf.init(buf, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Fields.init(f, Heap.heap);
+    defer Buf.done(buf);
+    defer Buf.done(text);
+    defer Fields.done(f);
+    while Sys.ready(fd, 100) do
+        n := Sys.read(fd, chunk);
+        if n <= 0 then break; end;
+        Buf.str(buf, chunk[0..n]);
+    end;
+    Buf.reset(b);
+    used := Aframe.take(Buf.bytes(buf), f);
+    while used > 0 do
+        for i := 0 to f.len - 1 do
+            if i > 0 then Buf.add(b, '|'); end;
+            Buf.str(b, Fields.all(f)[i]);
+        end;
+        Buf.add(b, '\n');
+        Aframe.drop(buf, used);
+        used := Aframe.take(Buf.bytes(buf), f);
+    end;
+end;
+
+proc main*: INT;
+var got, line: Buf.Buf; fd, k: INT; pid: [20]U8;
+begin
+    Buf.init(told, Heap.heap);
+    Buf.init(got, Heap.heap);
+    Buf.init(line, Heap.heap);
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/view");
+    _ := Sys.setEnv("XDG_RUNTIME_DIR", "build/view");
+    owned(copied);
+    owning("test", "/proj");
+    if not listen() then Out.str("Aview: no socket\n"); return 1; end;
+
+    typed("hi");
+    said("one");
+    said(" two");
+    called("read", `{"path":"a"}`);
+    stated("ready", "a title");
+    busied(true);
+    expect("what the owner is told", Buf.bytes(told),
+        "23:4:push,1:0,4:user,2:hi,,24:4:push,1:1,4:asst,3:one,,20:6:append,1:1,4: two,," +
+        "34:4:tool,1:2,4:read,12:{\"path\":\"a\"},,17:6:status,5:ready,,11:4:busy,1:1,,");
+    Buf.reset(told);
+
+    (* a viewer that arrives: the transcript so far, and then the changes *)
+    pid, k := Str.fromInt(Sys.pid());
+    fd := attach(pid[0..k]);
+    if fd < 0 then Out.str("Aview: no attach\n"); return 1; end;
+    serviceAll();
+    serviceAll();
+    received(fd, got);
+    expect("a viewer's snapshot", Buf.bytes(got),
+        "reset\npush|0|user|hi\npush|1|asst|one two\ntool|2|read|{\"path\":\"a\"}\nstatus|ready\nbusy|1\n");
+    answered("1\ta\n");
+    cleared();
+    received(fd, got);
+    expect("then each change", Buf.bytes(got), "done|2|1\ta\n\nreset\n");
+    waiting("the terminal", true);
+    received(fd, got);
+    expect("a question waits", Buf.bytes(got), "status|ready \u{B7} a question waits in the terminal\n");
+    waiting("", false);
+    received(fd, got);
+    expect("and no longer", Buf.bytes(got), "status|ready\n");
+
+    (* what the viewer types *)
+    Buf.reset(line);
+    Aframe.pack(line, ["line", "hello"]);
+    Aframe.pack(line, ["cancel"]);
+    _ := Sys.send(fd, Buf.bytes(line));
+    serviceAll();
+    if not heard(line) then failed := true; Out.str("Aview: no line\n"); end;
+    expect("the line", Buf.bytes(line), "hello");
+    if not cancelled() or cancelled() then failed := true; Out.str("Aview: cancel\n"); end;
+    Sys.close(fd);
+    serviceAll();
+
+    (* who *)
+    Buf.reset(line);
+    fd := Sys.connect(Buf.bytes(path));
+    _ := Sys.send(fd, "3:who,");
+    serviceAll();
+    serviceAll();
+    received(fd, got);
+    expect("who", Buf.bytes(got), "ok|test|/proj|a title\n");
+    Sys.close(fd);
+
+    unlisten();
+    if Sys.access(Buf.bytes(path), {}) = 0 then failed := true; Out.str("Aview: socket left\n"); end;
+    if failed then Rt.stop("Aview: failed"); end;
+    return 0;
+end;
+
+begin
+    kinds := ["user", "asst", "tool", "info", "err"];
+    listener := -1;
+    Viewers.init(viewers, Heap.heap);
+    Strs.init(heardLines, Heap.heap);
+    Buf.init(path, Heap.heap);
+    Buf.init(out, Heap.heap);
+    Buf.init(owner, Heap.heap);
+    Buf.init(root, Heap.heap);
+    Buf.init(title, Heap.heap);
+    Buf.init(status, Heap.heap);
+end Aview.

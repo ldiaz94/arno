@@ -39,7 +39,7 @@
    Afence, Astore (the date), Atools (how the human is asked) and Awire
    (the provider). Leaves out what comes with later stages: te. *)
 module Aprompt;
-import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out,
+import Aahead, Amemory, Afence, Astore, Atools, Awire, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Out, Rt,
     Strs := Vec([]const U8);
 import SYSTEM;
 
@@ -338,6 +338,28 @@ begin
     Amemory.section(SYSTEM.ADR(ar.base), p.memory);
 end;
 
+var host: []U8;   (* the "# Host" section, from the program that drives arno; "" for none *)
+
+(* The program that drives this session is name, and tells the model
+   more of itself in text, if any: a section of every prompt from now
+   on. *)
+proc setHost*(name, text: []const U8);
+var b: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "# Host\nYou are running inside {}, a program the human is using, which drives this " +
+        "session: it shows the conversation, asks the human your questions, and runs the tools it added.",
+        [Fmt.str(name)]);
+    if LEN(Str.trim(text)) > 0 then
+        Buf.add(b, '\n');
+        Buf.str(b, Str.trim(text));
+    end;
+    Str.free(Heap.heap, host);
+    host, ok := Str.copy(Heap.heap, Buf.bytes(b));
+    if not ok then Rt.stop("arno: out of memory"); end;
+end;
+
 (* p's remembered facts read again, after the human changed them. *)
 proc remembered*(var p: Prompt);
 var ar: Arena.Arena;
@@ -403,6 +425,10 @@ begin
             "project instead.", [Fmt.str(Afence.scratch)]);
     end;
     if LEN(Afence.stage) > 0 then stageText(out); end;
+    if LEN(host) > 0 then
+        Buf.str(out, "\n\n");
+        Buf.str(out, host);
+    end;
     at := out.len;
     Buf.str(out, "\n\n");
     Aahead.notes(mem, say, arg, out);

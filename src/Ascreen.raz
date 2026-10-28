@@ -59,8 +59,8 @@
    TuiLine), rterm's Term, Thread and Sys. Leaves out, for
    the mouse, and vim's keys. *)
 module Ascreen;
-import Asession, Agent, Aboard, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
-    TuiText, TuiLine, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event),
+import Asession, Agent, Aboard, Aview, Aframe, Afence, Ahistory, Aattach, Acomplete, Acopy, Astore, Amsg, Aprompt, TuiLoop, TuiScreen, TuiKeys, TuiMap, TuiEdit,
+    TuiText, TuiLine, Term, Thread, Sys, Buf, Str, Heap, Fmt, Events := Vec(Event), Fields := Vec([]const U8),
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call);
 import SYSTEM;
 
@@ -111,6 +111,12 @@ var
     keys: Buf.Buf;      (* the keys that answer it *)
     no: U8;             (* the one of them that is no *)
     why: TuiLine.Line;  (* the reason for a no, while why.open *)
+    viewing: BOOL;      (* this is the screen of a session run elsewhere (attach) *)
+    viewFd: INT;        (* its socket *)
+    viewIn: Buf.Buf;    (* what it sent that isn't a whole message yet *)
+    viewStatus: Buf.Buf;   (* its status line *)
+    viewBusy: BOOL;     (* a turn runs there *)
+    viewEnded: BOOL;    (* the session ended *)
     mode: INT;          (* the mode S-TAB chose during a job, for after it; -1 for none *)
     searching: BOOL;    (* C-r is searching the history *)
     query: Buf.Buf;     (* what it searches for *)
@@ -176,7 +182,7 @@ proc counted(_arg: ^U8);
 begin
     Buf.reset(made);
     Asession.status(session^, made);
-    post(Sort.status, Buf.bytes(made), "", "", false);
+    post(Sort.status, Buf.bytes(made), session^.conv.title, "", false);
 end;
 
 proc stopped: BOOL;
@@ -278,10 +284,12 @@ begin
     Buf.reset(job);
     Buf.str(job, line);
     stopping := false;
+    Aview.busied(true);
     thread, err := Thread.spawn(work, nil);
     if err # nil then
         thread := nil;
-        _ := Aboard.push(Aboard.error, MSG(err));
+        Aview.busied(false);
+        Aview.noted(Aboard.error, MSG(err));
     end;
 end;
 
@@ -290,6 +298,7 @@ proc reply(c: U8);
 var b: [1]U8;
 begin
     b[0] := c;
+    Aview.waiting("", false);
     _ := Sys.write(answerWrite, b);
 end;
 
@@ -312,7 +321,45 @@ begin
     end;
     Buf.add(question, ']');
     if LEN(detail) > 0 then Aboard.detail(detail); end;
+    Aview.waiting("the terminal", true);
     back := 0;
+end;
+
+(* What viewers of the session typed, run as the human's: a cancel
+   stops the turn, a line starts one, if no job has the session. *)
+proc takeViewers;
+var line: Buf.Buf; text: []const U8;
+begin
+    if Aview.cancelled() and (thread # nil) then
+        Thread.lock(mutex);
+        stopping := true;
+        Thread.unlock(mutex);
+        Buf.str(flash, "stopping");
+    end;
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    while (thread = nil) and Aview.heard(line) do
+        text := Str.trim(Buf.bytes(line));
+        if LEN(text) = 0 then continue; end;
+        Aview.typed(text);
+        back := 0;
+        start(text);
+    end;
+end;
+
+(* A viewer's socket, or the session's, is ready. *)
+proc viewReady;
+begin
+    Aview.serviceAll();
+    takeViewers();
+end;
+
+(* The fd of a viewer is to be watched by the loop, or no longer. *)
+proc watching(fd: INT; on: BOOL): BOOL;
+begin
+    if on then return TuiLoop.watch(fd, viewReady); end;
+    TuiLoop.unwatch(fd);
+    return true;
 end;
 
 (* What a job told, taken from the queue into the board. *)
@@ -324,16 +371,19 @@ begin
     e := Events.all(events);
     for i := 0 to LEN(e) - 1 do
         match e[i].sort of
-        | said: Aboard.reply(Buf.bytes(e[i].a));
-        | called: Aboard.call(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0;
-        | answered: Aboard.result(Buf.bytes(e[i].a));
-        | told, shown: _ := Aboard.push(Aboard.info, Buf.bytes(e[i].a)); back := 0;
-        | failed: _ := Aboard.push(Aboard.error, Buf.bytes(e[i].a)); back := 0;
-        | typed: _ := Aboard.push(Aboard.user, Buf.bytes(e[i].a));
-        | cleared: Aboard.clear; back := 0;
+        | said: Aview.said(Buf.bytes(e[i].a));
+        | called: Aview.called(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0;
+        | answered: Aview.answered(Buf.bytes(e[i].a));
+        | told, shown: Aview.noted(Aboard.info, Buf.bytes(e[i].a)); back := 0;
+        | failed: Aview.noted(Aboard.error, Buf.bytes(e[i].a)); back := 0;
+        | typed: Aview.typed(Buf.bytes(e[i].a));
+        | cleared: Aview.cleared(); back := 0;
         | asked: pose(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
         | Sort.why: TuiLine.start(SYSTEM.ADR(why), " why not? ", "", nil);
-        | Sort.status: Buf.reset(status); Buf.str(status, Buf.bytes(e[i].a));
+        | Sort.status:
+            Buf.reset(status);
+            Buf.str(status, Buf.bytes(e[i].a));
+            Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b));
         | ended:
             finished := true;
             Buf.reset(flash);
@@ -348,6 +398,9 @@ begin
     if finished and (thread # nil) then
         Thread.join(thread);
         thread := nil;
+        Aview.busied(false);
+        Aview.waiting("", false);
+        takeViewers();
         if mode >= 0 then
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
@@ -365,21 +418,38 @@ end;
 
 (* the commands *)
 
+(* line sent to the session this screen shows, as a message. *)
+proc tellSession(fields: [][]const U8);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Aframe.pack(b, fields);
+    if not Aframe.sendSocket(viewFd, Buf.bytes(b)) then viewEnded := true; TuiLoop.stop; end;
+end;
+
 proc send(_n: INT);
 var s: []const U8;
 begin
     if thread # nil then return; end;
     s := Str.trim(TuiEdit.text(SYSTEM.ADR(editor)));
     if LEN(s) = 0 then return; end;
-    _ := Aboard.push(Aboard.user, s);
-    back := 0;
     Ahistory.add(s);
-    start(s);
+    back := 0;
+    if not viewing then
+        Aview.typed(s);
+        start(s);
+    elsif (s = "/quit") or (s = "/exit") then
+        TuiLoop.stop;
+    else
+        tellSession(["line", s]);
+    end;
     TuiEdit.setText(SYSTEM.ADR(editor), "");
 end;
 
 proc stop(_n: INT);
 begin
+    if viewing and viewBusy then tellSession(["cancel"]); Buf.str(flash, "stopping"); return; end;
     if thread = nil then TuiEdit.setText(SYSTEM.ADR(editor), ""); Ahistory.reset; return; end;
     Thread.lock(mutex);
     stopping := true;
@@ -397,6 +467,7 @@ end;
 proc nextMode(_n: INT);
 var m: INT;
 begin
+    if viewing then return; end;
     m := mode;
     if m < 0 then m := INT(session^.agent.mode); end;
     m := (m + 1) mod LEN(Aprompt.Modes);
@@ -601,6 +672,7 @@ begin
     hidden := false;
     menu := [];
     chosen := 0;
+    if viewing then return; end;
     wordA, wordB := Acomplete.token(s, editor.point);
     if wordA < 0 then return; end;
     if (s[wordA] = '/') and (thread # nil) then return; end;
@@ -836,7 +908,7 @@ begin
         col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
         col := TuiScreen.putTo(s, r, col, right, Buf.bytes(flash), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
-    elsif thread # nil then
+    elsif (thread # nil) or viewBusy then
         col := TuiScreen.putTo(s, r, 0, right, " \u{25CF} working \u{B7} ^C stops ", TuiScreen.style(Term.info, {}));
     end;
     while col < right do col := TuiScreen.put(s, r, col, "\u{2500}", TuiScreen.style(Term.line, {})); end;
@@ -944,8 +1016,12 @@ begin
     Buf.reset(made);
     Fmt.write(made, "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
         Fmt.str(s^.conf.prov.name)]);
-    _ := Aboard.push(Aboard.info, Buf.bytes(made));
+    Aview.noted(Aboard.info, Buf.bytes(made));
     Asession.status(s^, status);
+    Aview.stated(Buf.bytes(status), s^.conv.title);
+    Aview.owning("terminal", Afence.zone);
+    Aview.watching(watching);
+    if Aview.listen() then _ := TuiLoop.watch(Aview.listenFd(), viewReady); end;
     TuiLoop.after(0);
     ran := TuiLoop.run({key: key, draw: draw, woken: woken, tick: tick});
     if thread # nil then
@@ -956,8 +1032,57 @@ begin
         if (question.len > 0) or why.open then reply(no); end;
         Thread.join(thread);
     end;
+    Aview.unlisten();
     Aattach.drop;
     return ran;
+end;
+
+(* The session's socket has something: its messages applied to the
+   board, or its end noted. *)
+proc viewRead;
+var chunk: [16384]U8; n, used: INT; f: Fields.Vec;
+begin
+    n := Sys.read(viewFd, chunk);
+    if n = -4 then return; end;
+    if n <= 0 then viewEnded := true; TuiLoop.stop; return; end;
+    Buf.str(viewIn, chunk[0..n]);
+    Fields.init(f, Heap.heap);
+    defer Fields.done(f);
+    used := Aframe.take(Buf.bytes(viewIn), f);
+    while used > 0 do
+        Aview.apply(Fields.all(f), viewStatus, viewBusy);
+        Aframe.drop(viewIn, used);
+        used := Aframe.take(Buf.bytes(viewIn), f);
+    end;
+    if used < 0 then viewEnded := true; TuiLoop.stop; return; end;
+    Buf.reset(status);
+    Buf.str(status, "attached \u{B7} ");
+    Buf.str(status, Buf.bytes(viewStatus));
+end;
+
+(* The screen of the session on fd, a connection Aview.attach made: its
+   transcript and what is typed in it, the session running elsewhere.
+   The first is false if the terminal can't be used; the second whether
+   the session ended, not the human leaving. *)
+proc attach*(fd: INT): (BOOL, BOOL);
+var ran: BOOL;
+begin
+    viewing := true;
+    viewFd := fd;
+    TuiEdit.init(SYSTEM.ADR(editor), false);
+    TuiEdit.focus(SYSTEM.ADR(editor));
+    TuiLine.init(SYSTEM.ADR(why));
+    define();
+    mode := -1;
+    Fmt.write(made, "{}history", [Fmt.str(Astore.dir())]);
+    Ahistory.load(Buf.bytes(made));
+    Buf.reset(made);
+    Buf.str(status, "attached");
+    _ := TuiLoop.watch(fd, viewRead);
+    ran := TuiLoop.run({key: key, draw: draw});
+    Sys.close(fd);
+    Aattach.drop;
+    return ran, viewEnded;
 end;
 
 proc init;
@@ -974,6 +1099,8 @@ begin
     Buf.init(query, Heap.heap);
     Buf.init(saved, Heap.heap);
     Buf.init(looked, Heap.heap);
+    Buf.init(viewIn, Heap.heap);
+    Buf.init(viewStatus, Heap.heap);
 end;
 
 begin

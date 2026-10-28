@@ -1268,6 +1268,135 @@ begin
     return c;
 end;
 
+(* The host's tools *)
+
+type
+    (* Runs the host's tool name on args, as the model wrote them: the
+       result for the model, good until the next call. *)
+    HostCall* = proc(name, args: []const U8; arg: ^U8): []const U8;
+
+var
+    hosted: Tools.Vec;   (* the host's tools, kept from Heap *)
+    hostCall: HostCall;  (* runs one; nil with no host *)
+    hostArg: ^U8;
+    allowed: []U8;       (* the builtins the host allows, a blank at each end of each; "" for all *)
+    limited: BOOL;       (* the host named the builtins it allows *)
+
+(* Whether the host has a tool called name. *)
+proc isHost(name: []const U8): BOOL;
+var t: []Awire.Tool; i: INT;
+begin
+    t := Tools.all(hosted);
+    for i := 0 to LEN(t) - 1 do
+        if t[i].name = name then return true; end;
+    end;
+    return false;
+end;
+
+(* Whether a builtin tool called name may be offered and called: all
+   may, unless the host named those it allows. A builtin left out is
+   gone, not only unoffered, so that a model that calls it anyway
+   learns there is no such tool. *)
+proc usable(name: []const U8): BOOL;
+var b: Buf.Buf; yes: BOOL;
+begin
+    if not limited then return true; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.add(b, ' ');
+    Buf.str(b, name);
+    Buf.add(b, ' ');
+    yes := Str.find(allowed, Buf.bytes(b)) >= 0;
+    return yes;
+end;
+
+(* Whether name is one of arno's own tools, offered or not. *)
+proc builtin(name: []const U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(Offered) - 1 do
+        if Offered[i].name = name then return true; end;
+    end;
+    return false;
+end;
+
+(* res told there is no tool called name, and which there are: an
+   invented name gets the real ones back, the one thing it lacked. *)
+proc unknown(name: []const U8; var res: Buf.Buf);
+var i: INT;
+begin
+    Buf.str(res, "error: there is no tool named \"");
+    Buf.str(res, name);
+    Buf.str(res, "\". The tools are:");
+    for i := 0 to LEN(Offered) - 1 do
+        if usable(Offered[i].name) then
+            Buf.add(res, ' ');
+            Buf.str(res, Offered[i].name);
+        end;
+    end;
+    for i := 0 to LEN(Amcp.tools()) - 1 do
+        Buf.add(res, ' ');
+        Buf.str(res, Amcp.tools()[i].name);
+    end;
+    for i := 0 to hosted.len - 1 do
+        Buf.add(res, ' ');
+        Buf.str(res, Tools.all(hosted)[i].name);
+    end;
+end;
+
+var refusal: Buf.Buf;   (* addHost's reason, good until the next *)
+
+(* "tool NAME why", in refusal. *)
+proc refuse(name, why: []const U8): []const U8;
+begin
+    Buf.reset(refusal);
+    Fmt.write(refusal, "tool {} {}", [Fmt.str(name), Fmt.str(why)]);
+    return Buf.bytes(refusal);
+end;
+
+(* The host's tools run by run, with arg: its tools offered from now
+   on, and called through it. *)
+proc hosting*(run: HostCall; arg: ^U8);
+begin
+    hostCall := run;
+    hostArg := arg;
+end;
+
+(* The host's tool name, which description and params (a JSON schema,
+   "" for none) tell the model of: "" if it is taken, else why it
+   isn't, "tool NAME ..." in the words a host is told. A name already
+   arno's own, or an MCP server's, is refused rather than shadowed, since the model couldn't
+   tell which of the two it was calling. *)
+proc addHost*(name, description, params: []const U8): []const U8;
+begin
+    if LEN(name) = 0 then return "a tool needs a name"; end;
+    if builtin(name) then return refuse(name, "is already arno's own"); end;
+    if isHost(name) then return refuse(name, "is already the host's"); end;
+    if Amcp.owns(name) then return refuse(name, "is already an MCP server's"); end;
+    if LEN(params) = 0 then params := `{"type":"object","properties":{}}`; end;
+    Tools.push(hosted, {name: keep(name), description: keep(description), params: keep(params)});
+    return "";
+end;
+
+(* The builtin tools the host allows, names parted by blanks; only
+   those are offered or run. Not called, all are. *)
+proc allow*(names: []const U8);
+var b: Buf.Buf; n, rest: []const U8;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.add(b, ' ');
+    rest := names;
+    while LEN(Str.trim(rest)) > 0 do
+        n, rest := Str.field(Str.trim(rest));
+        Buf.str(b, n);
+        Buf.add(b, ' ');
+    end;
+    Str.free(Heap.heap, allowed);
+    allowed := keep(Buf.bytes(b));
+    limited := true;
+end;
+
 (* The web *)
 
 var
@@ -1443,6 +1572,7 @@ begin
     defer Buf.done(b);
     Tools.reset(offer);
     for i := 0 to LEN(Offered) - 1 do
+        if not usable(Offered[i].name) then continue; end;
         match Offered[i].name of
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
@@ -1456,6 +1586,7 @@ begin
         Tools.push(offer, Offered[i]);
     end;
     for i := 0 to LEN(Amcp.tools()) - 1 do Tools.push(offer, Amcp.tools()[i]); end;
+    for i := 0 to hosted.len - 1 do Tools.push(offer, Tools.all(hosted)[i]); end;
     return Tools.all(offer);
 end;
 
@@ -1573,7 +1704,11 @@ begin
     change := (name = "edit") or (name = "move") or (name = "remove");
     ok := parse(SYSTEM.ADR(d), mem, args, a);
     if ok and change then key(name, a, k); end;
-    if not ok then
+    if isHost(name) then
+        Buf.str(res, hostCall(name, args, hostArg));
+    elsif builtin(name) and not usable(name) then
+        unknown(name, res);
+    elsif not ok then
         Buf.str(res, "error: the arguments must be one JSON object, as the tool's schema says; got: ");
         cut := LEN(args);
         if cut > 200 then cut := 200; end;
@@ -1613,18 +1748,7 @@ begin
     elsif Amcp.owns(name) then
         mcp(name, a, h, res);
     else
-        (* an invented name gets the real ones back, the one thing it lacked *)
-        Buf.str(res, "error: there is no tool named \"");
-        Buf.str(res, name);
-        Buf.str(res, "\". The tools are:");
-        for i := 0 to LEN(Offered) - 1 do
-            Buf.add(res, ' ');
-            Buf.str(res, Offered[i].name);
-        end;
-        for i := 0 to LEN(Amcp.tools()) - 1 do
-            Buf.add(res, ' ');
-            Buf.str(res, Amcp.tools()[i].name);
-        end;
+        unknown(name, res);
     end;
     s := Buf.bytes(res);
     if change and Str.hasPrefix(s, "declined by user") and (LEN(said(Buf.bytes(k))) = 0) then
@@ -1672,6 +1796,18 @@ begin
 end;
 
 var mem: Arena.Arena;
+var hostSaid: Buf.Buf;   (* what hostRan answers, kept so that the slice it returns lives on *)
+
+(* The host's, for the test: says what it was asked. *)
+proc hostRan(name, args: []const U8; _arg: ^U8): []const U8;
+begin
+    Buf.reset(hostSaid);
+    Buf.str(hostSaid, "the host ran ");
+    Buf.str(hostSaid, name);
+    Buf.add(hostSaid, ' ');
+    Buf.str(hostSaid, args);
+    return Buf.bytes(hostSaid);
+end;
 
 proc run(name, args: []const U8; ask: Ask): []const U8;
 var b: Buf.Buf; h: Human;
@@ -1695,6 +1831,7 @@ proc main*: INT;
 var dir, s: []const U8; long, store: Buf.Buf; i: INT;
 begin
     Arun.child();
+    Buf.init(hostSaid, Heap.heap);
     if not Arena.init(mem, 1 shl 26) then return 1; end;
     _ := Sys.makeDir("build");
     _ := Sys.makeDir("build/tools");
@@ -1875,6 +2012,19 @@ begin
     expect("check", run("check", `{}`, nil), "FAILED, exit 1: echo testing; exit 1\n\ntesting\n");
     _ := Astore.setKeyed("tests.json", Afence.root, "echo ok");
     expect("check, the project's", run("check", `{}`, nil), "passed: echo ok\n\nok\n");
+
+    (* the host's tools: its own, run by it; a name of arno's refused; the builtins it left out gone *)
+    hosting(hostRan, nil);
+    expect("a host tool", addHost("doc_read", "the document", ""), "");
+    expect("a name of arno's own", addHost("read", "", ""), "tool read is already arno's own");
+    expect("a host tool, twice", addHost("doc_read", "", ""), "tool doc_read is already the host's");
+    expect("no name", addHost("", "", ""), "a tool needs a name");
+    expect("a host tool, called", run("doc_read", `{"n":1}`, nil), "the host ran doc_read {\"n\":1}");
+    allow("read grep");
+    expect("a builtin left out is gone", run("find", `{"name":"f"}`, nil),
+        "error: there is no tool named \"find\". The tools are: read grep doc_read");
+    expect("a builtin allowed", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
+    if LEN(offered(false, true)) # 3 then Out.str("Atools: only the allowed and the host's are offered\n"); failed := true; end;
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;
@@ -1883,4 +2033,6 @@ end;
 begin
     Refusals.init(refused, Heap.heap);
     Tools.init(offer, Heap.heap);
+    Tools.init(hosted, Heap.heap);
+    Buf.init(refusal, Heap.heap);
 end Atools.

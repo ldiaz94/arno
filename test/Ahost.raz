@@ -1,0 +1,609 @@
+(* Ahost: a host of arno --serve, for the test of it: it starts arno on
+   two pipes, as ~/lib/arnoc's ArnoStart does, and speaks the protocol
+   of arnoc(3) to it, checking what comes back.
+
+       build/host arno root
+
+   arno is the program, root the project's directory, where it makes
+   what its tools are asked to change; the model's server and the
+   configuration are the environment's, set up by test/serve.cn. It
+   checks that arno:
+
+     - refuses a host's tool that clashes with its own, and says ready;
+     - runs a line as a turn, and tells it as push, tool, append, done,
+       status and busy, the same transcript numbers to every reader;
+     - calls the host's tool and gives the model its result;
+     - asks the host what it would ask the human, a change to a file,
+       and takes its refusal with the reason; a cancel refuses the
+       question, or a call of the host's tool, and ends the turn;
+     - leaves out the builtin tools the host didn't allow;
+     - answers recent, rename, forget, system, setsystem and models, in
+       the order they came, those of a running turn after it, and says
+       error to the verbs and fields it can't take, to a protocol it
+       doesn't speak and to bytes that are no message;
+     - shows a viewer on its session socket the transcript, and runs
+       the line the viewer types;
+     - ends at bye, with status 0, even with a question waiting.
+
+   Depends on Aframe, with which arno writes its messages too. *)
+module Ahost;
+import Aframe, Buf, Str, Sys, Files, Fmt, Out, Heap, Fields := Vec([]const U8);
+
+const
+    Patience = 20000;   (* ms to wait for a message *)
+
+var
+    toArno, fromArno: INT;   (* the pipes *)
+    inbox: Buf.Buf;          (* what came and isn't a whole message yet *)
+    seen: Buf.Buf;           (* every message since clear, a line each, fields parted by | *)
+    last: Buf.Buf;           (* the message await found *)
+    fields: Fields.Vec;      (* the fields of the message read *)
+    out: Buf.Buf;            (* the message being made *)
+    failed: BOOL;            (* some check has failed *)
+    pid: Buf.Buf;            (* arno's, from ready *)
+    ident: Buf.Buf;          (* the conversation's id, from ready *)
+    root: Buf.Buf;           (* the project's directory *)
+
+(* A failed check reported: what was being checked, and what was found. *)
+proc fail(what, detail: []const U8);
+begin
+    Out.str("host: ");
+    Out.str(what);
+    Out.str(": ");
+    Out.str(detail);
+    Out.ln;
+    failed := true;
+end;
+
+(* One message sent. *)
+proc send(f: [][]const U8);
+begin
+    Buf.reset(out);
+    Aframe.pack(out, f);
+    if not Aframe.sendPipe(toArno, Buf.bytes(out)) then fail("send", "arno has gone"); end;
+end;
+
+(* The next message of fd's, fields parted by |, into line; false if
+   none comes in time or the pipe ends. *)
+proc read(fd: INT; var buf, line: Buf.Buf): BOOL;
+var used, i, n: INT; chunk: [4096]U8;
+begin
+    while true do
+        used := Aframe.take(Buf.bytes(buf), fields);
+        if used > 0 then
+            Buf.reset(line);
+            for i := 0 to fields.len - 1 do
+                if i > 0 then Buf.add(line, '|'); end;
+                Buf.str(line, Fields.all(fields)[i]);
+            end;
+            Aframe.drop(buf, used);
+            return true;
+        end;
+        if used < 0 then return false; end;
+        if not Sys.ready(fd, Patience) then return false; end;
+        n := Sys.read(fd, chunk);
+        if n <= 0 then return false; end;
+        Buf.str(buf, chunk[0..n]);
+    end;
+    return false;
+end;
+
+(* Messages read until one starts with prefix, which is the answer, in
+   last; false if none does. Every one read is kept in seen. *)
+proc await(prefix: []const U8): BOOL;
+begin
+    while read(fromArno, inbox, last) do
+        Buf.str(seen, Buf.bytes(last));
+        Buf.add(seen, '\n');
+        if Str.hasPrefix(Buf.bytes(last), prefix) then return true; end;
+    end;
+    fail("waiting for", prefix);
+    Out.str(Buf.bytes(seen));
+    return false;
+end;
+
+(* Whether what has been seen since clear holds text. *)
+proc has(text: []const U8): BOOL;
+begin
+    return Str.find(Buf.bytes(seen), text) >= 0;
+end;
+
+(* A check: what has been seen since clear must hold text. *)
+proc mustHave(what, text: []const U8);
+begin
+    if not has(text) then
+        fail(what, text);
+        Out.str(Buf.bytes(seen));
+    end;
+end;
+
+(* What has been seen forgotten. *)
+proc clear;
+begin
+    Buf.reset(seen);
+end;
+
+(* The last message found, which must be exactly want. *)
+proc is(what, want: []const U8);
+begin
+    if Buf.bytes(last) # want then fail(what, Buf.bytes(last)); end;
+end;
+
+(* The id in the last message found, an ask or a call: its second field. *)
+proc idOf: []const U8;
+var rest: []const U8;
+begin
+    _, rest, _ := Str.cut(Buf.bytes(last), "|");
+    rest, _, _ := Str.cut(rest, "|");
+    return rest;
+end;
+
+(* A line sent, and its turn awaited. *)
+proc line(text: []const U8);
+begin
+    send(["line", text]);
+end;
+
+(* Waits until the turn ends, as arno says busy 0. *)
+proc idle;
+begin
+    _ := await("busy|0");
+end;
+
+(* A viewer on the session's socket: the transcript so far, then what
+   the viewer types, run. *)
+proc viewer(socket: []const U8);
+var fd: INT; got, buf: Buf.Buf; text: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(buf, Heap.heap);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(buf);
+    defer Buf.done(text);
+    fd := Sys.connect(socket);
+    if fd < 0 then fail("viewer", "no socket"); return; end;
+    _ := Sys.send(fd, "6:attach,");
+    ok := read(fd, buf, got);
+    if not ok or (Buf.bytes(got) # "reset") then fail("a viewer's first message", Buf.bytes(got)); end;
+    clear();
+    Buf.reset(out);
+    Aframe.pack(out, ["line", "from a viewer"]);
+    _ := Sys.send(fd, Buf.bytes(out));
+    idle();
+    mustHave("a viewer's line is run", "push|");
+    mustHave("a viewer's line is run", "from a viewer");
+    ok := read(fd, buf, got);
+    while ok and (Str.find(Buf.bytes(got), "from a viewer") < 0) do
+        ok := read(fd, buf, got);
+    end;
+    if not ok then fail("the viewer is told the line", Buf.bytes(got)); end;
+    Sys.close(fd);
+end;
+
+(* The output of arno --attach, which lists the sessions, holds text. *)
+proc listing(arno, text: []const U8);
+var r, w, n, at: INT; p: Sys.Program; got: Buf.Buf; chunk: [4096]U8; args: [3][]const U8;
+begin
+    Buf.init(got, Heap.heap);
+    defer Buf.done(got);
+    r, w := Sys.pipe();
+    args := [arno, "--attach", "-l"];
+    p := {path: arno, args: args, fds: [0, w, 0]};
+    at := Sys.spawn(p);
+    if at < 0 then fail("the listing", "arno can't be run"); return; end;
+    Sys.close(w);
+    n := Sys.read(r, chunk);
+    while n > 0 do
+        Buf.str(got, chunk[0..n]);
+        n := Sys.read(r, chunk);
+    end;
+    Sys.close(r);
+    _, _, _ := Sys.waitExit(at);
+    if Str.find(Buf.bytes(got), text) < 0 then fail("the sessions listed", Buf.bytes(got)); end;
+end;
+
+(* The screen of arno --attach on a pseudo-terminal: it shows the
+   session's transcript, what is typed there is run in the session,
+   and ^D leaves it running. *)
+proc screen(arno, pid: []const U8);
+var pty, n, rc: INT; p: Sys.Program; got: Buf.Buf; chunk: [4096]U8; args: [3][]const U8; how: Sys.Status; at: INT;
+begin
+    Buf.init(got, Heap.heap);
+    defer Buf.done(got);
+    pty := Sys.openPty();
+    if pty < 0 then fail("a pseudo-terminal", "none"); return; end;
+    _ := Sys.setTermSize(pty, 100, 30);
+    args := [arno, "--attach", pid];
+    p := {path: arno, args: args, tty: pty};
+    at := Sys.spawn(p);
+    if at < 0 then fail("the screen", "arno can't be run"); return; end;
+    while (Str.find(Buf.bytes(got), "from a viewer") < 0) and Sys.ready(pty, Patience) do
+        n := Sys.read(pty, chunk);
+        if n <= 0 then break; end;
+        Buf.str(got, chunk[0..n]);
+    end;
+    if Str.find(Buf.bytes(got), "from a viewer") < 0 then fail("the screen shows the transcript", Buf.bytes(got)); end;
+    clear();
+    _ := Sys.write(pty, "typed on the screen\r");
+    idle();
+    mustHave("a line typed on the screen is run", "|user|typed on the screen");
+    _ := Sys.write(pty, "\x04");
+    _, how, rc := Sys.waitExit(at);
+    if (how # Sys.Status.exited) or (rc # 0) then fail("leaving the screen", "arno --attach did not end with status 0"); end;
+    Sys.close(pty);
+end;
+
+(* arno on a terminal is a session too: a viewer on its socket is
+   shown its transcript, and what it types is run there. *)
+proc terminal(arno: []const U8);
+var pty, at, n: INT; p: Sys.Program; args: [1][]const U8; fd: INT; got, buf, path, pid: Buf.Buf; ok: BOOL; how: Sys.Status; rc: INT;
+    chunk: [4096]U8; d: [20]U8; k: INT;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(buf, Heap.heap);
+    Buf.init(path, Heap.heap);
+    Buf.init(pid, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(buf);
+    defer Buf.done(path);
+    defer Buf.done(pid);
+    pty := Sys.openPty();
+    if pty < 0 then fail("a pseudo-terminal", "none"); return; end;
+    _ := Sys.setTermSize(pty, 100, 30);
+    args := [arno];
+    p := {path: arno, args: args, tty: pty};
+    at := Sys.spawn(p);
+    if at < 0 then fail("the terminal arno", "can't be run"); return; end;
+    while (Str.find(Buf.bytes(got), "/help for commands") < 0) and Sys.ready(pty, Patience) do
+        n := Sys.read(pty, chunk);
+        if n <= 0 then break; end;
+        Buf.str(got, chunk[0..n]);
+    end;
+    d, k := Str.fromInt(at);
+    Fmt.write(path, "{}/arno/{}.view", [Fmt.str(Sys.env("XDG_RUNTIME_DIR")), Fmt.str(d[0..k])]);
+    fd := Sys.connect(Buf.bytes(path));
+    if fd < 0 then fail("the terminal arno's socket", Buf.bytes(path)); return; end;
+    _ := Sys.send(fd, "6:attach,");
+    ok := read(fd, buf, got);
+    if not ok or (Buf.bytes(got) # "reset") then fail("a terminal's snapshot", Buf.bytes(got)); end;
+    Buf.reset(out);
+    Aframe.pack(out, ["line", "/help"]);
+    _ := Sys.send(fd, Buf.bytes(out));
+    ok := read(fd, buf, got);
+    while ok and (Str.find(Buf.bytes(got), "/new") < 0) do ok := read(fd, buf, got); end;
+    if not ok then fail("a viewer's command is run on the terminal", Buf.bytes(got)); end;
+    Sys.close(fd);
+    _ := Sys.write(pty, "\x04");
+    while Sys.ready(pty, 500) do
+        n := Sys.read(pty, chunk);
+        if n <= 0 then break; end;
+    end;
+    _, how, rc := Sys.waitExit(at);
+    if (how # Sys.Status.exited) or (rc # 0) then fail("leaving the terminal arno", "it did not end with status 0"); end;
+    Sys.close(pty);
+end;
+
+(* arno --serve started on two pipes of its own, which are now the ones
+   send and await use; its process id, or -1. *)
+proc start(arno: []const U8): INT;
+var a, b, c, d, n: INT; p: Sys.Program; args: [2][]const U8;
+begin
+    a, b := Sys.pipe();
+    c, d := Sys.pipe();
+    toArno := b;
+    fromArno := c;
+    Buf.reset(inbox);
+    args := [arno, "--serve"];
+    p := {path: arno, args: args, fds: [a, d, 0]};
+    n := Sys.spawn(p);
+    Sys.close(a);
+    Sys.close(d);
+    if n < 0 then fail("start", "arno can't be run"); end;
+    return n;
+end;
+
+(* The arno of process n ended with status 0, as what says it ought to,
+   and the pipes to it closed. *)
+proc stop(n: INT; what: []const U8);
+var how: Sys.Status; rc: INT;
+begin
+    _, how, rc := Sys.waitExit(n);
+    if (how # Sys.Status.exited) or (rc # 0) then fail(what, "arno did not end with status 0"); end;
+    Sys.close(toArno);
+    Sys.close(fromArno);
+end;
+
+(* A host that gets the protocol wrong, each on an arno of its own: a
+   version arno doesn't speak, and bytes that are no message. *)
+proc refusals(arno: []const U8);
+var n: INT;
+begin
+    n := start(arno);
+    if n < 0 then return; end;
+    send(["hello", "2", "x", "", ""]);
+    _ := await("error");
+    is("a protocol version", "error|protocol version 2 unknown; this arno speaks 1");
+    stop(n, "a protocol version");
+    n := start(arno);
+    if n < 0 then return; end;
+    if not Aframe.sendPipe(toArno, "zz") then fail("send", "arno has gone"); end;
+    _ := await("error");
+    is("bytes that are no message", "error|not a message; closing");
+    stop(n, "bytes that are no message");
+end;
+
+(* A line and a verb before hello are refused. *)
+proc beforeHello;
+begin
+    send(["line", "too soon"]);
+    _ := await("error");
+    is("a line before hello", "error|hello first");
+    send(["frob"]);
+    _ := await("error");
+    is("an unknown verb", "error|unknown verb frob");
+end;
+
+(* hello, with a tool, one that clashes and one with no name, and
+   builtins left out; arno says ready, and a second hello is refused. *)
+proc greeting;
+var id, rest: []const U8;
+begin
+    send(["hello", "1", "testhost", Buf.bytes(root), `{"prompt":"Be careful.","tools":[` +
+        `{"name":"doc_read","description":"The document.","parameters":{"type":"object","properties":{}}},` +
+        `{"name":"read","description":"a clash"},{"description":"no name"}],` +
+        `"builtins":["read","edit","grep"]}`]);
+    _ := await("error");
+    is("a tool of arno's name", "error|tool read is already arno's own");
+    _ := await("error");
+    is("a tool with no name", "error|a tool needs a name");
+    _ := await("ready|");
+    _, rest, _ := Str.cut(Buf.bytes(last), "|");
+    id, rest, _ := Str.cut(rest, "|");
+    Buf.str(ident, id);
+    _, rest, _ := Str.cut(rest, "|");
+    Buf.str(pid, rest);
+    send(["hello", "1", "x", "", ""]);
+    _ := await("error");
+    is("a second hello", "error|hello again");
+    idle();
+    clear();
+end;
+
+(* A line run as a turn, and the hello's prompt in the model's system
+   prompt. *)
+proc turn;
+begin
+    line("hello there");
+    idle();
+    mustHave("the line typed", "push|");
+    mustHave("the line typed", "|user|hello there");
+    mustHave("the model's reply", "messages");
+    mustHave("a status line", "status|");
+    clear();
+    line("system");
+    idle();
+    mustHave("the hello's prompt reaches the system prompt", "Be careful.");
+end;
+
+(* The host's tool called, and its result given to the model; a
+   builtin the host left out is gone; a cancel refuses a call waiting. *)
+proc hostTool;
+begin
+    clear();
+    line(`call doc_read {"n":1}`);
+    _ := await("call|");
+    mustHave("the tool call told first", "|doc_read|");
+    send(["result", idOf(), "the document says hi"]);
+    idle();
+    mustHave("the host's result", "done|");
+    mustHave("the host's result", "the document says hi");
+    mustHave("the model reads it", "the tool said: the document says hi");
+    clear();
+    line(`call find {"name":"x"}`);
+    idle();
+    mustHave("a builtin left out is gone", `there is no tool named "find". The tools are: read grep edit doc_read`);
+    clear();
+    line(`call doc_read {"n":2}`);
+    _ := await("call|");
+    send(["cancel"]);
+    idle();
+    mustHave("a cancel refuses a call waiting", "interrupted by user");
+end;
+
+(* A question refused with a reason, which is in the result; a question
+   and a cancel; a turn after it. *)
+proc questions;
+begin
+    clear();
+    line(`call edit {"path":"f.txt","old":"one","new":"1"}`);
+    _ := await("ask|");
+    send(["answer", idOf(), "n", "too long"]);
+    idle();
+    mustHave("a refusal with its reason", "declined by user: too long");
+    clear();
+    line(`call edit {"path":"f.txt","old":"one","new":"2"}`);
+    _ := await("ask|");
+    send(["cancel"]);
+    idle();
+    mustHave("a cancel refuses the question", "declined");
+    clear();
+    line("after the cancel");
+    idle();
+    mustHave("a turn after a cancel", "messages");
+end;
+
+(* The seven requests answered at once, and the faults. *)
+proc requests;
+begin
+    clear();
+    send(["recent", "5", ""]);
+    _ := await("recent|");
+    mustHave("recent lists the conversation", "\"title\":\"hello there\"");
+    send(["recent", "0", ""]);
+    _ := await("error");
+    is("recent needs a count", "error|recent needs a count of 1 or more");
+    send(["rename", "", "A title"]);
+    _ := await("renamed|");
+    Buf.reset(out);
+    Fmt.write(out, "renamed|{}", [Fmt.str(Buf.bytes(ident))]);
+    is("rename the current", Buf.bytes(out));
+    send(["rename", "nosuch", "x"]);
+    _ := await("error");
+    is("rename of none", "error|no conversation nosuch");
+    send(["forget", ""]);
+    _ := await("error");
+    is("forget the current", "error|the current conversation cannot be forgotten");
+    send(["forget", "nosuch"]);
+    _ := await("error");
+    is("forget of none", "error|no conversation nosuch");
+    send(["setsystem", "", "Be brief."]);
+    _ := await("systemset|");
+    send(["system", ""]);
+    _ := await("system|");
+    mustHave("the system prompt", "\"prompt\":\"Be brief.\"");
+    send(["models"]);
+    _ := await("models|");
+    mustHave("models", "\"provider\":");
+    send(["line"]);
+    _ := await("error");
+    is("too few fields", "error|line needs 1 fields");
+end;
+
+(* Requests that come while a turn waits for the host's answer: those
+   of the current conversation, and the one after them, are answered
+   after the turn, in the order they came. *)
+proc order;
+var r, m, l: INT;
+begin
+    clear();
+    line(`call edit {"path":"f.txt","old":"one","new":"3"}`);
+    _ := await("ask|");
+    send(["rename", "", "Held title"]);
+    send(["models"]);
+    send(["recent", "5", ""]);
+    send(["answer", idOf(), "n", "later"]);
+    idle();
+    _ := await("recent|");
+    r := Str.find(Buf.bytes(seen), "renamed|");
+    m := Str.find(Buf.bytes(seen), "models|");
+    l := Str.find(Buf.bytes(seen), "recent|");
+    if not ((r >= 0) and (r < m) and (m < l)) then fail("requests held in order", Buf.bytes(seen)); end;
+    mustHave("a held request is answered", "\"title\":\"Held title\"");
+end;
+
+(* A conversation that isn't the current one, renamed and forgotten. *)
+proc saved;
+begin
+    line("/new");
+    idle();
+    send(["rename", Buf.bytes(ident), "Old one"]);
+    _ := await("renamed|");
+    Buf.reset(out);
+    Fmt.write(out, "renamed|{}", [Fmt.str(Buf.bytes(ident))]);
+    is("rename a saved one", Buf.bytes(out));
+    clear();
+    send(["recent", "5", ""]);
+    _ := await("recent|");
+    mustHave("the saved one is renamed", "\"title\":\"Old one\"");
+    send(["forget", Buf.bytes(ident)]);
+    _ := await("forgot|");
+    Buf.reset(out);
+    Fmt.write(out, "forgot|{}", [Fmt.str(Buf.bytes(ident))]);
+    is("forget a saved one", Buf.bytes(out));
+    clear();
+    send(["recent", "5", ""]);
+    _ := await("recent|");
+    if has("Old one") then fail("the forgotten one is gone from recent", Buf.bytes(seen)); end;
+end;
+
+(* A who among viewers, not the last connection: the others stay. *)
+proc whoNotLast(socket: []const U8);
+var a, b, c: INT; got, bufA, bufB, bufC: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(bufA, Heap.heap);
+    Buf.init(bufB, Heap.heap);
+    Buf.init(bufC, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(bufA);
+    defer Buf.done(bufB);
+    defer Buf.done(bufC);
+    a := Sys.connect(socket);
+    b := Sys.connect(socket);
+    c := Sys.connect(socket);
+    defer Sys.close(a);
+    defer Sys.close(b);
+    defer Sys.close(c);
+    if (a < 0) or (b < 0) or (c < 0) then fail("viewers", "no socket"); return; end;
+    _ := Sys.send(a, "6:attach,");
+    ok := read(a, bufA, got);
+    if not ok or (Buf.bytes(got) # "reset") then fail("the first viewer", Buf.bytes(got)); return; end;
+    Sys.sleep(200);   (* arno takes all three connections *)
+    _ := Sys.send(b, "3:who,");
+    ok := read(b, bufB, got);
+    if not ok or not Str.hasPrefix(Buf.bytes(got), "ok|testhost|") then fail("who", Buf.bytes(got)); return; end;
+    _ := Sys.send(c, "6:attach,");
+    ok := read(c, bufC, got);
+    if not ok or (Buf.bytes(got) # "reset") then fail("a viewer after a who", Buf.bytes(got)); return; end;
+    clear();
+    Buf.reset(out);
+    Aframe.pack(out, ["line", "after a who"]);
+    _ := Sys.send(a, Buf.bytes(out));
+    idle();
+    mustHave("the first viewer is still there", "after a who");
+end;
+
+(* What a viewer, a lister, the screen of --attach and a terminal's
+   arno do with the session's socket. *)
+proc viewers(arno: []const U8);
+var socket: Buf.Buf;
+begin
+    Buf.init(socket, Heap.heap);
+    defer Buf.done(socket);
+    Fmt.write(socket, "{}/arno/{}.view", [Fmt.str(Sys.env("XDG_RUNTIME_DIR")), Fmt.str(Buf.bytes(pid))]);
+    viewer(Buf.bytes(socket));
+    whoNotLast(Buf.bytes(socket));
+    listing(arno, "testhost");
+    screen(arno, Buf.bytes(pid));
+    terminal(arno);
+end;
+
+proc main*: INT;
+var n: INT;
+begin
+    if ARGC() # 3 then Out.str("usage: host arno root\n"); return 2; end;
+    Buf.init(inbox, Heap.heap);
+    Buf.init(seen, Heap.heap);
+    Buf.init(last, Heap.heap);
+    Buf.init(out, Heap.heap);
+    Buf.init(pid, Heap.heap);
+    Buf.init(root, Heap.heap);
+    Buf.init(ident, Heap.heap);
+    Fields.init(fields, Heap.heap);
+    _ := Sys.ignore(Sys.sigPipe, true);
+    Buf.str(root, Files.arg(2));
+    refusals(Files.arg(1));
+    n := start(Files.arg(1));
+    if n < 0 then return 1; end;
+    beforeHello();
+    greeting();
+    turn();
+    hostTool();
+    questions();
+    requests();
+    order();
+    saved();
+    viewers(Files.arg(1));
+
+    (* bye while a question waits: arno ends, and doesn't wait for the answer *)
+    clear();
+    line(`call edit {"path":"f.txt","old":"one","new":"4"}`);
+    _ := await("ask|");
+    send(["bye"]);
+    stop(n, "bye with a question waiting");
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Ahost.

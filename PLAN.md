@@ -228,7 +228,7 @@ one or more commits that build with `-Werror`.
      start-up sweeps those a day old whose conversation is gone. Not
      as the Pascal arno did: `ours` doesn't refuse a file hard-linked
      to one outside the scratch until raz has a link count, and there
-     is no `Forget`, which comes with `--serve` in stage 6.
+     is no `Forget`, which came with `--serve` in stage 6.
    - [x] c. The stage: `Astage` (the worktree, seeded from the tree as
      it stands; the diff asked about once at a turn's end; apply,
      drop, carry on resume), `/stage`, `stage.json`; the stage's copy
@@ -297,6 +297,54 @@ one or more commits that build with `-Werror`.
    and `oneshot.cn` runs a call through the program. Also, `Atools`'s
    declined text is one `declined` for `approve`, `run` and MCP.
 6. **Peers, serve, attach:** `arno-peer(5)`, `--serve`, `--attach`.
+   - [x] a. `--serve`, `--attach` and `Forget`. `Aframe` is the
+     netstring messages of `~/lib/arnoc`, byte for byte; `Aview` the
+     session as others see it: every change to the Board is made
+     through it, told to the owner (a host) and to the viewers on the
+     session's socket, and it is the screen of an attached session
+     too (`apply`); `Aserve` is `arno --serve` with the whole of
+     `arnoc(3)`'s protocol: hello with its tools and builtins (`Atools`
+     gained the host's tools, `addHost`, `allow` and `hosting`, and
+     `Aprompt.setHost` the "# Host" section), ask and call round
+     trips, cancel, lines queued, and the seven requests (recent,
+     paste, rename, forget, models, system, setsystem). `Ascreen` tells
+     the viewers of a terminal's arno, and `Ascreen.attach` is the
+     viewer's screen: the same screen, copy mode and history, its
+     lines and cancels sent to the session. `arno --attach [PID | -l]`.
+     `Astore.forget` removes a saved conversation and its scratch
+     directory. `test/Ahost.raz` is a host in miniature that drives
+     `build/arno --serve` against the stub (`test/serve.cn`), with a
+     viewer on the socket, `--attach -l`, the screen of `--attach` and
+     a terminal's arno over pseudo-terminals.
+     What differs from the Pascal arno: a job runs on a thread, as the
+     screen's does, and the loop reads the host meanwhile, so a cancel
+     is heard at once and refuses a question or call waiting, but a
+     turn still stops at the next read of the reply; `models`, and
+     `rename`, `system` and `setsystem` of the current conversation,
+     wait for the running job to end, since it may be changing the
+     provider or the conversation, and are answered then (the Pascal
+     arno answered mid-turn), and so does every request that comes
+     while one waits, so that replies keep the order of requests, which
+     arnold pairs by; `busy 1` and `busy 0` are sent around every job,
+     the start-up one and a slash command among them, not only a model
+     turn as the Pascal arno did; a viewer is told of a waiting
+     question only as `status · a question waits in WHO`, not with
+     the question (`waiting for approval in OWNER: QUESTION`); `--attach -l`
+     removes the socket of a process that has ended, not one that is
+     only slow to answer; the
+     session's socket is `$XDG_RUNTIME_DIR/arno/PID.view`, or `run/` in
+     arno's cache, in a directory of mode 700 and a socket of mode 600
+     that refuses another user, no longer `arno-PID.sock` in `/tmp`
+     shared with te, and `who` is answered as one framed message
+     (`ok`, owner, root, title); a terminal's arno has at most seven
+     viewers (rtui's `MaxWatch`), and a viewer's unsent tail waits for
+     the next change (`TuiLoop.watch` is read-only). `--attach -l`
+     prints its fields parted by tabs.
+   - [ ] b. The editors' protocol, `arno-peer(5)`: a client asks arno,
+     an editor serves its buffers (read, open, edit), `$ARNO_EDITOR`
+     and a directory of sockets, the forged ask closed. Left out of a:
+     it is a protocol of its own, written as a page first, and a
+     session stands without it.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`
    for a while; `man desktop` updated.
 

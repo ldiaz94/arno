@@ -1,0 +1,993 @@
+(* Aserve: arno --serve, one session driven by the program that started
+   it.
+
+   A host, a word processor or a spreadsheet, starts arno --serve on
+   two pipes, and from then on the two exchange messages (Aframe): the
+   host sends hello first, then lines of input, cancels, answers to
+   arno's questions and the results of its own tools; arno sends what
+   the terminal would have shown, as the Board's changes (Aview), and
+   asks the host what the terminal would have asked the human. The
+   session ends when the host says bye or closes the pipe. ~/lib/arnoc
+   is the library hosts use, and its arnoc(3) sets the protocol out in
+   full; what is said here is only how this side does it.
+
+   Standard input is the host's pipe in. Messages out go to a
+   descriptor of their own, and descriptor 1 becomes a copy of standard
+   error, so that nothing a tool or a library prints can land in the
+   middle of a message.
+
+   hello's fields are the version, the host's name, the project root
+   and a JSON object with prompt (a section of the system prompt about
+   the host), tools (each with name, description and parameters, as a
+   model sees any tool) and builtins (the names of arno's own tools the
+   host allows; all if it is missing). The session works in the root:
+   arno moves there before the session is made, so that the fence finds
+   the project from it as from a terminal's working directory. What
+   can't be honoured, a tool without a name or with a name arno has
+   already, is told to the host as error, and the rest goes ahead, so
+   that the host finds out at once and not the model mid-turn.
+
+   Threads, as the screen's (Ascreen): the loop is this module's main
+   thread. It alone reads the host, writes to it, touches the Board and
+   serves the viewers. What the human would type runs as a job on a
+   thread of its own, and a job tells the loop by events in a queue,
+   under a mutex, and a byte down a pipe that wakes it. A question, or
+   a call of one of the host's tools, is an event too: the loop sends
+   it as ask or call, and the job waits on a second pipe for the host's
+   answer or result, which the loop writes there; a cancel or the
+   host's going gives it a refusal at once. A line that comes while a
+   job runs waits for it, host's or viewer's.
+
+   Seven requests are answered at once, even mid-turn: recent, paste,
+   forget, and rename, system and setsystem of a saved conversation.
+   models, and rename, system and setsystem of the current
+   conversation, which the job running may be changing, wait for the
+   job's end, and are answered then. So that the replies come in the
+   order of the requests, as arnold counts on, every request that comes
+   while another waits waits too.
+
+   Depends on Aframe, Aview, Asession, Agent, Aprompt, Atools, Aattach,
+   Astore, Awire and rjson's Json. Leaves out the editors' protocol
+   (arno-peer(5)): no editor is told of the session. *)
+module Aserve;
+import Aframe, Aview, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Amsg, Json, Thread, Sys,
+    Buf, Str, Fmt, Heap, Rt, Strs := Vec([]U8), Fields := Vec([]const U8), Polls := Vec(Sys.Poll),
+    Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item);
+import SYSTEM;
+
+type
+    (* What a job tells the loop. *)
+    Sort = (typed, said, called, answered, told, failed, status, request, switched, ended);
+
+    Event = record
+        sort: Sort;             (* what it tells *)
+        a, b, c, d: Buf.Buf;   (* its texts: a request's verb, then its fields *)
+        going: BOOL;           (* ended: the session goes on *)
+    end;
+
+    (* How many fields, the verb's own included, a verb takes. *)
+    Need = record
+        verb: []const U8;   (* the host's word *)
+        fields: INT;        (* its count of fields *)
+    end;
+
+const
+    Version = "1";           (* the protocol's *)
+    NsPerSecond = 1000000000;   (* Astore's times are in nanoseconds *)
+    Verbs: []Need = [{verb: "hello", fields: 5}, {verb: "line", fields: 2}, {verb: "cancel", fields: 1}, {verb: "answer", fields: 3}, {verb: "result", fields: 3}, {verb: "bye", fields: 1},
+        {verb: "recent", fields: 3}, {verb: "paste", fields: 1}, {verb: "rename", fields: 3}, {verb: "forget", fields: 2}, {verb: "models", fields: 1}, {verb: "system", fields: 2},
+        {verb: "setsystem", fields: 3}];
+
+var
+    session: Asession.Session;
+    host: INT;            (* where messages to the host go *)
+    inbox: Buf.Buf;       (* what the host sent that isn't a whole message yet *)
+    hostName: Buf.Buf;    (* who the host says it is, from hello *)
+    greeted: BOOL;        (* hello has come *)
+    started: BOOL;        (* and the session made *)
+    quit: BOOL;           (* the host said bye, or went away, or a viewer's /quit *)
+    queue: Strs.Vec;      (* lines that came while a job ran, from the host *)
+    held: Buf.Buf;        (* requests that wait for the job to end, as messages *)
+    current: Buf.Buf;     (* the id of the conversation, as the loop last heard *)
+    out: Buf.Buf;         (* the message being made, and JSON for one *)
+    words: Buf.Buf;       (* what an error says, made with a name or a number in it *)
+    scratch: Buf.Buf;     (* JSON for a reply, as it is made *)
+
+    (* shared by the loop's thread and a job's, under mutex *)
+    mutex: Thread.Mutex;
+    events: Events.Vec;
+    stopping: BOOL;       (* the host said to stop the turn *)
+    ending: BOOL;         (* the session is over: every request is refused *)
+    slotOk: BOOL;         (* an answer came, and is in slot *)
+    slot: Buf.Buf;        (* the key or result, and *)
+    slotWhy: Buf.Buf;     (* the reason that came with a refusal *)
+    wakeRead, wakeWrite: INT;       (* the pipe that wakes the loop, a byte an event *)
+    answerRead, answerWrite: INT;   (* the pipe an answer comes by, a byte *)
+
+    (* a job's own *)
+    job: Buf.Buf;         (* the line it runs; "" to prepare the session *)
+    made: Buf.Buf;        (* the status line it makes *)
+    reason: Buf.Buf;      (* the reason given after a no, kept for why *)
+    result: Buf.Buf;      (* a host tool's result, kept for hostRun *)
+
+    (* the loop's own *)
+    thread: ^Thread.Thread;   (* the job running, or nil *)
+    pending: INT;             (* the id of the request waited on, 0 for none *)
+    seq: INT;                 (* the last id given *)
+    batch: Events.Vec;        (* the events being applied *)
+    fields: Fields.Vec;       (* the host's message being handled *)
+
+(* Telling the host *)
+
+(* msg to the host; a host that has gone ends the session, as one that
+   closed its other pipe does. *)
+proc tell(msg: []const U8);
+begin
+    if not quit and not Aframe.sendPipe(host, msg) then quit := true; end;
+end;
+
+(* The message of fields, sent. *)
+proc send(fields: [][]const U8);
+begin
+    Buf.reset(out);
+    Aframe.pack(out, fields);
+    tell(Buf.bytes(out));
+end;
+
+(* An error told to the host. *)
+proc fault(why: []const U8);
+begin
+    send(["error", why]);
+end;
+
+(* The job's side: what it tells, put in the queue *)
+
+(* An event of sort s, with texts a, b, c and d, put in the queue, and
+   the loop woken. *)
+proc post(s: Sort; a, b, c, d: []const U8; going: BOOL);
+var e: ^Event; one: [1]U8;
+begin
+    Thread.lock(mutex);
+    e := Events.add(events);
+    e^.sort := s;
+    e^.going := going;
+    Buf.init(e^.a, Heap.heap);
+    Buf.init(e^.b, Heap.heap);
+    Buf.init(e^.c, Heap.heap);
+    Buf.init(e^.d, Heap.heap);
+    Buf.str(e^.a, a);
+    Buf.str(e^.b, b);
+    Buf.str(e^.c, c);
+    Buf.str(e^.d, d);
+    Thread.unlock(mutex);
+    one[0] := 1;
+    _ := Sys.write(wakeWrite, one);
+end;
+
+(* The front's text: the model's words, told. *)
+proc text(s: []const U8; _arg: ^U8);
+begin
+    post(said, s, "", "", "", false);
+end;
+
+(* The front's call: a tool about to run, told. *)
+proc call(name, args: []const U8; _arg: ^U8);
+begin
+    post(called, name, args, "", "", false);
+end;
+
+(* The front's result: what the call gave, told. *)
+proc answer(_name, res: []const U8; _arg: ^U8);
+begin
+    post(answered, res, "", "", "", false);
+end;
+
+(* The front's note: what arno says on the side, told as information. *)
+proc note(s: []const U8; _arg: ^U8);
+begin
+    post(told, s, "", "", "", false);
+end;
+
+(* What a command says to the human: s, an error if bad. *)
+proc show(s: []const U8; bad: BOOL; _arg: ^U8);
+begin
+    if bad then post(failed, s, "", "", "", false); else post(told, s, "", "", "", false); end;
+end;
+
+(* The status line made again, and the conversation's title, from the
+   job's thread: the session is the job's while it runs. *)
+proc counted(_arg: ^U8);
+begin
+    Buf.reset(made);
+    Asession.status(session, made);
+    post(status, Buf.bytes(made), session.conv.title, "", "", false);
+end;
+
+(* Whether the host said to stop the turn, which the session asks between reads. *)
+proc stopped: BOOL;
+var s: BOOL;
+begin
+    Thread.lock(mutex);
+    s := stopping;
+    Thread.unlock(mutex);
+    return s;
+end;
+
+(* Whether the session is over, and no one is there to answer. *)
+proc gone: BOOL;
+var g: BOOL;
+begin
+    Thread.lock(mutex);
+    g := ending;
+    Thread.unlock(mutex);
+    return g;
+end;
+
+(* A request put to the host, verb, then fields b, c and d as its
+   message has them, and its answer waited for: true, with the answer
+   in slot, or false if a cancel or the host's going came first. *)
+proc askHost(verb, b, c, d: []const U8): BOOL;
+var one: [1]U8; n, ok: INT;
+begin
+    if gone() or stopped() then return false; end;
+    post(request, verb, b, c, d, false);
+    repeat n := Sys.read(answerRead, one); until n # Sys.errIntr;
+    Thread.lock(mutex);
+    ok := 0;
+    if slotOk then ok := 1; end;
+    Thread.unlock(mutex);
+    return (n = 1) and (ok = 1);
+end;
+
+(* The human asked question, after detail: one of keys. The host is
+   asked; the refusal, the first key that isn't y, is what a cancel,
+   the host's going, or an answer that is none of keys all mean. *)
+proc ask(question, detail, keys: []const U8): U8;
+var no: U8; i: INT;
+begin
+    no := 'n';
+    for i := 0 to LEN(keys) - 1 do
+        if keys[i] # 'y' then no := keys[i]; break; end;
+    end;
+    Buf.reset(reason);
+    if not askHost("ask", question, detail, keys) then return no; end;
+    Thread.lock(mutex);
+    Buf.str(reason, Buf.bytes(slotWhy));
+    i := 0;
+    if (slot.len = 1) and (Str.find(keys, Buf.bytes(slot)) >= 0) then i := INT(Buf.bytes(slot)[0]); end;
+    Thread.unlock(mutex);
+    if i = 0 then return no; end;
+    return U8(i);
+end;
+
+(* After a no, why: what came with the answer, as answer ID KEY TEXT. *)
+proc why(): []const U8;
+begin
+    return Buf.bytes(reason);
+end;
+
+(* One of the host's tools called: name and its arguments as the model
+   wrote them, and the host's result, for the model. *)
+proc hostRun(name, args: []const U8; _arg: ^U8): []const U8;
+var ok: BOOL;
+begin
+    ok := askHost("call", name, args, "");
+    Buf.reset(result);
+    if ok then
+        Thread.lock(mutex);
+        Buf.str(result, Buf.bytes(slot));
+        Thread.unlock(mutex);
+    elsif gone() then
+        Fmt.write(result, "error: {} has gone away", [Fmt.str(Buf.bytes(hostName))]);
+    else
+        Buf.str(result, "interrupted by user");
+    end;
+    return Buf.bytes(result);
+end;
+
+(* The front end the session tells. *)
+proc front: Agent.Front;
+begin
+    return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted};
+end;
+
+(* c shown again from its start, on the job's thread, which has it: the
+   board cleared, then each message as it was told when it came. As
+   Ascreen's changed does. *)
+proc changed(const c: Astore.Conv; _arg: ^U8);
+var m: []Amsg.Msg; calls: []Amsg.Call; i, k: INT;
+begin
+    post(switched, c.id, "", "", "", false);
+    m := Msgs.all(c.msgs);
+    for i := 0 to LEN(m) - 1 do
+        match m[i].role of
+        | user: post(typed, Aattach.shown(m[i].text), "", "", "", false);
+        | assistant: post(said, m[i].text, "", "", "", false);
+            calls := Calls.all(m[i].calls);
+            for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", "", false); end;
+        | tool: post(answered, m[i].text, "", "", "", false);
+        end;
+    end;
+end;
+
+(* The loop's side *)
+
+(* s copied into memory of its own, from Heap. *)
+proc keep(s: []const U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* Whether the host's id names the current conversation: an empty one
+   does, since a host can't know the current id after a /new or /load. *)
+proc isCurrent(id: []const U8): BOOL;
+begin
+    return (LEN(id) = 0) or (id = Buf.bytes(current));
+end;
+
+(* The id the answer to a request names: the current conversation's, for "". *)
+proc named(id: []const U8): []const U8;
+begin
+    if LEN(id) = 0 then return Buf.bytes(current); end;
+    return id;
+end;
+
+(* JSON, in scratch: the string s quoted, added. *)
+proc quoted(s: []const U8);
+begin
+    Json.quote(SYSTEM.ADR(scratch), s);
+end;
+
+(* "no conversation ID", told as an error. *)
+proc missing(id: []const U8);
+begin
+    Buf.reset(words);
+    Fmt.write(words, "no conversation {}", [Fmt.str(id)]);
+    fault(Buf.bytes(words));
+end;
+
+(* recent MAX FILTER: at most MAX conversations, the last changed
+   first, those whose title or id holds FILTER, as a JSON array of
+   objects with id, title and updated (Unix seconds). *)
+proc recents(max, filter: []const U8);
+var n: I64; ok: BOOL; list: Items.Vec; items: []Astore.Item; i: INT; d: [20]U8; k: INT;
+begin
+    n, ok := Str.toInt(max);
+    if not ok or (n < 1) then fault("recent needs a count of 1 or more"); return; end;
+    Astore.recent(INT(n), filter, list);
+    defer Astore.drop(list);
+    items := Items.all(list);
+    Buf.reset(scratch);
+    Buf.add(scratch, '[');
+    for i := 0 to LEN(items) - 1 do
+        if i > 0 then Buf.add(scratch, ','); end;
+        Buf.str(scratch, `{"id":`);
+        quoted(items[i].id);
+        Buf.str(scratch, `,"title":`);
+        quoted(items[i].title);
+        d, k := Str.fromInt(items[i].updated div NsPerSecond);
+        Buf.str(scratch, `,"updated":`);
+        Buf.str(scratch, d[0..k]);
+        Buf.add(scratch, '}');
+    end;
+    Buf.add(scratch, ']');
+    send(["recent", Buf.bytes(scratch)]);
+end;
+
+(* paste: the clipboard's picture in a file, or why there is none. *)
+proc paste;
+var path, problem: Buf.Buf;
+begin
+    Buf.init(path, Heap.heap);
+    Buf.init(problem, Heap.heap);
+    defer Buf.done(path);
+    defer Buf.done(problem);
+    if Aattach.paste(path, problem) then send(["pasted", Buf.bytes(path)]); else fault(Buf.bytes(problem)); end;
+end;
+
+(* The status line and title made again, now no job has the session. *)
+proc restated;
+begin
+    Buf.reset(made);
+    Asession.status(session, made);
+    Aview.stated(Buf.bytes(made), session.conv.title);
+end;
+
+(* rename ID TITLE: a saved conversation named, or the current one,
+   which needn't be saved yet, as /rename names it. *)
+proc renames(id, title: []const U8);
+begin
+    if isCurrent(id) then
+        Asession.retitle(session, title);
+        restated();
+    elsif Astore.retitle(id, title) # nil then
+        missing(id);
+        return;
+    end;
+    send(["renamed", named(id)]);
+end;
+
+(* forget ID: a saved conversation gone, its file and scratch
+   directory; never the current one, which would only be saved again. *)
+proc forgets(id: []const U8);
+begin
+    if isCurrent(id) then fault("the current conversation cannot be forgotten");
+    elsif not Astore.forget(id) then missing(id);
+    else send(["forgot", id]);
+    end;
+end;
+
+(* system ID: one JSON object, the conversation's own system prompt
+   (empty when it has none) and arno's own instructions, which it takes
+   the place of. The current conversation's comes from memory: it need
+   not be saved yet. *)
+proc systems(id: []const U8);
+var c: Astore.Conv;
+begin
+    Buf.reset(scratch);
+    Buf.str(scratch, `{"id":`);
+    quoted(named(id));
+    Buf.str(scratch, `,"prompt":`);
+    if isCurrent(id) then
+        quoted(session.conv.system);
+    elsif Astore.load(c, id) = nil then
+        quoted(c.system);
+        Astore.done(c);
+    else
+        missing(id);
+        return;
+    end;
+    Buf.str(scratch, `,"default":`);
+    quoted(Aprompt.Own);
+    Buf.add(scratch, '}');
+    send(["system", Buf.bytes(scratch)]);
+end;
+
+(* setsystem ID TEXT: the conversation's own system prompt set, empty
+   for arno's own again; the current one's from its next request. *)
+proc setsystems(id, text: []const U8);
+begin
+    if isCurrent(id) then
+        Asession.resystem(session, text);
+    elsif Astore.resystem(id, text) # nil then
+        missing(id);
+        return;
+    end;
+    send(["systemset", named(id)]);
+end;
+
+(* models: one JSON object, the provider, the model, and the models
+   /models lists, arno's own list for a server that couldn't be asked,
+   an empty array for a provider with neither. *)
+proc models;
+var list, problem: Buf.Buf; rest, one: []const U8; first, more: BOOL; p: ^Awire.Prov;
+begin
+    Buf.init(list, Heap.heap);
+    Buf.init(problem, Heap.heap);
+    defer Buf.done(list);
+    defer Buf.done(problem);
+    p := SYSTEM.ADR(session.conf.prov);
+    if Awire.models(p^, list, problem) # nil then
+        Buf.reset(list);
+        Buf.str(list, Awire.known(p^.name));
+    end;
+    Buf.reset(scratch);
+    Buf.str(scratch, `{"provider":`);
+    quoted(p^.name);
+    Buf.str(scratch, `,"model":`);
+    quoted(p^.model);
+    Buf.str(scratch, `,"models":[`);
+    rest := Buf.bytes(list);
+    first := true;
+    more := LEN(rest) > 0;
+    while more do
+        one, rest, more := Str.cut(rest, "\n");
+        one := Str.trim(one);
+        if LEN(one) = 0 then continue; end;
+        if not first then Buf.add(scratch, ','); end;
+        first := false;
+        quoted(one);
+    end;
+    Buf.str(scratch, "]}");
+    send(["models", Buf.bytes(scratch)]);
+end;
+
+(* The request's answer from the host: ask's key, with its reason if
+   it gave one, or call's result, to the job waiting. Dropped if it is
+   for a request no longer waited on. *)
+proc replied(f: [][]const U8; refuses: BOOL);
+var one: [1]U8;
+begin
+    Thread.lock(mutex);
+    Buf.reset(slot);
+    Buf.reset(slotWhy);
+    slotOk := not refuses;
+    if not refuses then
+        Buf.str(slot, f[2]);
+        if LEN(f) > 3 then Buf.str(slotWhy, f[3]); end;
+    end;
+    Thread.unlock(mutex);
+    pending := 0;
+    Aview.waiting("", false);
+    one[0] := 1;
+    _ := Sys.write(answerWrite, one);
+end;
+
+(* The host said cancel: the turn is to stop, and a question or call
+   waiting is refused, which ends the turn too. *)
+proc cancel;
+begin
+    if thread = nil then return; end;
+    Thread.lock(mutex);
+    stopping := true;
+    Thread.unlock(mutex);
+    if pending > 0 then replied(["", "", ""], true); end;
+end;
+
+(* The host is gone, or said bye: the session is over. *)
+proc finish;
+begin
+    quit := true;
+    Thread.lock(mutex);
+    ending := true;
+    stopping := true;
+    Thread.unlock(mutex);
+    if pending > 0 then replied(["", "", ""], true); end;
+end;
+
+(* Whether the verb takes at least that many fields: how many, or -1
+   if it is not a verb. *)
+proc needs(verb: []const U8): INT;
+var i: INT;
+begin
+    for i := 0 to LEN(Verbs) - 1 do
+        if Verbs[i].verb = verb then return Verbs[i].fields; end;
+    end;
+    return -1;
+end;
+
+(* hello's JSON: the host's tools added, its builtins named, its
+   prompt. false if the object is none, which ends the session. *)
+proc hello(json: []const U8; name: []const U8): BOOL;
+var d: Json.Doc; v, ts, t, p, b: Json.Value; copy, params: Buf.Buf; i: INT; names: Buf.Buf; why: []const U8;
+begin
+    Buf.init(copy, Heap.heap);
+    Buf.init(params, Heap.heap);
+    Buf.init(names, Heap.heap);
+    defer Buf.done(copy);
+    defer Buf.done(params);
+    defer Buf.done(names);
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    if LEN(json) = 0 then json := "{}"; end;
+    Buf.str(copy, json);   (* parsing rewrites its text *)
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(copy));
+    if Json.kind(SYSTEM.ADR(d), v) # Json.Kind.object then
+        fault("hello's last field must be a JSON object");
+        return false;
+    end;
+    ts := Json.member(SYSTEM.ADR(d), v, "tools");
+    for i := 0 to Json.len(SYSTEM.ADR(d), ts) - 1 do
+        t := Json.item(SYSTEM.ADR(d), ts, i);
+        p := Json.member(SYSTEM.ADR(d), t, "parameters");
+        Buf.reset(params);
+        if Json.kind(SYSTEM.ADR(d), p) # Json.Kind.none then Amsg.compact(SYSTEM.ADR(d), p, params); end;
+        why := Atools.addHost(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), t, "name")),
+            Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), t, "description")), Buf.bytes(params));
+        if LEN(why) > 0 then fault(why); end;
+    end;
+    b := Json.member(SYSTEM.ADR(d), v, "builtins");
+    if Json.kind(SYSTEM.ADR(d), b) # Json.Kind.none then
+        for i := 0 to Json.len(SYSTEM.ADR(d), b) - 1 do
+            Buf.str(names, Json.text(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), b, i)));
+            Buf.add(names, ' ');
+        end;
+        Atools.allow(Buf.bytes(names));
+    end;
+    Aprompt.setHost(name, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "prompt")));
+    return true;
+end;
+
+(* hello's fields, taken: its protocol checked, the project's root
+   entered, its tools added. false if the session can't go on. *)
+proc greet(f: [][]const U8): BOOL;
+var name: []const U8;
+begin
+    if f[1] # Version then
+        Buf.reset(words);
+        Fmt.write(words, "protocol version {} unknown; this arno speaks {}", [Fmt.str(f[1]), Fmt.str(Version)]);
+        fault(Buf.bytes(words));
+        return false;
+    end;
+    name := f[2];
+    if LEN(name) = 0 then name := "the host"; end;
+    Buf.str(hostName, name);
+    if (LEN(f[3]) > 0) and (Sys.setWorkDir(f[3]) # 0) then
+        Buf.reset(words);
+        Fmt.write(words, "cannot work in {}", [Fmt.str(f[3])]);
+        fault(Buf.bytes(words));
+        return false;
+    end;
+    return hello(f[4], name);
+end;
+
+(* Whether the request f, about the conversation f[1] if it names one,
+   waits for the job's end: it touches what the job owns (models reads
+   the provider /model changes; the current conversation is the job's),
+   or a request before it waits, and must be answered after it. *)
+proc waits(f: [][]const U8): BOOL;
+begin
+    if thread = nil then return false; end;
+    if held.len > 0 then return true; end;
+    match f[0] of
+    | "models": return true;
+    | "rename", "system", "setsystem": return isCurrent(f[1]);
+    | else: return false;
+    end;
+end;
+
+(* The host's request f, answered now. *)
+proc request(f: [][]const U8);
+begin
+    match f[0] of
+    | "recent": recents(f[1], f[2]);
+    | "paste": paste();
+    | "forget": forgets(f[1]);
+    | "models": models();
+    | "rename": renames(f[1], f[2]);
+    | "system": systems(f[1]);
+    | "setsystem": setsystems(f[1], f[2]);
+    | else:
+    end;
+end;
+
+(* One message from the host. Too few fields is the host's mistake,
+   answered with error; so is a verb arno doesn't know, so that a host
+   newer than this arno hears what it may not use. *)
+proc handle(f: [][]const U8);
+var need: INT; v: []const U8; n: I64; ok: BOOL;
+begin
+    if LEN(f) = 0 then return; end;
+    v := f[0];
+    need := needs(v);
+    if need < 0 then
+        Buf.reset(words);
+        Fmt.write(words, "unknown verb {}", [Fmt.str(v)]);
+        fault(Buf.bytes(words));
+        return;
+    end;
+    if LEN(f) < need then
+        Buf.reset(words);
+        Fmt.write(words, "{} needs {} fields", [Fmt.str(v), Fmt.int(need - 1)]);
+        fault(Buf.bytes(words));
+        return;
+    end;
+    match v of
+    | "hello":
+        if greeted then fault("hello again"); return; end;
+        greeted := true;
+        if not greet(f) then quit := true; end;
+        return;
+    | else:
+    end;
+    if not greeted then fault("hello first"); return; end;
+    match v of
+    | "line": Strs.push(queue, keep(f[1]));
+    | "cancel": cancel();
+    | "answer", "result":
+        n, ok := Str.toInt(f[1]);
+        if ok and (pending > 0) and (n = pending) then replied(f, false); end;
+    | "bye": finish();
+    | "recent", "paste", "forget", "models", "rename", "system", "setsystem":
+        if waits(f) then Aframe.pack(held, f); else request(f); end;
+    | else:
+    end;
+end;
+
+(* The messages from the host, as many as are whole in the inbox. The
+   session isn't made until hello has been taken, so those after it
+   wait. A host that sent what is no message is confused, and nothing
+   after it can be read in step: the session ends. *)
+proc process;
+var used: INT;
+begin
+    while (inbox.len > 0) and not quit and not (greeted and not started) do
+        used := Aframe.take(Buf.bytes(inbox), fields);
+        if used < 0 then
+            fault("not a message; closing");
+            finish();
+            return;
+        end;
+        if used = 0 then return; end;
+        handle(Fields.all(fields));
+        Aframe.drop(inbox, used);
+    end;
+end;
+
+(* What the host has sent read, once, as poll said there is something. *)
+proc pump;
+var chunk: [16384]U8; n: INT;
+begin
+    repeat n := Sys.read(0, chunk); until n # Sys.errIntr;
+    if n <= 0 then finish(); return; end;
+    Buf.str(inbox, chunk[0..n]);
+    process();
+end;
+
+(* A job: the line in job run, or the session prepared if it is "";
+   then the status line made again, and the loop told it ended. *)
+proc work(_arg: ^U8);
+var going: BOOL;
+begin
+    going := true;
+    if job.len = 0 then
+        Asession.prepare(session);
+    else
+        going := Asession.line(session, Buf.bytes(job));
+    end;
+    counted(nil);
+    post(ended, "", "", "", "", going);
+end;
+
+(* A job started on line, "" to prepare the session. *)
+proc start(line: []const U8);
+var err: ERROR;
+begin
+    Buf.reset(job);
+    Buf.str(job, line);
+    Thread.lock(mutex);
+    stopping := false;
+    Thread.unlock(mutex);
+    Aview.busied(true);
+    thread, err := Thread.spawn(work, nil);
+    if err # nil then
+        thread := nil;
+        Aview.noted(Aboard.error, MSG(err));
+        Aview.busied(false);
+    end;
+end;
+
+(* The requests held for the job's end answered now. *)
+proc runHeld;
+var todo: Buf.Buf; f: Fields.Vec; used: INT;
+begin
+    if held.len = 0 then return; end;
+    Buf.init(todo, Heap.heap);
+    defer Buf.done(todo);
+    Fields.init(f, Heap.heap);
+    defer Fields.done(f);
+    Buf.str(todo, Buf.bytes(held));
+    Buf.reset(held);
+    used := Aframe.take(Buf.bytes(todo), f);
+    while used > 0 do
+        request(Fields.all(f));
+        Aframe.drop(todo, used);
+        used := Aframe.take(Buf.bytes(todo), f);
+    end;
+end;
+
+(* The job ended: joined, and the session the loop's again. going is
+   false for /quit. *)
+proc over(going: BOOL);
+begin
+    if thread # nil then Thread.join(thread); thread := nil; end;
+    Aview.waiting("", false);
+    Aview.busied(false);
+    if not going then quit := true; return; end;
+    runHeld();
+end;
+
+(* A request of a job put to the host, as ask or call, unless the turn
+   has been told to stop or the session is over: then it is refused. *)
+proc put(const e: Event);
+var d: [20]U8; k: INT;
+begin
+    INC(seq);
+    pending := seq;
+    d, k := Str.fromInt(seq);
+    if Buf.bytes(e.a) = "ask" then
+        send(["ask", d[0..k], Buf.bytes(e.b), Buf.bytes(e.c), Buf.bytes(e.d)]);
+        Aview.waiting(Buf.bytes(hostName), true);
+    else
+        send(["call", d[0..k], Buf.bytes(e.b), Buf.bytes(e.c)]);
+    end;
+    if stopped() or gone() then replied(["", "", ""], true); end;
+end;
+
+(* What a job told, applied to the Board and told on. *)
+proc apply(const e: Event);
+begin
+    match e.sort of
+    | typed: Aview.typed(Buf.bytes(e.a));
+    | said: Aview.said(Buf.bytes(e.a));
+    | called: Aview.called(Buf.bytes(e.a), Buf.bytes(e.b));
+    | answered: Aview.answered(Buf.bytes(e.a));
+    | told: Aview.noted(Aboard.info, Buf.bytes(e.a));
+    | failed: Aview.noted(Aboard.error, Buf.bytes(e.a));
+    | status: Aview.stated(Buf.bytes(e.a), Buf.bytes(e.b));
+    | request: put(e);
+    | switched:
+        Aview.cleared();
+        Buf.reset(current);
+        Buf.str(current, Buf.bytes(e.a));
+    | ended: over(e.going);
+    end;
+end;
+
+(* The events the jobs queued, taken from the queue and then applied,
+   so that a write to the host never holds up a job posting. *)
+proc drain;
+var all: []Event; i: INT;
+begin
+    Thread.lock(mutex);
+    all := Events.all(events);
+    for i := 0 to LEN(all) - 1 do Events.push(batch, all[i]); end;
+    Events.reset(events);
+    Thread.unlock(mutex);
+    all := Events.all(batch);
+    for i := 0 to LEN(all) - 1 do
+        apply(all[i]);
+        Buf.done(all[i].a);
+        Buf.done(all[i].b);
+        Buf.done(all[i].c);
+        Buf.done(all[i].d);
+    end;
+    Events.reset(batch);
+end;
+
+(* The next line to run, the host's before a viewer's, into line. *)
+proc nextLine(var line: Buf.Buf): BOOL;
+var s: []U8;
+begin
+    if queue.len > 0 then
+        s := Strs.all(queue)[0];
+        Strs.remove(queue, 0, 1);
+        Buf.reset(line);
+        Buf.str(line, s);
+        Str.free(Heap.heap, s);
+        return true;
+    end;
+    return Aview.heard(line);
+end;
+
+(* With no job running, the next line, if there is one, started. *)
+proc startNext;
+var line: Buf.Buf; text: []const U8;
+begin
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    while (thread = nil) and not quit and nextLine(line) do
+        text := Str.trim(Buf.bytes(line));
+        if LEN(text) = 0 then continue; end;
+        Aview.typed(text);
+        start(text);
+    end;
+end;
+
+(* The bytes the wake pipe holds, all of them, taken: a byte comes for
+   each event, and the events are drained after. *)
+proc woken;
+var chunk: [256]U8;
+begin
+    while Sys.read(wakeRead, chunk) > 0 do end;
+end;
+
+(* Waits for whatever comes first: the host, a job's event, a viewer. *)
+proc wait;
+var fds: Polls.Vec; p: []Sys.Poll; i: INT;
+begin
+    Polls.init(fds, Heap.heap);
+    defer Polls.done(fds);
+    Polls.push(fds, {fd: 0, read: true});
+    Polls.push(fds, {fd: wakeRead, read: true});
+    Aview.waitOn(fds);
+    p := Polls.all(fds);
+    if Sys.poll(p, -1) <= 0 then return; end;
+    if p[0].ready then pump(); end;
+    if p[1].ready then woken(); end;
+    for i := 2 to LEN(p) - 1 do
+        if p[i].ready then Aview.service(p[i].fd); end;
+    end;
+    if Aview.cancelled() then cancel(); end;
+end;
+
+(* The owner's copy of what is told goes to the host. *)
+proc sink(msg: []const U8);
+begin
+    tell(msg);
+end;
+
+(* The session made, once hello has been taken: ready, and the
+   transcript so far, told to the host, which then gets each change;
+   the socket opened for viewers, and the session prepared. *)
+proc open;
+var d: [20]U8; k: INT;
+begin
+    Atools.hosting(hostRun, nil);
+    Asession.init(SYSTEM.ADR(session), front(), show, nil);
+    session.changed := changed;
+    Buf.str(current, session.conv.id);
+    Aview.owning(Buf.bytes(hostName), Afence.zone);
+    d, k := Str.fromInt(Sys.pid());
+    send(["ready", Buf.bytes(current), session.conf.prov.model, d[0..k]]);
+    started := true;
+    Aview.owned(sink);
+    _ := Aview.listen();
+    process();
+    start("");
+end;
+
+(* With the session over, the running job waited for, and its requests
+   to the host refused as they come: its ended event is what is waited
+   for, not the thread alone, since a job may have posted a request
+   that finish() found no pending. *)
+proc endJob;
+var fds: Polls.Vec; p: []Sys.Poll;
+begin
+    Polls.init(fds, Heap.heap);
+    defer Polls.done(fds);
+    Polls.push(fds, {fd: wakeRead, read: true});
+    p := Polls.all(fds);
+    while thread # nil do
+        drain();
+        if (thread # nil) and (Sys.poll(p, -1) > 0) then woken(); end;
+    end;
+end;
+
+(* The session: hello, start-up, then lines until the host is done.
+   The status is 0. *)
+proc run*: INT;
+begin
+    _ := Sys.ignore(Sys.sigPipe, true);
+    host := Sys.dupAbove(1, 3);
+    _ := Sys.dupTo(2, 1);
+    wakeRead, wakeWrite := Sys.pipe();
+    (* a full pipe is no matter, since one byte waiting is enough to wake the loop, and a job never waits to write *)
+    _ := Sys.setBlocking(wakeRead, false);
+    _ := Sys.setBlocking(wakeWrite, false);
+    answerRead, answerWrite := Sys.pipe();
+    while not greeted and not quit do wait(); end;
+    if quit then return 0; end;
+    open();
+    while not quit do
+        drain();
+        startNext();
+        if not quit then wait(); end;
+    end;
+    if thread # nil then
+        finish();
+        endJob();
+    end;
+    Aview.unlisten();
+    Asession.leave;   (* the stage's copy, if one is up, removed *)
+    Aattach.drop;
+    return 0;
+end;
+
+proc init;
+begin
+    Events.init(events, Heap.heap);
+    Events.init(batch, Heap.heap);
+    Strs.init(queue, Heap.heap);
+    Fields.init(fields, Heap.heap);
+    Buf.init(inbox, Heap.heap);
+    Buf.init(hostName, Heap.heap);
+    Buf.init(held, Heap.heap);
+    Buf.init(current, Heap.heap);
+    Buf.init(out, Heap.heap);
+    Buf.init(scratch, Heap.heap);
+    Buf.init(words, Heap.heap);
+    Buf.init(slot, Heap.heap);
+    Buf.init(slotWhy, Heap.heap);
+    Buf.init(job, Heap.heap);
+    Buf.init(made, Heap.heap);
+    Buf.init(reason, Heap.heap);
+    Buf.init(result, Heap.heap);
+end;
+
+begin
+    init();
+end Aserve.

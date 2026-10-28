@@ -661,6 +661,24 @@ begin
     return save(c);
 end;
 
+(* The conversation saved as id forgotten: its file removed, and the
+   scratch directory that lasts as long as it does. false if none is
+   saved as id. *)
+proc forget*(id: []const U8): BOOL;
+var path, b: Buf.Buf; gone: BOOL;
+begin
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    lock();
+    defer unlock();
+    if (LEN(file(id, path)) = 0) or (Sys.access(Buf.bytes(path), {}) # 0) then return false; end;
+    gone := Sys.remove(Buf.bytes(path)) = 0;
+    if gone then wipe(scratchPath(id, b)); end;
+    return gone;
+end;
+
 (* the list *)
 
 (* a lists before b: changed later, or, changed at once, begun later *)
@@ -935,6 +953,8 @@ begin
         `{"title":"look at this","named":false,"model":"deepseek-v4.1-flash","messages":[` +
         `{"role":"user","content":"look at\nthis\n\n<file path=\"a.txt\">...</file>"},` +
         `{"role":"assistant","content":"I see."}]}`);
+    said("20261016-120009", "forget me");
+    if not forget("20261016-120009") or forget("20261016-120009") then fail("forget"); end;
 
     (* a title cut at 60 bytes, back to where a character starts *)
     for i := 1 to 59 do Buf.add(long, 'a'); end;

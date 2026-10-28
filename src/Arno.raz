@@ -4,6 +4,8 @@
        arno                         a session, a line of input at a time
        arno PROMPT ...              a new conversation of one turn
        arno --resume ID PROMPT ...  one more turn of the saved one, ID
+       arno --serve                 one session for the program that runs it
+       arno --attach [PID | -l]     a session run elsewhere, shown here
        arno -h | --help             the usage
 
    The prompt is the arguments, joined by blanks. ID may also be a
@@ -29,17 +31,23 @@
    ends it. With standard input alone a terminal, a "> " asks for each
    line.
 
-   Depends on Asession, Ascreen and Awire. Leaves out, for the stages
-   after this one, what the Pascal arno has besides: --serve and
-   --attach. *)
+   --serve runs one session for the program that started it, a host
+   that speaks ~/lib/arnoc's protocol on standard input and output
+   (Aserve). --attach shows another arno's session, a terminal's or a
+   host's, in this terminal, and types into it (Aview, Ascreen); -l
+   lists the sessions: process id, owner, project root and title.
+
+   Depends on Asession, Ascreen, Aserve, Aview and Awire. *)
 module Arno;
-import Asession, Ascreen, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
+import Asession, Ascreen, Aserve, Aview, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
 import SYSTEM;
 
 const Usage = `
     usage: arno
            arno prompt ...
            arno --resume id prompt ...
+           arno --serve
+           arno --attach [pid | -l]
            arno -h | --help
     `;
 
@@ -200,6 +208,63 @@ begin
     return 0;
 end;
 
+(* arno --attach -l: a line for each session, its process id, owner,
+   project root and title. *)
+proc sessions;
+var b: Buf.Buf; rest, one, pid, owner, root, title: []const U8; more: BOOL;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Aview.sessions(b);
+    if b.len = 0 then Out.str("no sessions\n"); end;
+    rest := Buf.bytes(b);
+    more := LEN(rest) > 0;
+    while more do
+        one, rest, more := Str.cut(rest, "\n");
+        if LEN(one) = 0 then continue; end;
+        pid, one, _ := Str.cut(one, "\t");
+        owner, one, _ := Str.cut(one, "\t");
+        root, title, _ := Str.cut(one, "\t");
+        Out.str(pid);
+        Out.str("\t");
+        Out.str(owner);
+        Out.str("\t");
+        Out.str(root);
+        Out.str("\t");
+        Out.str(title);
+        Out.ln;
+    end;
+    Out.flush;
+end;
+
+(* arno --attach [PID | -l]: the session of PID shown here, or, with
+   none, one working in this directory, else the one begun last. *)
+proc attach(): INT;
+var fd, i: INT; ran, ended: BOOL; pid: []const U8;
+begin
+    if (ARGC() = 3) and (Files.arg(2) = "-l") then sessions(); return 0; end;
+    if ARGC() > 3 then say("arno: --attach takes a pid, or -l\n", "", ""); return 2; end;
+    if not (Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout)) then
+        say("arno: --attach needs a terminal\n", "", "");
+        return 1;
+    end;
+    pid := "";
+    if ARGC() = 3 then pid := Files.arg(2); end;
+    for i := 0 to LEN(pid) - 1 do
+        if not Str.isDigit(pid[i]) then say("arno: --attach takes a pid, or -l\n", "", ""); return 2; end;
+    end;
+    fd := Aview.attach(pid);
+    if fd < 0 then
+        if LEN(pid) = 0 then say("arno: no session to attach to\n", "", "");
+        else say("arno: no session ", pid, "\n"); end;
+        return 1;
+    end;
+    ran, ended := Ascreen.attach(fd);
+    if not ran then say("arno: the terminal can't be used\n", "", ""); return 1; end;
+    if ended then say("arno: the session has ended\n", "", ""); end;
+    return 0;
+end;
+
 proc main*: INT;
 var s: Asession.Session; first, i: INT; prompt, failure: Buf.Buf; err: ERROR;
 begin
@@ -210,10 +275,12 @@ begin
     end;
     first := 1;
     if (ARGC() >= 2) and (Files.arg(1) = "--resume") then first := 3; end;
-    if (ARGC() >= 2) and ((Files.arg(1) = "--serve") or (Files.arg(1) = "--attach")) then
-        say("arno: ", Files.arg(1), " is not here yet\n");
-        return 2;
+    if (ARGC() >= 2) and (Files.arg(1) = "--serve") then
+        if ARGC() > 2 then say("arno: --serve takes no arguments\n", "", ""); return 2; end;
+        Astore.sweep;
+        return Aserve.run();
     end;
+    if (ARGC() >= 2) and (Files.arg(1) = "--attach") then return attach(); end;
     Buf.init(prompt, Heap.heap);
     for i := first to ARGC() - 1 do
         if i > first then Buf.add(prompt, ' '); end;

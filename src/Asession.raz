@@ -186,6 +186,22 @@ begin
     end;
 end;
 
+(* s's conversation given the title title, "" to clear it, and saved,
+   without a word to the human: a host asks. *)
+proc retitle*(var s: Session; title: []const U8);
+begin
+    Astore.setTitle(s.conv, title);
+    save(s);
+end;
+
+(* s's conversation given the system prompt text, "" for arno's own,
+   and saved, without a word to the human: a host asks. *)
+proc resystem*(var s: Session; text: []const U8);
+begin
+    Astore.setSystem(s.conv, text);
+    save(s);
+end;
+
 (* s's conversation changed other than by a turn: what its last request
    held is no longer known, and the front end shows it again. *)
 proc changed(var s: Session);
