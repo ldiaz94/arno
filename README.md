@@ -11,8 +11,8 @@ Conversations are kept on disk. It runs as a full-screen session, as a
 line-at-a-time filter, as a one-shot command, or as a server for
 another program (a word processor, an editor) to drive.
 
-The name is short, to be typed often. The mascot is a river otter: a
-small, practical animal that fetches things and brings them back. It holds a terminal, with its prompt, and wears a
+The name comes from "harness", the thing arno is, cut down to be
+typed often. The mascot is a river otter: a small, practical animal that fetches things and brings them back. It holds a terminal, with its prompt, and wears a
 teal scarf. [`doc/img/arno-mascot.png`](doc/img/arno-mascot.png) is the
 full picture; [`doc/img/logo.svg`](doc/img/logo.svg) is the emblem.
 
