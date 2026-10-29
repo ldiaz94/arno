@@ -389,7 +389,9 @@ begin
     Fmt.write(out, "\n\n# Stage\nYou work on a copy of the human's project, at {}; their own tree at {} is not " +
         "touched until they say so. Edit, move and remove in the copy are not asked about one by one: when " +
         "your turn ends, the human sees all you changed as one diff and applies it or not. So carry the work " +
-        "through to a checked result in this turn, and work only in the copy, never in {}.",
+        "through to a checked result in this turn, and work only in the copy, never in {}. The " +
+        "project's dependencies (node_modules, .venv) are the human's and read-only here, with no " +
+        "network: to add or change one, change the manifest and ask the human to install it.",
         [Fmt.str(Afence.stage), Fmt.str(Afence.root), Fmt.str(Afence.root)]);
     if Atools.shellOn() then
         Buf.str(out, " Where shell is on offer, build and run freely in the copy: it is sandboxed, and nothing it " +

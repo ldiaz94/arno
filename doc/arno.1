@@ -902,7 +902,15 @@ start-up:
 The copy starts from your tree as it is, not from the last commit: your
 uncommitted changes and new files come along, and the diff holds only
 the model's work.
-Ignored files, such as build output, stay behind.
+Ignored files, such as build output, stay behind, but for the
+dependencies:
+.Pa node_modules , .venv
+and
+.Pa venv
+at the top of your tree come into the copy as links to yours, left out
+of the diff.
+In the jail they are read-only, so an install fails there; the model is
+told to change the manifest and ask you to install.
 Applying is
 .Xr git-apply 1 ,
 all or nothing: if you changed one of the same lines meanwhile, nothing

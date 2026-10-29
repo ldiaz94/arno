@@ -401,10 +401,13 @@ one or more commits that build with `-Werror`.
      the Makefile that `check` runs (`Atools.confine`). Where the jail
      can't be made they run as before. A test that needs the network,
      or a cache in the home, fails staged; a profile may open that up.
-   - [ ] The ignored dependency directories (`node_modules`, `.venv`)
-     reach the copy read-only, and the prompt says installing is the
-     human's: no network in the jail, and an install's scripts are the
-     classic way in.
+   - [x] The ignored dependency directories (`node_modules`, `.venv`,
+     `venv`, at the top only) reach the copy as links to the human's
+     (`Astage.linkDeps`), left out of the diff, read-only in the jail;
+     the prompt says installing is the human's: no network in the
+     jail, and an install's scripts are the classic way in. Out of the
+     jail, where it can't be made, a link is written through, but the
+     file tools ask, since it leads outside the copy.
    - [ ] `/mode build`: a supervisor, the session's model, plans with
      the human first and has the plan approved, then hands its steps
      to workers by `delegate`, reviews and merges what they did, and

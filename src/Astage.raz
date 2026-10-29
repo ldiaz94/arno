@@ -25,7 +25,8 @@
    along (up adds them all to a throwaway index and starts the copy
    from that tree), so the model sees what they see, and the diff
    holds only the model's work. Ignored files, such as build output and
-   local settings, stay behind. Every git command here runs with hooks
+   local settings, stay behind, but for the dependencies (Deps), which
+   come as links to the human's. Every git command here runs with hooks
    turned off: making and comparing a copy is arno's business, not the
    repository's.
 
@@ -55,6 +56,12 @@ import Afence, Amsg, Arun, Astore, Buf, Str, Sys, Files, Heap, Fmt, Out, Strs :=
 const
     MaxOut = 64 * 1024 * 1024;   (* bytes of a diff kept: the largest offered *)
     MaxShort = 1024 * 1024;      (* bytes kept of what any other git command says *)
+    (* The directories of a project's dependencies, ignored by git, so
+       left behind by up, which the copy is given as links to the
+       human's own: its tests need them. In the jail they are read-only,
+       so an install fails there; installing is the human's. *)
+    Deps: []const []const U8 = ["node_modules", ".venv", "venv"];
+    Excluded: []const []const U8 = [":(exclude)node_modules", ":(exclude).venv", ":(exclude)venv"];   (* Deps as pathspecs *)
 
 var
     base: []U8;   (* the tree the copy's changes are counted from, a hash from Heap; "" with no copy *)
@@ -110,12 +117,24 @@ end;
 
 (* The tree dir's working tree holds, every file not ignored added to
    the index idx first ("" for dir's own): its hash made what tree
-   holds. false if git fails, why saying what it said. *)
+   holds. In the copy, the links to Deps are left out: git ignores a
+   directory's name, not a link's. false if git fails, why saying what
+   it said. *)
 proc snap(idx, dir: []const U8; var tree, why: Buf.Buf): BOOL;
+var args: Strs.Vec; i: INT;
 begin
     Buf.reset(tree);
     Buf.reset(why);
-    if git(idx, dir, ["add", "-A"], why) # 0 then return false; end;
+    Strs.init(args, Heap.heap);
+    defer Strs.done(args);
+    Strs.push(args, "add");
+    Strs.push(args, "-A");
+    if (LEN(Afence.stage) > 0) and (dir = Afence.stage) then
+        Strs.push(args, "--");
+        Strs.push(args, ".");
+        for i := 0 to LEN(Excluded) - 1 do Strs.push(args, Excluded[i]); end;
+    end;
+    if git(idx, dir, Strs.all(args), why) # 0 then return false; end;
     Buf.reset(why);
     if git(idx, dir, ["write-tree"], why) # 0 then return false; end;
     Buf.str(tree, Str.trim(Buf.bytes(why)));
@@ -174,6 +193,28 @@ begin
     _ := git("", Afence.root, ["worktree", "prune"], out);
 end;
 
+(* Each of Deps the human's tree holds, and the copy, at dir, doesn't,
+   given to the copy as a link to theirs. *)
+proc linkDeps(dir: []const U8);
+var theirs, ours: Buf.Buf; i: INT; f: Sys.Info; e: INT;
+begin
+    Buf.init(theirs, Heap.heap);
+    defer Buf.done(theirs);
+    Buf.init(ours, Heap.heap);
+    defer Buf.done(ours);
+    for i := 0 to LEN(Deps) - 1 do
+        Buf.reset(theirs);
+        Fmt.write(theirs, "{}/{}", [Fmt.str(Afence.root), Fmt.str(Deps[i])]);
+        Buf.reset(ours);
+        Fmt.write(ours, "{}/{}", [Fmt.str(dir), Fmt.str(Deps[i])]);
+        f, e := Sys.info(Buf.bytes(theirs));
+        if (e = 0) and f.dir then
+            _, e := Sys.linkInfo(Buf.bytes(ours));
+            if e # 0 then _ := Sys.symlink(Buf.bytes(theirs), Buf.bytes(ours)); end;
+        end;
+    end;
+end;
+
 (* Into a copy of the project, made the zone, and the working directory
    moved into it, at the same place in the tree. false if it can't be
    made, why saying why; true, nothing done, if it is up. *)
@@ -227,6 +268,7 @@ begin
         _ := git("", Afence.root, ["worktree", "remove", "--force", Buf.bytes(dir)], r);
         return false;
     end;
+    linkDeps(Buf.bytes(dir));
     setBase(Buf.bytes(tree));
     cwd, e := Sys.workDir();
     if e = 0 then
@@ -412,8 +454,8 @@ begin
     Buf.init(cache, Heap.heap);
     _ := sh("rm -rf build/stage; mkdir -p build/stage/cache build/stage/proj/src");
     _ := sh("cd build/stage/proj && git init -q && printf 'one\\n' > a.txt && printf 'two\\n' > src/b.txt && printf 'kept\\n' > src/k.txt && printf 'forced\\n' > f.o && " +
-        "printf '*.o\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t commit -q -m first && " +
-        "printf 'human\\n' >> a.txt && printf 'new\\n' > new.txt && printf 'obj\\n' > x.o");
+        "printf '*.o\\nnode_modules/\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t commit -q -m first && " +
+        "mkdir -p node_modules/dep && printf 'lib\\n' > node_modules/dep/i.js && printf 'human\\n' >> a.txt && printf 'new\\n' > new.txt && printf 'obj\\n' > x.o");
     Buf.str(top, sh("cd build/stage && pwd"));
     Buf.str(cache, Buf.bytes(top));
     Buf.str(cache, "/cache");
@@ -438,6 +480,8 @@ begin
     expect("a new file", sh("cat ../new.txt"), "new");
     expect("ignored files stay behind", sh("test -e ../x.o || echo gone"), "gone");
     expect("but a tracked one, ignored, comes", sh("cat ../f.o"), "forced");
+    expect("the dependencies, a link to the human's", sh("cat ../node_modules/dep/i.js && test -L ../node_modules && echo linked"),
+        "lib\nlinked");
     expect("their own tree untouched", sh("cd $TOP/proj && git status --short | tr '\\n' ' '"),
         "M a.txt ?? new.txt");
     n := changes(diff, why);
