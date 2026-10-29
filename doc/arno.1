@@ -586,6 +586,12 @@ Outside your home directory it looks in
 .Pa ~ ,
 .Pa ~/.claude ,
 the project root and the working directory.
+Last, it looks in its own directory for the project,
+.Pa ~/.local/share/arno/projects/ Ns Ar root ,
+where what other tools learned of a project is kept outside its
+repository;
+.Xr arno-claude 1
+writes Claude Code's memory and rules there.
 It lists what it found and asks once for the project whether to send them,
 and keeps your answer in
 .Pa context.json
@@ -1926,6 +1932,8 @@ Beside the messages,
 keeps a record of each turn.
 .It Pa ~/.local/share/arno/memory.json
 Remembered facts.
+.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md
+The project's context file kept outside its repository, read last.
 .It Pa ~/.local/share/arno/notes.json
 Each project's notes, by project root.
 .It Pa ~/.local/share/arno/tests.json

@@ -454,6 +454,30 @@ one or more commits that build with `-Werror`.
      `build_steps` is only a backstop. Its report line says what it
      cost. `/budget` shows or sets the turn's budget for the session,
      build mode's in build mode.
+   - [ ] A project's own context, kept by arno. What the human's other
+     tools learned of a project (Claude Code's memory and rules) can't
+     go in the repository, and notes are too small for it (30 lines of
+     200 characters). arno's directory gets `projects/ROOT/`, where an
+     AGENTS.md is read as a context file of the project, last, as the
+     most particular; @imports as any other's.
+   - [ ] arno-claude: Claude Code's knowledge, made arno's. A concha
+     script, installed with arno, run hourly by a systemd user timer
+     and by hand. For each repository Claude Code has worked in (the
+     cwd its sessions record), and every worktree of it, it writes
+     `projects/ROOT/AGENTS.md`: the memory entries
+     (`~/.claude/projects/NAME/memory`, NAME the repository's main
+     path with every character but a letter, digit or - made -), and
+     a line for each of `.claude/rules/*.md`, its `paths:` and where
+     to read it. One way: the file is arno-claude's alone, written
+     whole each run, to a temporary renamed over it. arno knows
+     nothing of Claude Code's files.
+   - [ ] Roles. A worker starts blank; Claude Code's started from
+     `.claude/agents/security.md` and knew the project's risks. A role
+     is `projects/ROOT/roles/NAME.md`, its first line its description;
+     `delegate` takes a `role`, the roles listed in its description,
+     and the role's text leads the brief. arno-claude writes the
+     project's and `~/.claude/agents`' as roles, their front matter
+     (Claude Code's tools and models) left out.
    - [ ] The human's words in every brief. An audit's lead turned "can a
      user reach data that isn't theirs" into briefs about "procedures
      that take an ID", and its workers, given the profile and sign-up

@@ -21,7 +21,10 @@
    ~/.claude, and in each directory from just below home down to the
    working one, so that a ~/lib/CLAUDE.md shared by the projects under
    it counts too; outside home, in the project's root and the working
-   directory. Each brings the files it names with @path, to five levels.
+   directory; last, arno's own for the project, projects/ROOT in its
+   directory, where what other tools learned of the project is kept
+   outside its repository (arno-claude writes it). Each brings the
+   files it names with @path, to five levels.
    They go general first, so that the more particular one comes later,
    where it reads as the last word. config's context_files decides
    whether they are read: ask (the default) says what was found and
@@ -290,7 +293,7 @@ end;
 (* The directories whose context files count, general first, pushed on
    l: home, ~/.claude, and each from just below home down to the
    working directory; outside home, the project's root and the working
-   directory instead. *)
+   directory instead; then arno's own for the project. *)
 proc places(const f: Found; var l: Strs.Vec);
 var b, wd: Buf.Buf; down: Strs.Vec; d: []const U8; all: [][]const U8; i: INT;
 begin
@@ -313,6 +316,11 @@ begin
     elsif d # f.home then
         Strs.push(l, Afence.zone);
         Strs.push(l, d);
+    end;
+    if Afence.rooted then
+        Buf.init(b, f.mem);
+        Fmt.write(b, "{}projects{}", [Fmt.str(Astore.dir()), Fmt.str(Afence.root)]);
+        Strs.push(l, Buf.bytes(b));
     end;
 end;
 
@@ -545,7 +553,7 @@ begin
 end;
 
 proc main*: INT;
-var p: Prompt; h: Atools.Human; l: Strs.Vec; b: Buf.Buf; dir: []const U8;
+var p: Prompt; h: Atools.Human; l: Strs.Vec; b, own: Buf.Buf; dir: []const U8; i: INT;
 begin
     Strs.init(l, Heap.heap);
     imports("see @a.md, and (@~/b.md).\n```\n@not\n```\n`@nor` @/c/d.md\nx@y", l);
@@ -597,6 +605,19 @@ begin
     _ := Astore.setKeyed(ContextKept, Afence.root, "");
     readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
     expect("context, nobody to ask", read(p), "");
+    (* arno's own for the project, last *)
+    Buf.init(own, Heap.heap);
+    Fmt.write(own, "{}projects{}/", [Fmt.str(Astore.dir()), Fmt.str(Afence.root)]);
+    for i := 1 to own.len - 1 do
+        if Buf.bytes(own)[i] = '/' then _ := Sys.makeDir(Buf.bytes(own)[0..i]); end;
+    end;
+    Buf.str(own, "AGENTS.md");
+    _ := Files.write(Buf.bytes(own), "kept by arno\n");
+    readContext(p, Buf.bytes(b), "yes", h, nil, Heap.heap);
+    if Str.find(Buf.bytes(p.context), "kept by arno") < Str.find(Buf.bytes(p.context), "particular") then
+        expect("arno's own, last", Buf.bytes(p.context), "it after the project's");
+    end;
+    _ := Sys.remove(Buf.bytes(own));
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;
