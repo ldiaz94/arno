@@ -199,10 +199,16 @@ In the stage it writes in the copy, never in your tree. It is offered only
 staged, so not in safe mode, and is off if the config says `shell = no`.
 
 **MCP servers.** A server of the Model Context Protocol, a program that
-offers tools over standard input and output, is added to the config, a
-line each:
+offers tools over standard input and output, or a URL that offers them
+over HTTP, is added to the config, a line each:
 
     mcp = files npx -y @modelcontextprotocol/server-filesystem /home/me/work
+    mcp = linear https://mcp.linear.app/mcp
+    mcp_token.linear = pass linear/mcp
+
+A server at a URL that needs a login is sent the first line that its
+`mcp_token.NAME` command prints, as a bearer token, so the secret stays
+in your password store.
 
 Its tools reach the model as `NAME_TOOL`, and every call asks first,
 with the arguments shown. A server is somebody else's program: the
@@ -254,7 +260,7 @@ calls, and asks again with their results, until it answers with none.
 `Aprompt` makes the system prompt from its sections; `Aahead` tells the
 model what it would else spend its first steps finding out; `Amemory`
 keeps the facts you asked it to; `Aprice` knows what a model costs;
-`Amcp` brings the tools of MCP servers.
+`Amcp` brings the tools of MCP servers, programs or URLs.
 
 **5. One session, many ways in.** `Asession` is the conversations of
 one run and the commands typed between turns. `Aboard` is the
@@ -309,6 +315,9 @@ by `make loc`.
 - **The jail beyond x86_64.** It needs Linux 5.12 and x86_64.
 - **MCP's pages and non-text.** `tools/list` is read to its first page,
   and content that is not text shows as `[type]`.
+- **MCP's OAuth login.** A server at a URL that answers 401 is not
+  attached; a token from `mcp_token.NAME` is the only way in, until
+  `/mcp login` comes.
 - **An editor's buffer list for `@` completion.** The `buffers` verb is
   in `arno-peer(5)`, but arno does not ask it.
 - **Asks in a one-shot or a plain session.** Only a terminal's arno

@@ -1,4 +1,5 @@
-(* Amcp: tools from MCP servers, over standard input and output.
+(* Amcp: tools from MCP servers, over standard input and output or
+   over HTTP.
 
    MCP, the Model Context Protocol, is a way for a program like arno
    to offer a model tools it need not carry itself. A server is any
@@ -8,8 +9,26 @@
        arno  -- {"jsonrpc":"2.0","id":1,"method":"initialize",...} -->  server
        arno  <-- {"jsonrpc":"2.0","id":1,"result":{...}} -------------  server
 
-   attach starts a server, shakes hands (initialize, then the
-   notification initialized) and asks tools/list; each tool it names is
+   Or a server is a URL, and each message is an HTTP POST to it (MCP's
+   "streamable HTTP"), each over a connection of its own:
+
+       POST URL   Mcp-Session-Id, MCP-Protocol-Version, Authorization
+                  {"jsonrpc":"2.0","id":2,"method":"tools/list",...}
+       200        application/json: the answer
+                  or text/event-stream: events, data: {json} each, of
+                  which the answer is the one with the request's id
+
+   The session's id comes in initialize's answer, and goes with each
+   message after, with the version initialize agreed; a 404 to one
+   means the server forgot the session, and arno shakes hands again,
+   once, and asks again. A token from the config goes as Authorization:
+   Bearer; a 401 refuses the server, whose WWW-Authenticate, how it
+   wants a login, is kept (challenge). stop sends DELETE, to end the
+   session.
+
+   attach starts a server, or attachUrl names one; then each shakes
+   hands (initialize, then the notification initialized) and asks
+   tools/list; each tool it names is
    then offered to the model as SERVER_TOOL, the server's name from the
    config first, so that two servers, or a server and a built-in, never
    offer one name; a byte a provider would not take in a name becomes _,
@@ -26,7 +45,9 @@
    and kills the group of any left. A server that does not answer when
    it starts is given up on after startWait ms; a started server's call
    can be stopped by the human, and a late answer to it is passed by on
-   the next call, as its id is not the one asked for. Writing to a server
+   the next call, as its id is not the one asked for. Over HTTP the
+   stop is heard when it breaks into the wait, as ^C does, and after
+   each piece of an event stream. Writing to a server
    that has ended relies on SIGPIPE being ignored, as Awire's HTTP has it.
 
    A result's content blocks are joined: a text block as it is, any
@@ -34,22 +55,30 @@
    was there; a server's own isError makes the result start with
    "error".
 
-   Depends on Awire (for Tool), Amsg (quote and compact), rjson's Json.
-   Leaves out the rest of the protocol: pagination of tools/list, other
-   content than text, resources and prompts, a server's requests of
-   arno, and servers over HTTP. Asking the human before a call is the
+   Depends on Awire (for Tool, and its HTTPS client), Amsg (quote and
+   compact), rjson's Json, rnet's Http. Leaves out the rest of the
+   protocol: pagination of tools/list, other content than text,
+   resources and prompts, a server's requests of arno, and over HTTP
+   the stream a GET opens and resuming a broken one; and a login by
+   OAuth, which a 401 asks for. Asking the human before a call is the
    caller's. *)
 module Amcp;
-import Awire, Amsg, Json, Buf, Str, Sys, Fmt, Heap, Out, Rt, Servers := Vec(Server),
+import Awire, Amsg, Json, Http, Buf, Str, Sys, Fmt, Heap, Out, Rt, Servers := Vec(Server),
     Belt := Vec(Awire.Tool), Origins := Vec(Origin);
 import SYSTEM;
 
 type
-    (* A server arno started. *)
+    (* A server arno started, or one at a URL. *)
     Server = record
         name: []const U8;   (* the config's name for it, which prefixes its tools *)
-        pid: INT;           (* its process, and its group's; 0 once it has been waited for *)
-        rd, wr: INT;        (* its output, and its input *)
+        url: []const U8;        (* where it is, for one over HTTP; "" for a child *)
+        token: []const U8;      (* sent as Authorization: Bearer, or "" *)
+        session: []const U8;    (* the Mcp-Session-Id its initialize gave, or "" *)
+        protocol: []const U8;   (* the protocol's version its initialize agreed, or "" before *)
+        challenge: []const U8;  (* the WWW-Authenticate of its 401: how it wants a login *)
+        due: I64;           (* the time, on Sys.clock, an HTTP answer must come by; 0, none *)
+        pid: INT;           (* its process, and its group's; 0 once it has been waited for, and for a URL *)
+        rd, wr: INT;        (* its output, and its input; -1 for a URL *)
         seq: INT;           (* the id of the last request made of it *)
         pending: Buf.Buf;   (* what it wrote, of which the first used bytes are read *)
         used: INT;          (* how many of the bytes of pending have been read *)
@@ -74,6 +103,7 @@ const
 
 var
     servers: Servers.Vec;   (* every server attached, from Heap *)
+    refused: Servers.Vec;   (* every server at a URL refused with a 401, for a login *)
     belt: Belt.Vec;         (* every tool they offer *)
     origins: Origins.Vec;   (* where each tool of belt is from, in the same order *)
 
@@ -92,22 +122,29 @@ begin
     return true;
 end;
 
+(* The next whole line of s.pending into line, without its line feed;
+   false if there is none yet. *)
+proc cut(var s: Server; var line: Buf.Buf): BOOL;
+var i: INT; all: []U8;
+begin
+    all := Buf.bytes(s.pending);
+    i := Str.find(all[s.used..LEN(all)], "\n");
+    if i < 0 then return false; end;
+    Buf.reset(line);
+    Buf.str(line, all[s.used..s.used + i]);
+    INC(s.used, i + 1);
+    if s.used = LEN(all) then Buf.reset(s.pending); s.used := 0; end;
+    return true;
+end;
+
 (* The next line s wrote, into line, without its line feed. Gone if s
    ends first; Interrupted if stopped, asked every Slice ms, says so (it
    may be nil); "" if a line came. *)
 proc readLine(var s: Server; stopped: proc: BOOL; var line: Buf.Buf): []const U8;
-var i, n: INT; all: []U8;
+var n: INT;
 begin
     while true do
-        all := Buf.bytes(s.pending);
-        i := Str.find(all[s.used..LEN(all)], "\n");
-        if i >= 0 then
-            Buf.reset(line);
-            Buf.str(line, all[s.used..s.used + i]);
-            INC(s.used, i + 1);
-            if s.used = LEN(all) then Buf.reset(s.pending); s.used := 0; end;
-            return "";
-        end;
+        if cut(s, line) then return ""; end;
         if (stopped # nil) and stopped() then return Interrupted; end;
         if not Sys.ready(s.rd, Slice) then continue; end;
         n := Sys.read(s.rd, Buf.spare(s.pending, Chunk));
@@ -143,32 +180,286 @@ begin
     return true;
 end;
 
-(* The method of s asked with params, a JSON object, and the answer
-   waited for. true, and res the result as compact JSON; or false, and
-   res says what went wrong. *)
-proc request(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
-var q, line: Buf.Buf; id: [IdLen]U8; n: INT; why: []const U8; failed: BOOL;
+(* The JSON-RPC message of method with params, a JSON object, into q:
+   a request with id, or a notification if id is "" (and then params
+   may be "" too). *)
+proc message(var q: Buf.Buf; id, method, params: []const U8);
 begin
-    Buf.init(q, Heap.heap);
-    defer Buf.done(q);
-    Buf.init(line, Heap.heap);
-    defer Buf.done(line);
-    INC(s.seq);
-    id, n := Str.fromInt(s.seq);
-    Buf.str(q, "{\"jsonrpc\":\"2.0\",\"id\":");
-    Buf.str(q, id[0..n]);
+    Buf.str(q, "{\"jsonrpc\":\"2.0\"");
+    if LEN(id) > 0 then
+        Buf.str(q, ",\"id\":");
+        Buf.str(q, id);
+    end;
     Buf.str(q, ",\"method\":");
     Amsg.quote(q, method);
-    Buf.str(q, ",\"params\":");
-    Buf.str(q, params);
-    Buf.str(q, "}\n");
+    if LEN(params) > 0 then
+        Buf.str(q, ",\"params\":");
+        Buf.str(q, params);
+    end;
+    Buf.add(q, '}');
+end;
+
+(* The request q, with id, sent to s, a child, and its answer waited
+   for, as request does. *)
+proc ask(var s: Server; var q: Buf.Buf; id: []const U8; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
+var line: Buf.Buf; why: []const U8; failed: BOOL;
+begin
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    Buf.add(q, '\n');
     Buf.reset(res);
     if not send(s.wr, Buf.bytes(q)) then Buf.str(res, Gone); return false; end;
     while true do
         why := readLine(s, stopped, line);
         if LEN(why) > 0 then Buf.str(res, why); return false; end;
-        if answer(Buf.bytes(line), id[0..n], res, failed) then return not failed; end;
+        if answer(Buf.bytes(line), id, res, failed) then return not failed; end;
     end;
+end;
+
+(* HTTP *)
+
+(* The headers each message to s carries but its body's: the token,
+   the session and the protocol's version, those that s has; auth
+   holds the first. *)
+proc heads(const s: Server; var req: Http.Message; var auth: Buf.Buf);
+begin
+    if LEN(s.token) > 0 then
+        Buf.str(auth, "Bearer ");
+        Buf.str(auth, s.token);
+        _ := Http.add(req, "Authorization", Buf.bytes(auth));
+    end;
+    if LEN(s.session) > 0 then _ := Http.add(req, "Mcp-Session-Id", s.session); end;
+    if LEN(s.protocol) > 0 then _ := Http.add(req, "MCP-Protocol-Version", s.protocol); end;
+end;
+
+(* Why an exchange that failed with err failed, into res: Interrupted if
+   stopped says the human said to stop, as a stop that broke into its
+   wait makes it fail; false. *)
+proc failure(err: ERROR; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
+begin
+    Buf.reset(res);
+    if (stopped # nil) and stopped() then Buf.str(res, Interrupted); else Buf.str(res, MSG(err)); end;
+    return false;
+end;
+
+(* One line of an event stream, in line, taken: a data: line's text
+   added to data, the event's so far; a blank line ends the event,
+   which is then whether it is the answer to request id, as answer
+   finds it. Other lines (event:, id:, a comment) are passed by. *)
+proc take(var line, data: Buf.Buf; id: []const U8; var res: Buf.Buf; var failed: BOOL): BOOL;
+var text: []const U8; found: BOOL;
+begin
+    text := Buf.bytes(line);
+    if (LEN(text) > 0) and (text[LEN(text) - 1] = '\r') then text := text[0..LEN(text) - 1]; end;
+    if LEN(text) = 0 then
+        if data.len = 0 then return false; end;
+        found := answer(Buf.bytes(data), id, res, failed);
+        Buf.reset(data);
+        return found;
+    end;
+    if Str.hasPrefix(text, "data:") then
+        text := text[5..LEN(text)];
+        if (LEN(text) > 0) and (text[0] = ' ') then text := text[1..LEN(text)]; end;
+        if data.len > 0 then Buf.add(data, '\n'); end;
+        Buf.str(data, text);
+    end;
+    return false;
+end;
+
+(* The events of the stream rd read, a line at a time through
+   s.pending, until one is the answer to request id; "" then, or why
+   there is none. The stream's end ends its last line and event. *)
+proc events(var s: Server; var rd: Http.Reader; id: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var failed: BOOL): []const U8;
+var line, data: Buf.Buf; n: INT; err: ERROR; more: BOOL;
+begin
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    Buf.init(data, Heap.heap);
+    defer Buf.done(data);
+    Buf.reset(s.pending);
+    s.used := 0;
+    more := true;
+    while more do
+        n, err := Http.read(rd, Buf.spare(s.pending, Chunk));
+        INC(s.pending.len, n);
+        (* asked after each read, so that a stop that broke into the
+           wait, as ^C does, is heard at once *)
+        if (stopped # nil) and stopped() then return Interrupted; end;
+        if err # nil then return MSG(err); end;
+        more := n > 0;
+        if not more then Buf.str(s.pending, "\n\n"); end;
+        while cut(s, line) do
+            if take(line, data, id, res, failed) then return ""; end;
+        end;
+    end;
+    return Gone;
+end;
+
+(* Whether rsp, the head of the response to a message to s, is a
+   success; if not, why, into res: a 401, whose challenge s keeps; a
+   404 to a message with a session, which expired says the server has
+   forgotten; any other status. A session it names, as initialize's
+   does, s keeps. *)
+proc judge(var s: Server; const rsp: Http.Message; var res: Buf.Buf; var expired: BOOL): BOOL;
+var session: []const U8;
+begin
+    Buf.reset(res);
+    if rsp.status = 401 then
+        s.challenge := Amsg.keep(Http.header(rsp, "WWW-Authenticate"));
+        Fmt.write(res, "the server needs a login (401); set mcp_token.{}", [Fmt.str(s.name)]);
+        return false;
+    end;
+    if (rsp.status = 404) and (LEN(s.session) > 0) then
+        expired := true;
+        Buf.str(res, "the server forgot the session");
+        return false;
+    end;
+    if (rsp.status < 200) or (rsp.status > 299) then
+        Fmt.write(res, "HTTP {}", [Fmt.int(rsp.status)]);
+        return false;
+    end;
+    session := Http.header(rsp, "Mcp-Session-Id");
+    if (LEN(session) > 0) and (session # s.session) then s.session := Amsg.keep(session); end;
+    return true;
+end;
+
+(* body, a JSON-RPC message, posted to s, a server at a URL, and if
+   id is not "", the answer to request id waited for, as request does;
+   the answer is the body, or an event of the stream the body is.
+   expired says the server has forgotten s's session. *)
+proc post(var s: Server; body, id: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var expired: BOOL): BOOL;
+var cl: Http.Client; req, rsp: Http.Message; auth: Buf.Buf; rd: ^Http.Reader; err: ERROR; why: []const U8;
+    failed: BOOL;
+begin
+    expired := false;
+    failed := false;
+    Awire.initClient(cl);
+    defer Http.doneClient(cl);
+    cl.timeout := -1;   (* a call takes what it takes, until the human stops it *)
+    cl.deadline := s.due;
+    Http.init(req, Heap.heap);
+    defer Http.done(req);
+    Http.init(rsp, Heap.heap);
+    defer Http.done(rsp);
+    Buf.init(auth, Heap.heap);
+    defer Buf.done(auth);
+    req.method := "POST";
+    req.body := body;
+    _ := Http.add(req, "Content-Type", "application/json");
+    _ := Http.add(req, "Accept", "application/json, text/event-stream");
+    heads(s, req, auth);
+    rd, err := Http.open(cl, req, s.url, rsp);
+    if err # nil then return failure(err, stopped, res); end;
+    if not judge(s, rsp, res, expired) then return false; end;
+    if LEN(id) = 0 then return true; end;
+    if Str.hasPrefix(Http.header(rsp, "Content-Type"), "text/event-stream") then
+        why := events(s, rd^, id, stopped, res, failed);
+    else
+        err := Http.readWhole(rd^, rsp);
+        if err # nil then return failure(err, stopped, res); end;
+        why := "";
+        if not answer(Http.bodyOf(rsp), id, res, failed) then why := "the server gave no answer"; end;
+    end;
+    if LEN(why) > 0 then Buf.reset(res); Buf.str(res, why); return false; end;
+    return not failed;
+end;
+
+(* The DELETE that ends s's session, if it has one, with a short wait
+   for its answer, which is passed by. *)
+proc hangUp(const s: Server);
+var cl: Http.Client; req, rsp: Http.Message; auth: Buf.Buf;
+begin
+    if LEN(s.session) = 0 then return; end;
+    Awire.initClient(cl);
+    defer Http.doneClient(cl);
+    cl.deadline := Sys.clock() + I64(Grace * Step) * 1000000;
+    Http.init(req, Heap.heap);
+    defer Http.done(req);
+    Http.init(rsp, Heap.heap);
+    defer Http.done(rsp);
+    Buf.init(auth, Heap.heap);
+    defer Buf.done(auth);
+    req.method := "DELETE";
+    heads(s, req, auth);
+    _ := Http.fetch(cl, req, s.url, rsp);
+end;
+
+(* Both transports *)
+
+(* The method of s asked with params, a JSON object, and the answer
+   waited for, by s's transport: true, and res the result as compact
+   JSON; or false, and res says what went wrong, and expired whether
+   because the server forgot the session. *)
+proc exchange(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var expired: BOOL): BOOL;
+var q: Buf.Buf; id: [IdLen]U8; n: INT;
+begin
+    Buf.init(q, Heap.heap);
+    defer Buf.done(q);
+    INC(s.seq);
+    id, n := Str.fromInt(s.seq);
+    message(q, id[0..n], method, params);
+    expired := false;
+    if LEN(s.url) = 0 then return ask(s, q, id[0..n], stopped, res); end;
+    return post(s, Buf.bytes(q), id[0..n], stopped, res, expired);
+end;
+
+(* The notification method sent to s, whatever becomes of it. *)
+proc notify(var s: Server; method: []const U8);
+var q, res: Buf.Buf; expired: BOOL;
+begin
+    Buf.init(q, Heap.heap);
+    defer Buf.done(q);
+    Buf.init(res, Heap.heap);
+    defer Buf.done(res);
+    message(q, "", method, "");
+    if LEN(s.url) = 0 then
+        Buf.add(q, '\n');
+        _ := send(s.wr, Buf.bytes(q));
+    else
+        _ := post(s, Buf.bytes(q), "", nil, res, expired);
+    end;
+end;
+
+(* The protocol's version in res, initialize's result, which the
+   parse spoils; Version if it names none. *)
+proc versionOf(var res: Buf.Buf): []const U8;
+var d: Json.Doc; v: []const U8;
+begin
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.parse(SYSTEM.ADR(d), Buf.bytes(res)), "protocolVersion"));
+    if LEN(v) = 0 then return Version; end;
+    return Amsg.keep(v);
+end;
+
+(* Hands shaken with s: initialize asked, and the protocol's version
+   it agrees kept, then the notification initialized sent. false, and
+   res says why, if initialize fails. *)
+proc handshake(var s: Server; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
+var expired: BOOL;
+begin
+    if not exchange(s, "initialize", "{\"protocolVersion\":\"" + Version +
+            "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"arno\",\"version\":\"0.1\"}}", stopped, res, expired) then
+        return false;
+    end;
+    s.protocol := versionOf(res);
+    notify(s, "notifications/initialized");
+    return true;
+end;
+
+(* The method of s asked with params, as exchange asks it; a server
+   at a URL that has forgotten its session is given a new one, by
+   shaking hands again, and asked once more. *)
+proc request(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
+var ok, expired: BOOL;
+begin
+    ok := exchange(s, method, params, stopped, res, expired);
+    if expired then
+        s.session := "";
+        s.protocol := "";
+        if handshake(s, stopped, res) then ok := exchange(s, method, params, stopped, res, expired); end;
+    end;
+    return ok;
 end;
 
 (* Starting and stopping *)
@@ -215,10 +506,16 @@ end;
 
 (* s ended: its input closed, then, if it is still there after polls
    looks Step ms apart, its whole group killed (a launcher such as npx
-   may have started the real server under it); its output closed. *)
+   may have started the real server under it); its output closed. One
+   at a URL is asked to end its session. *)
 proc finish(var s: Server; polls: INT);
 var got, i: INT;
 begin
+    if LEN(s.url) > 0 then
+        hangUp(s);
+        Buf.done(s.pending);
+        return;
+    end;
     closeInput(s);
     for i := 1 to polls do
         if ended(s) then break; end;
@@ -250,6 +547,7 @@ begin
     end;
     for i := 0 to LEN(all) - 1 do finish(all[i], 0); end;
     Servers.reset(servers);
+    Servers.reset(refused);
     Belt.reset(belt);
     Origins.reset(origins);
 end;
@@ -334,17 +632,44 @@ begin
     return late;
 end;
 
-(* A server started by argv, called name, and its tools put on the belt.
-   "" if it is attached; else what went wrong, which names the server. *)
-proc attach*(name: []const U8; argv: [][]const U8): []const U8;
-var s: Server; res, why: Buf.Buf; ok: BOOL; params: []const U8;
+(* s, started or named, shaken hands with and asked its tools, which
+   are put on the belt, given startWait ms to answer; why is what went
+   wrong, after its name. A server refused for want of a login is kept
+   in refused. *)
+proc admit(var s: Server; var why: Buf.Buf): BOOL;
+var res: Buf.Buf; ok: BOOL;
 begin
     Buf.init(res, Heap.heap);
     defer Buf.done(res);
+    late := false;
+    startBy := Sys.clock() + I64(startWait) * 1000000;
+    s.due := startBy;
+    ok := handshake(s, startedLate, res) and request(s, "tools/list", "{}", startedLate, res);
+    s.due := 0;
+    if not ok then
+        if late then Buf.reset(res); Buf.str(res, "no answer in time"); end;
+        Buf.str(why, Buf.bytes(res));
+        finish(s, Grace);
+        if LEN(s.challenge) > 0 then Servers.push(refused, s); end;
+        return false;
+    end;
+    if offer(s, servers.len, Buf.bytes(res)) = 0 then
+        Buf.str(why, "offers no tool that is new");
+        finish(s, Grace);
+        return false;
+    end;
+    Servers.push(servers, s);
+    return true;
+end;
+
+(* A server started by argv, called name, and its tools put on the belt.
+   "" if it is attached; else what went wrong, which names the server. *)
+proc attach*(name: []const U8; argv: [][]const U8): []const U8;
+var s: Server; why: Buf.Buf;
+begin
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
-    Buf.str(why, name);
-    Buf.str(why, ": ");
+    Fmt.write(why, "{}: ", [Fmt.str(name)]);
     s := {name: Amsg.keep(name)};
     Buf.init(s.pending, Heap.heap);
     if not start(argv, s) then
@@ -352,27 +677,35 @@ begin
         Buf.str(why, "cannot start");
         return Amsg.keep(Buf.bytes(why));
     end;
-    params := "{\"protocolVersion\":\"" + Version + "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"arno\",\"version\":\"0.1\"}}";
-    late := false;
-    startBy := Sys.clock() + I64(startWait) * 1000000;
-    ok := request(s, "initialize", params, startedLate, res);
-    if ok then
-        _ := send(s.wr, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
-        ok := request(s, "tools/list", "{}", startedLate, res);
+    if admit(s, why) then return ""; end;
+    return Amsg.keep(Buf.bytes(why));
+end;
+
+(* The server at url, called name, sent token as a bearer's if it is
+   not "", and its tools put on the belt, as attach puts a child's. *)
+proc attachUrl*(name, url, token: []const U8): []const U8;
+var s: Server; why: Buf.Buf;
+begin
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Fmt.write(why, "{}: ", [Fmt.str(name)]);
+    s := {name: Amsg.keep(name), url: Amsg.keep(url), token: Amsg.keep(token), rd: -1, wr: -1};
+    Buf.init(s.pending, Heap.heap);
+    if admit(s, why) then return ""; end;
+    return Amsg.keep(Buf.bytes(why));
+end;
+
+(* How the server called name, refused with a 401, wants a login: its
+   WWW-Authenticate, where a login starts, the last refusal's; "" if no
+   such server was refused. *)
+proc challenge*(name: []const U8): []const U8;
+var i: INT; c: []const U8;
+begin
+    c := "";
+    for i := 0 to refused.len - 1 do
+        if Servers.all(refused)[i].name = name then c := Servers.all(refused)[i].challenge; end;
     end;
-    if not ok then
-        if late then Buf.reset(res); Buf.str(res, "no answer in time"); end;
-        Buf.str(why, Buf.bytes(res));
-        finish(s, Grace);
-        return Amsg.keep(Buf.bytes(why));
-    end;
-    if offer(s, servers.len, Buf.bytes(res)) = 0 then
-        Buf.str(why, "offers no tool that is new");
-        finish(s, Grace);
-        return Amsg.keep(Buf.bytes(why));
-    end;
-    Servers.push(servers, s);
-    return "";
+    return c;
 end;
 
 (* The tools the attached servers offer. *)
@@ -476,6 +809,46 @@ begin
     return Buf.bytes(b);
 end;
 
+var web: Server;   (* build/mcpstub http, a child that serves HTTP *)
+var at: Buf.Buf;   (* a URL of it *)
+
+(* The URL of path on web's port, the line it wrote, good until the
+   next call. *)
+proc url(port, path: []const U8): []const U8;
+begin
+    Buf.reset(at);
+    Fmt.write(at, "http://127.0.0.1:{}{}", [Fmt.str(port), Fmt.str(path)]);
+    return Buf.bytes(at);
+end;
+
+(* The checks over HTTP, against web, which they start and leave
+   running: a session, an event stream, a session forgotten, a login
+   wanted and a token. *)
+proc overHttp;
+var port: Buf.Buf; err: []const U8;
+begin
+    Buf.init(port, Heap.heap);
+    Buf.init(at, Heap.heap);
+    web := {};
+    Buf.init(web.pending, Heap.heap);
+    if not start(["build/mcpstub", "http"], web) or (LEN(readLine(web, nil, port)) > 0) then
+        expect("the HTTP server", "not started", "started");
+        return;
+    end;
+    err := attachUrl("web", url(Buf.bytes(port), "/mcp"), "");
+    expect("attach over HTTP", err, "");
+    expect("tools over HTTP", num(LEN(tools())), "16");
+    expect("an event stream", run("web_echo", "{\"text\":\"streamed\"}", nil), "streamed\n");
+    expect("a session forgotten", run("web_die", "{}", nil), "(no output)");
+    expect("a new session", run("web_echo", "{\"text\":\"again\"}", nil), "again\n");
+    err := attachUrl("lin", url(Buf.bytes(port), "/login"), "");
+    expect("a login wanted", err, "lin: the server needs a login (401); set mcp_token.lin");
+    expect("how", challenge("lin"), "Bearer realm=\"stub\"");
+    err := attachUrl("key", url(Buf.bytes(port), "/login"), "secret");
+    expect("a token", err, "");
+    expect("no server down", run("web_echo", "{\"text\":\"still\"}", nil), "still\n");
+end;
+
 (* Runs the checks; 0 if all hold. *)
 proc main*: INT;
 var t: []Awire.Tool; err: []const U8;
@@ -515,8 +888,10 @@ begin
     expect("after being stopped", run("stub_echo", "{\"text\":\"again\"}", nil), "again\n");
     expect("gone", run("stub_die", "{}", nil), "error: server gone");
     expect("gone for good", run("stub_echo", "{}", nil), "error: server gone");
+    overHttp();
     stop();
     expect("stopped all", num(LEN(tools())), "0");
+    finish(web, 0);
     if failed then return 1; end;
     return 0;
 end;
@@ -525,6 +900,7 @@ begin
     Servers.init(servers, Heap.heap);
     Belt.init(belt, Heap.heap);
     Origins.init(origins, Heap.heap);
+    Servers.init(refused, Heap.heap);
     startWait := 10000;
     _ := Rt.atExit(stop);   (* the servers end with the program, whichever way it ends *)
 end Amcp.

@@ -30,7 +30,8 @@
    human is asked once about the copy's changes (propose). A conversation
    taken up, by /load or --resume, brings back the work it left unapplied
    (carry). leave ends the session's stage. The MCP servers config
-   names are attached as the session starts (attachServers).
+   names are attached as the session starts (attachServers), one at a
+   URL with the token its mcp_token.NAME's command prints.
 
    /models asks the provider's server for its models, or else says
    arno's own list of them (Awire.known); what the server said is kept
@@ -86,6 +87,7 @@ type
 const
     Listed = 20;   (* conversations /list shows, and /load N counts in *)
     MaxTest = 50000;   (* bytes of a failed /test's output put to the model, the last *)
+    MaxToken = 16384;  (* bytes read of what an mcp_token command prints *)
 
 (* Staged as stage.json says of the project, else as config says; after init. *)
 proc stageStart(var s: Session); forward;
@@ -112,9 +114,36 @@ begin
     Afence.grant(Buf.bytes(b));
 end;
 
+(* The MCP server name at url attached, sent as its token the first
+   line of what mcp_token.NAME prints, if it is set: a command of the
+   human's own config, as only its global settings may set it. What
+   went wrong, which names the server, or "". *)
+proc attachUrl(const s: Session; name, url: []const U8): []const U8;
+var key, out: Buf.Buf; cmd, token: []const U8; status: INT;
+begin
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    Fmt.write(key, "mcp_token.{}", [Fmt.str(name)]);
+    cmd := Aconf.get(s.conf, Buf.bytes(key));
+    token := "";
+    if LEN(cmd) > 0 then
+        status := Arun.run(["sh", "-c", cmd], MaxToken, out);
+        if status # 0 then
+            Buf.reset(out);
+            Fmt.write(out, "{}: {} failed, exit {}", [Fmt.str(name), Fmt.str(Buf.bytes(key)), Fmt.int(status)]);
+            return Amsg.keep(Buf.bytes(out));
+        end;
+        token, _, _ := Str.cut(Buf.bytes(out), "\n");
+        token := Str.trim(token);
+    end;
+    return Amcp.attachUrl(name, url, token);
+end;
+
 (* The MCP servers config's mcp lines name, each a name and then the
-   command that runs it, attached; what goes wrong with one is shown, and
-   the rest are attached. *)
+   command that runs it, or its URL, attached; what goes wrong with one
+   is shown, and the rest are attached. *)
 proc attachServers(const s: Session);
 var value, name, word, rest, err: []const U8; argv: Strs.Vec; said: Buf.Buf; n: INT; ok: BOOL;
 begin
@@ -133,7 +162,12 @@ begin
             word, rest := Str.field(rest);
         end;
         if (LEN(name) > 0) and (LEN(Strs.all(argv)) > 0) then
-            err := Amcp.attach(name, Strs.all(argv));
+            word := Strs.all(argv)[0];
+            if Str.hasPrefix(word, "http://") or Str.hasPrefix(word, "https://") then
+                err := attachUrl(s, name, word);
+            else
+                err := Amcp.attach(name, Strs.all(argv));
+            end;
             if LEN(err) > 0 then
                 Buf.reset(said);
                 Buf.str(said, "mcp ");

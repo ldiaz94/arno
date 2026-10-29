@@ -531,6 +531,22 @@ one or more commits that build with `-Werror`.
      and keeps the queue, a second ^C clears it. A turn that ends on an
      error or a stop holds the queue until Enter. An attached viewer
      queues on the host, so every screen shows the same queue.
+   - [x] MCP over HTTP. `mcp = NAME URL`, the URL http:// or https://,
+     is a server over MCP's streamable HTTP (Amcp.attachUrl): each
+     message a POST, answered with JSON or an event stream whose event
+     with the request's id is the answer; Mcp-Session-Id from
+     initialize and MCP-Protocol-Version go with every message after,
+     a 404 to the session shakes hands again once, and stop sends
+     DELETE. `mcp_token.NAME = COMMAND`, only in the global settings,
+     runs once at attach and sends its first line as a bearer token. A
+     401 refuses the server with a message naming mcp_token.NAME, and
+     keeps its WWW-Authenticate (Amcp.challenge) for the login to come.
+     Each message has a connection of its own; the start wait is the
+     connection's deadline, and a stop is heard as for the model's
+     requests. Tested over loopback against test/Amcpstub.raz's http
+     mode.
+   - [ ] MCP login: OAuth through roauth (discovery, registration,
+     PKCE), tokens kept per server, `/mcp login NAME`.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
    - [x] Context files in an editor's sessions. `ask` was put once, at

@@ -23,7 +23,8 @@
 
    The keys the rest of arno reads (run, max_steps, mcp and the
    others, Known below, and those PREFIX.NAME for a prefix of Prefixed,
-   as check.unit and lsp.ts) are kept for it to ask by get. Any other is a
+   as check.unit and lsp.ts, or of Owned, as mcp_token.linear) are kept
+   for it to ask by get. Any other is a
    param of the provider, key=value, which a request carries if it
    knows it (temperature, top_p, max_tokens, anthropic_version ...),
    so that a provider's field needs no new key here.
@@ -35,8 +36,8 @@
    a key as the deepest section holding the root sets it, else as the
    settings before the first section, the global ones, set it: a whole
    value, never a list merged. Only the keys of one project (Sectioned,
-   and Prefixed's) may be set in a section; the provider's are for
-   every directory.
+   and Prefixed's) may be set in a section; the provider's, mcp and
+   mcp_token's are for every directory.
 
        provider = ollama-cloud     the global settings
        run = tiza man fd
@@ -91,6 +92,10 @@ const
        a section may set too: check.unit, check.fmt, lsp.ts *)
     Prefixed: []const []const U8 = ["check", "lsp"];
 
+    (* the prefixes of keys PREFIX.NAME that only the global settings
+       may set, as they run commands as the human: mcp_token.linear *)
+    Owned: []const []const U8 = ["mcp_token"];
+
 (* c made a configuration of nothing: the ollama preset. *)
 proc init*(var c: Conf);
 begin
@@ -130,16 +135,16 @@ begin
     c := {};
 end;
 
-(* Whether key is PREFIX.NAME for a prefix of Prefixed and a NAME of
+(* Whether key is PREFIX.NAME for a prefix of prefixes and a NAME of
    letters, digits, - and _. *)
-proc prefixed(key: []const U8): BOOL;
+proc prefixed(key: []const U8; prefixes: []const []const U8): BOOL;
 var i, j: INT; name: []const U8;
 begin
-    for i := 0 to LEN(Prefixed) - 1 do
-        if not Str.hasPrefix(key, Prefixed[i]) or (LEN(key) <= LEN(Prefixed[i]) + 1) or (key[LEN(Prefixed[i])] # '.') then
+    for i := 0 to LEN(prefixes) - 1 do
+        if not Str.hasPrefix(key, prefixes[i]) or (LEN(key) <= LEN(prefixes[i]) + 1) or (key[LEN(prefixes[i])] # '.') then
             continue;
         end;
-        name := key[LEN(Prefixed[i]) + 1..LEN(key)];
+        name := key[LEN(prefixes[i]) + 1..LEN(key)];
         for j := 0 to LEN(name) - 1 do
             if not Str.isLetter(name[j]) and not Str.isDigit(name[j]) and (name[j] # '-') and (name[j] # '_') then return false; end;
         end;
@@ -211,16 +216,23 @@ begin
 end;
 
 (* Whether key, valid or not, is PREFIX.something for a prefix of
-   Prefixed: arno's, and never a provider's parameter. *)
-proc ours(key: []const U8): BOOL;
+   prefixes. *)
+proc under(key: []const U8; prefixes: []const []const U8): BOOL;
 var i: INT;
 begin
-    for i := 0 to LEN(Prefixed) - 1 do
-        if Str.hasPrefix(key, Prefixed[i]) and (LEN(key) > LEN(Prefixed[i])) and (key[LEN(Prefixed[i])] = '.') then
+    for i := 0 to LEN(prefixes) - 1 do
+        if Str.hasPrefix(key, prefixes[i]) and (LEN(key) > LEN(prefixes[i])) and (key[LEN(prefixes[i])] = '.') then
             return true;
         end;
     end;
     return false;
+end;
+
+(* Whether key, valid or not, is PREFIX.something for a prefix of
+   Prefixed or Owned: arno's, and never a provider's parameter. *)
+proc ours(key: []const U8): BOOL;
+begin
+    return under(key, Prefixed) or under(key, Owned);
 end;
 
 (* The nth, from 0, of the names NAME of the keys prefix.NAME that
@@ -233,7 +245,7 @@ begin
     sect := Ints.all(c.sect);
     s := Sections.all(c.sections);
     for i := 0 to LEN(keys) - 1 do
-        if (s[sect[i]].rank < 0) or not prefixed(keys[i]) or not Str.hasPrefix(keys[i], prefix) then continue; end;
+        if (s[sect[i]].rank < 0) or not prefixed(keys[i], Prefixed) or not Str.hasPrefix(keys[i], prefix) then continue; end;
         seen := false;
         for j := 0 to i - 1 do
             if (keys[j] = keys[i]) and (s[sect[j]].rank >= 0) then seen := true; end;
@@ -295,7 +307,7 @@ begin
     for i := 0 to LEN(Known) - 1 do
         if key = Known[i] then return true; end;
     end;
-    return prefixed(key);
+    return prefixed(key, Prefixed) or prefixed(key, Owned);
 end;
 
 (* Whether a section may set key. *)
@@ -305,7 +317,7 @@ begin
     for i := 0 to LEN(Sectioned) - 1 do
         if key = Sectioned[i] then return true; end;
     end;
-    return prefixed(key);
+    return prefixed(key, Prefixed);
 end;
 
 (* The header line, [DIR], made the section the settings after it go
@@ -446,6 +458,7 @@ begin
         trust = make
         provider = claude
         temperature = 0.5
+        mcp_token.web = pass web
         [~/r/arno]
         run = raz
         workers = fast cheap:cloud
@@ -462,6 +475,7 @@ begin
     expect("the section warnings", Buf.bytes(c.warnings),
         "config: provider is for every directory, set before the first [section]\n" +
         "config: temperature is for every directory, set before the first [section]\n" +
+        "config: mcp_token.web is for every directory, set before the first [section]\n" +
         "config: [w] names no directory, as [/dir] or [~/dir]; its settings are passed by\n" +
         "config: [~/w/webapp names no directory, as [/dir] or [~/dir]; its settings are passed by\n");
     apply(c, "/nowhere/home/r/arno");
@@ -524,7 +538,8 @@ begin
         max_steps = 60
         run = tiza man fd
         mcp = files npx files-server /tmp
-        mcp = web uvx web-server
+        mcp = web https://mcp.example.com/mcp
+        mcp_token.web = pass web/mcp
         effort = kimi-k3:high deepseek-v4.1-flash:cloud:low
         anthropic_version = 2023-06-01
         timeout = 600
@@ -546,7 +561,8 @@ begin
     expect("a key kept for the rest of arno", get(c, "run"), "tiza man fd");
     expect("a key not set", get(c, "worker"), "");
     v, ok := nth(c, "mcp", 1);
-    expect("the second mcp", v, "web uvx web-server");
+    expect("the second mcp", v, "web https://mcp.example.com/mcp");
+    expect("an mcp server's token command", get(c, "mcp_token.web"), "pass web/mcp");
     _, ok := nth(c, "mcp", 2);
     if ok then expect("a third mcp", "there is one", "none"); end;
     expect("the warnings", Buf.bytes(c.warnings),

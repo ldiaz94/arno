@@ -1331,17 +1331,23 @@ asks nothing.
 MCP, the Model Context Protocol, lets
 .Nm
 offer a model tools it does not carry.
-A server is any program that speaks it over standard input and output.
+A server is any program that speaks it over standard input and output,
+or a URL that speaks it over HTTP.
 Each
 .Cm mcp
 line of the configuration,
-.Ql "mcp = NAME COMMAND ARG ..." ,
+.Ql "mcp = NAME COMMAND ARG ..."
+or
+.Ql "mcp = NAME URL" ,
 names one; the
 .Ql =
-is required.
+is required, and a URL starts with
+.Ql http://
+or
+.Ql https:// .
 .Nm
-starts each as the session begins, shakes hands, asks for its tools, and
-offers each as
+starts each command as the session begins, shakes hands, asks for its
+tools, and offers each as
 .Ar NAME Ns _ Ns Ar TOOL ,
 in every mode.
 A byte a provider would not take in a name becomes
@@ -1356,6 +1362,23 @@ not the server; its standard error is thrown away.
 A server that does not answer when it starts is given up on.
 What goes wrong with one is shown, and the rest are attached.
 At the end every server is closed and any left is killed.
+.Pp
+A server at a URL is sent each message as a POST, and answers with JSON
+or with a stream of events; the session it gives at the start goes with
+every message after, and is ended at the end.
+A session the server has forgotten is begun again, once.
+If the server needs a login,
+.Cm mcp_token. Ns Ar NAME
+gives a command, run once as the server is attached, whose first line
+of output is sent as
+.Ql "Authorization: Bearer" ;
+so a secret stays in a password store:
+.Bd -literal -offset indent
+mcp              = linear https://mcp.linear.app/mcp
+mcp_token.linear = pass linear/mcp
+.Ed
+.Pp
+A server that answers 401 is not attached, and says it needs a login.
 .Pp
 A result's content blocks are joined: a text block as it is, any other
 as its type in brackets.
@@ -1726,7 +1749,14 @@ override a kept answer.
 .Cm no
 turns off the map or the prefetch; both are on by default.
 .It Cm mcp
-A name, then the command that runs an MCP server; one line for each.
+A name, then the command that runs an MCP server, or its URL; one line
+for each.
+.It Cm mcp_token. Ns Ar NAME
+A command whose first line of output is the bearer token for the MCP
+server
+.Ar NAME
+at a URL; see
+.Sx MCP .
 .It Cm price
 .Ar in out Op Ar cached :
 dollars per million tokens of input, output and input read from the
@@ -1795,7 +1825,7 @@ A section may set only what is one project's:
 and
 .Cm lsp. Ns Ar ext .
 The provider's keys, and
-.Cm mcp
+.Cm mcp , mcp_token. Ns Ar NAME
 and the rest, are for every project, and a section that sets one is
 warned of.
 A section that names no directory is warned of too, and its settings are

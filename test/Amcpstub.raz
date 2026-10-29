@@ -1,7 +1,7 @@
 (* Amcpstub: an MCP server for Amcp's test, over standard input and
-   output, JSON-RPC a line each way.
+   output, JSON-RPC a line each way; or over HTTP.
 
-       build/mcpstub [quit | mute | odd]
+       build/mcpstub [quit | mute | odd | http]
 
    It answers initialize (after a notification, which a client must
    pass by) and tools/list with eight tools: echo, which says its text
@@ -14,9 +14,19 @@
    its first request; given mute, it never answers; given odd, it
    answers tools/list with an error.
 
-   Depends on Amsg (quote) and rjson's Json. *)
+   Given http, it serves HTTP on a port of 127.0.0.1 it chooses, and
+   writes the port's number on a line. Each POST to /mcp is a message:
+   initialize answers with a new session's Mcp-Session-Id, and any
+   other message without that session, or without MCP-Protocol-Version
+   2025-06-18, is refused, 404 or 400; a notification gets 202. echo
+   answers as an event stream, after a comment, a notification and a
+   request of its own with the same id, the answer's data on two lines;
+   die forgets the session. /login is the same, but 401 without the
+   token secret, its WWW-Authenticate Bearer realm="stub".
+
+   Depends on Amsg (quote), rjson's Json and rnet's Http. *)
 module Amcpstub;
-import Amsg, Json, Buf, Sys, Files, Heap;
+import Amsg, Json, Http, Buf, Str, Sys, Files, Heap;
 import SYSTEM;
 
 const
@@ -27,8 +37,12 @@ const
         "{\"name\":\"picture\"},{\"name\":\"empty\"},{\"name\":\"hang\"},{\"name\":\"die\"}," +
         "{\"name\":\"a-name-that-is-far-too-long-for-any-provider-to-take-as-it-is-given\"}," +
         "{\"name\":\"odd.name?\"}]}";
+    Hello = "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"stub\"}}";
+    (* what comes before echo's answer over HTTP: a comment, a notification and a request with its id *)
+    Before = ": the answer follows\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n";
 
 var out, body: Buf.Buf;   (* the line to write; a result being made *)
+var http: BOOL;           (* whether over HTTP, where an answer is kept in out, not written *)
 
 (* s written to standard output. *)
 proc say(s: []const U8);
@@ -56,7 +70,8 @@ begin
     say(",\"method\":\"ping\"}\n");
 end;
 
-(* The answer to request id: a result, or an error if message is not "". *)
+(* The answer to request id: a result, or an error if message is not
+   "", into out, and written but over HTTP. *)
 proc reply(id, result, message: []const U8);
 begin
     Buf.reset(out);
@@ -71,7 +86,7 @@ begin
         Buf.str(out, result);
         Buf.str(out, "}\n");
     end;
-    say(Buf.bytes(out));
+    if not http then say(Buf.bytes(out)); end;
 end;
 
 (* The answer to a call of tool name, with the text argument. *)
@@ -97,15 +112,11 @@ begin
 end;
 
 (* Serves standard input until it ends. *)
-proc main*: INT;
-var d: Json.Doc; line: Buf.Buf; v, p: Json.Value; id, method, mode: []const U8;
+proc lines(mode: []const U8): INT;
+var d: Json.Doc; line: Buf.Buf; v, p: Json.Value; id, method: []const U8;
 begin
-    mode := "";
-    if ARGC() > 1 then mode := Files.arg(1); end;
     if not Json.init(SYSTEM.ADR(d), Heap.heap) then return 1; end;
     Buf.init(line, Heap.heap);
-    Buf.init(out, Heap.heap);
-    Buf.init(body, Heap.heap);
     while readLine(line) do
         Json.reset(SYSTEM.ADR(d));
         v := Json.parse(SYSTEM.ADR(d), Buf.bytes(line));
@@ -121,7 +132,7 @@ begin
         | "initialize":
             ping(id);
             say("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n");
-            reply(id, "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"serverInfo\":{\"name\":\"stub\"}}", "");
+            reply(id, Hello, "");
         | "tools/list":
             ping(id);
             if mode = "odd" then reply(id, "", "no tools here"); else reply(id, Tools, ""); end;
@@ -132,6 +143,123 @@ begin
         end;
     end;
     return 0;
+end;
+
+(* HTTP *)
+
+var server: Http.Server;   (* what serves it *)
+var session: Buf.Buf;      (* the session's id; "" once forgotten *)
+var sessions: INT;         (* how many have been made *)
+var doc: Json.Doc;         (* a message read *)
+var text, sent: Buf.Buf;   (* a message's body, as it is parsed; a stream sent *)
+
+(* echo's answer, out, as an event stream into sent, after Before and
+   a request with id; its data cut in two lines after its first comma. *)
+proc stream(id: []const U8);
+var at: INT; a: []const U8;
+begin
+    Buf.reset(sent);
+    Buf.str(sent, Before);
+    Buf.str(sent, "data: {\"jsonrpc\":\"2.0\",\"id\":");
+    Buf.str(sent, id);
+    Buf.str(sent, ",\"method\":\"ping\"}\r\n\r\ndata: ");
+    a := Str.trim(Buf.bytes(out));
+    at := Str.find(a, ",") + 1;
+    Buf.str(sent, a[0..at]);
+    Buf.str(sent, "\ndata: ");
+    Buf.str(sent, a[at..LEN(a)]);
+    Buf.str(sent, "\n\n");
+end;
+
+(* Whether req may be answered, as its target, token, session and
+   version say; if not, res says why. initialize makes a new session. *)
+proc admitted(const req: Http.Message; var res: Http.Message; method: []const U8): BOOL;
+var digits: [20]U8; n: INT;
+begin
+    if (req.target = "/login") and (Http.header(req, "Authorization") # "Bearer secret") then
+        res.status := 401;
+        _ := Http.add(res, "WWW-Authenticate", "Bearer realm=\"stub\"");
+        return false;
+    end;
+    if method = "initialize" then
+        INC(sessions);
+        digits, n := Str.fromInt(sessions);
+        Buf.reset(session);
+        Buf.add(session, 's');
+        Buf.str(session, digits[0..n]);
+        _ := Http.add(res, "Mcp-Session-Id", Buf.bytes(session));
+        return true;
+    end;
+    if Http.header(req, "Mcp-Session-Id") # Buf.bytes(session) then res.status := 404; return false; end;
+    if Http.header(req, "MCP-Protocol-Version") # "2025-06-18" then res.status := 400; return false; end;
+    return true;
+end;
+
+(* A POST answered, as the module's opening says. *)
+proc serve(const req: Http.Message; var res: Http.Message; _arg: ^U8);
+var v, p: Json.Value; id, method, name: []const U8;
+begin
+    Buf.reset(text);
+    Buf.str(text, req.body);
+    Json.reset(SYSTEM.ADR(doc));
+    v := Json.parse(SYSTEM.ADR(doc), Buf.bytes(text));
+    id := Json.text(SYSTEM.ADR(doc), Json.member(SYSTEM.ADR(doc), v, "id"));
+    method := Json.text(SYSTEM.ADR(doc), Json.member(SYSTEM.ADR(doc), v, "method"));
+    p := Json.member(SYSTEM.ADR(doc), v, "params");
+    if not admitted(req, res, method) then return; end;
+    if LEN(id) = 0 then res.status := 202; return; end;
+    name := Json.text(SYSTEM.ADR(doc), Json.member(SYSTEM.ADR(doc), p, "name"));
+    match method of
+    | "initialize": reply(id, Hello, "");
+    | "tools/list": reply(id, Tools, "");
+    | "tools/call":
+        if name = "die" then
+            Buf.reset(session);
+            reply(id, "{\"content\":[]}", "");
+        else
+            call(id, name, Json.text(SYSTEM.ADR(doc), Json.get(SYSTEM.ADR(doc), p, "arguments.text")));
+        end;
+    | else: reply(id, "", "no such method");
+    end;
+    if (method = "tools/call") and (name = "echo") then
+        stream(id);
+        _ := Http.add(res, "Content-Type", "text/event-stream");
+        res.body := Buf.bytes(sent);
+    else
+        _ := Http.add(res, "Content-Type", "application/json");
+        res.body := Buf.bytes(out);
+    end;
+end;
+
+(* Serves HTTP, as the module's opening says; it never returns but if
+   it can't. *)
+proc web: INT;
+var listening, n: INT; digits: [20]U8;
+begin
+    http := true;
+    if not Json.init(SYSTEM.ADR(doc), Heap.heap) then return 1; end;
+    Buf.init(session, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Buf.init(sent, Heap.heap);
+    listening := Sys.listenTcp("127.0.0.1", 0);
+    if listening < 0 then return 1; end;
+    digits, n := Str.fromInt(Sys.localPort(listening));
+    say(digits[0..n]);
+    say("\n");
+    Http.initServer(server, serve, nil);
+    _ := Http.serve(SYSTEM.ADR(server), listening);
+    return 1;
+end;
+
+proc main*: INT;
+var mode: []const U8;
+begin
+    mode := "";
+    if ARGC() > 1 then mode := Files.arg(1); end;
+    Buf.init(out, Heap.heap);
+    Buf.init(body, Heap.heap);
+    if mode = "http" then return web(); end;
+    return lines(mode);
 end;
 
 end Amcpstub.
