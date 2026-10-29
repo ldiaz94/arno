@@ -45,6 +45,9 @@ mkdir -p "$dir/config/arno" "$dir/data"
 export XDG_CONFIG_HOME := "$dir/config"
 export XDG_DATA_HOME := "$dir/data"
 export XDG_CACHE_HOME := "$dir/cache"
+// an editor of the human's, dwa running, must not answer the test's arno
+mkdir -m 700 -p "$dir/run"
+export XDG_RUNTIME_DIR := `realpath "$dir/run"`
 failures := 0
 server := ''
 

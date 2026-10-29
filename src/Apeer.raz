@@ -418,9 +418,13 @@ end;
    changes and all, into text; false if there is no editor, or the file isn't
    open there. Not retried while the editor is busy for long. *)
 proc contents*(p: []const U8; stopped: proc: BOOL; var text: Buf.Buf): BOOL;
+var at: INT;
 begin
     if not usable then return false; end;
-    return call(["read", p], stopped, text) = Status.ok;
+    at := text.len;
+    if call(["read", p], stopped, text) = Status.ok then return true; end;
+    text.len := at;   (* the editor's no, "not open", is not the file's text *)
+    return false;
 end;
 
 (* Whether an editor answers: a connection made and let go, which an
@@ -1072,7 +1076,9 @@ begin
     refresh(true);
     expect("read of an open file", yes(contents("/open/f", nil, text)), "yes");
     expect("its text", Buf.bytes(text), "unsaved\n");
+    Buf.reset(text);
     expect("read of a file not open", yes(contents("/other", nil, text)), "no");
+    expect("leaves no word of the editor's", Buf.bytes(text), "");
     busyLeft := 2;
     expect("a busy editor is called again", called(["edit", "/open/f", "a", "b", ""], line), "1 1 replaced");
     busyLeft := 100;
