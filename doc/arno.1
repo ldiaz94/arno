@@ -398,6 +398,16 @@ says of itself, and the mode.
 .It Ic /mode Op Ar name
 Show or set the mode; see
 .Sx MODES .
+.It Ic /budget Op Ar dollars
+Show or set, for this session, the dollars at list price a turn may
+spend, workers included:
+.Cm build_budget
+in
+.Cm build
+mode,
+.Cm turn_budget
+in the others.
+0 is no limit.
 .It Ic /model Op Ar name
 Show or set the model.
 .It Ic /models
@@ -827,7 +837,17 @@ newest four) and the tools of the session less
 .Ic delegate
 and
 .Ic merge .
-Only its report goes back to the model.
+Only its report goes back to the model, with the steps it took and
+what it cost.
+A worker is paid out of the turn's budget: the step's
+.Cm budget
+if it names one, at most what the turn has left, and all of that if
+not; a turn with nothing left delegates nothing.
+Its budget, not
+.Cm max_steps ,
+is what bounds it, as a cheaper model takes more steps; it stops after
+.Cm build_steps
+all the same.
 Staged, each worker is numbered and works in a copy of its own, made
 from the stage's copy as it stands, beside it in the cache: its edits
 are not asked about, and its
@@ -1544,7 +1564,9 @@ Bytes of history past which old tool results are cut, 200000 by default;
 .It Cm turn_budget
 Dollars at list price one turn may spend, workers included; past it the
 model is asked to say where it got to and stop.
-Unset, or 0, is no limit.
+Unset, or 0, is no limit;
+.Ic /budget
+changes it for a session.
 .It Cm build_steps
 Steps of tool calls a turn takes in
 .Cm build

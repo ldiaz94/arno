@@ -114,6 +114,7 @@ const
         {name: "/rename", args: "TITLE", desc: "name this conversation"},
         {name: "/system", args: "[TEXT|-]", desc: "show or set this conversation's own system prompt, - for arno's"},
         {name: "/mode", args: "[NAME]", desc: "show or set the mode"},
+        {name: "/budget", args: "[DOLLARS]", desc: "show or set what a turn may spend, workers included"},
         {name: "/model", args: "[NAME]", desc: "show or set the model"},
         {name: "/models", args: "", desc: "list the provider's models"},
         {name: "/provider", args: "[NAME]", desc: "show or set the provider"},

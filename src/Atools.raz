@@ -63,7 +63,7 @@
    removed. Leaves out the images read shows as pictures, which come
    with the screen. *)
 module Atools;
-import Aprice, Afence, Afind, Apeer, Arun, Alsp, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+import Aprice, Afence, Afind, Apeer, Arun, Alsp, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Math, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
@@ -294,7 +294,9 @@ const
             `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
             `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
             `"done_when":{"type":"string","description":"how the worker knows the step is done"},` +
-            `"model":{"type":"string","description":"the worker's model, one of those listed; the default if left out"}},` +
+            `"model":{"type":"string","description":"the worker's model, one of those listed; the default if left out"},` +
+            `"budget":{"type":"number","description":"dollars the worker may spend, out of what your turn has left; ` +
+            `all of that if left out, so give each of several workers its share"}},` +
             `"required":["task","done_when"]}`},
         {name: "plan",
          description: "Put your plan to the human for approval. It is written to plan.md in the scratch " +
@@ -452,6 +454,16 @@ begin
     n, ok := Str.toInt(str(a, key));
     if not ok then return def; end;
     return INT(n);
+end;
+
+(* The argument key as a real number, from a number or a string that
+   holds one; def if it is neither. *)
+proc real*(const a: Args; key: []const U8; def: F64): F64;
+var x: F64; ok: BOOL;
+begin
+    x, ok := Math.toReal(str(a, key));
+    if not ok then return def; end;
+    return x;
 end;
 
 (* text parsed into a, in d, with what a keeps from mem: false if it is no object, nor a string

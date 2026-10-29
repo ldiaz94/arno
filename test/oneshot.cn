@@ -185,9 +185,16 @@ expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
   'the tool said: error: there is no worker model')
 configure(['worker = small'])
 expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
-  'the tool said: worker (small) report (1 steps):')
+  'the tool said: worker (small) report (1 steps, $0.00):')
 holds('a worker', 'out', '2 messages')
 holds('a worker', 'err', 'arno: worker small: look')
+
+// a worker's steps are not the lead's max_steps: a cheap model takes many
+configure(['worker = small', 'max_steps = 2'])
+expect(['call', 'delegate', '{"task":"always read {\"path\":\"LICENSE\",\"limit\":1}","done_when":"read"}'], 0, 'out',
+  'the tool said: worker (small) report (')
+grep -qF 'cap of 2 steps' "$dir/out"
+if status = 0 then fail('a worker stopped at max_steps')
 configure([])
 
 // a call made again refused, and four steps of them a hand-back,
@@ -290,6 +297,12 @@ holds('/mode', 'err', 'arno: modes: chat review improve pair')
 holds('/tools', 'out', 'read  ')
 grep -q '^edit  ' "$dir/out"
 if status = 0 then fail('review mode offers edit')
+
+// the budget, set for the mode at hand; build mode has its own
+answering([], '/budget 2.5' + #10 + '/budget' + #10 + '/mode build' + #10 + '/budget' + #10 + '/budget x')
+holds('/budget', 'out', 'budget: $2.50 a turn in chat mode, workers included')
+holds('/budget', 'out', 'budget: $3.00 a turn in build mode')
+holds('/budget', 'err', 'usage: /budget [DOLLARS]')
 
 // build mode: no change before a plan is approved; a plan declined
 // with a reason, then approved, and kept in the scratch directory
@@ -426,7 +439,7 @@ task := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"two\",\"new\":\"four\"
 again := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"five\"}","done_when":"edited"}'
 stagedRun([], 'call delegate ' + task + #10 + 'call merge {"worker":1,"apply":true}' + #10 + 'y' + #10 +
   'call delegate ' + again + #10 + 'call merge {"worker":2,"apply":false}' + #10 + 'call merge {"worker":2,"apply":true}')
-holds('a worker in a copy', 'out', 'the tool said: worker 1 (small) report (2 steps):')
+holds('a worker in a copy', 'out', 'the tool said: worker 1 (small) report (2 steps, $0.00):')
 holds('a worker in a copy', 'out', 'Worker 1 changed 1 file(s), in a copy of its own:')
 holds('a worker in a copy', 'out', '+1 -1 a.txt')
 holds('a worker merged', 'out', 'the tool said: merged: worker 1')

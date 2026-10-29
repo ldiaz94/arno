@@ -806,6 +806,31 @@ begin
     say(s, Buf.bytes(s.out));
 end;
 
+(* /budget: the dollars a turn may spend, workers included, in the mode
+   at hand, build mode having its own; with an amount, set for the
+   session, 0 for no limit. *)
+proc budget(var s: Session; arg: []const U8);
+var x: F64; ok, build: BOOL;
+begin
+    build := s.agent.mode = Aprompt.build;
+    if LEN(arg) > 0 then
+        x, ok := Math.toReal(arg);
+        if not ok or (x < 0.0) then
+            fail(s, "usage: /budget [DOLLARS], 0 for no limit");
+            return;
+        end;
+        if build then s.agent.buildBudget := x; else s.agent.budget := x; end;
+    end;
+    if build then x := s.agent.buildBudget; else x := s.agent.budget; end;
+    if x = 0.0 then
+        Fmt.write(s.out, "budget: no limit a turn in {} mode", [Fmt.str(Aprompt.Modes[INT(s.agent.mode)].name)]);
+    else
+        Fmt.write(s.out, "budget: ${} a turn in {} mode, workers included", [Fmt.real(x, 2),
+            Fmt.str(Aprompt.Modes[INT(s.agent.mode)].name)]);
+    end;
+    say(s, Buf.bytes(s.out));
+end;
+
 (* name kept as s's named, the provider's model or name: what it named
    before is given back. *)
 proc keep(var s: Session; name: []const U8): []U8;
@@ -1168,6 +1193,7 @@ begin
     | "/rename": rename(s, arg);
     | "/system": system(s, arg);
     | "/mode": mode(s, arg);
+    | "/budget": budget(s, arg);
     | "/model": model(s, arg);
     | "/models": listModels(s);
     | "/provider": provider(s, arg);

@@ -56,7 +56,10 @@
    /load brings it back, and a worker, over a conversation of its own,
    is not asked for one: it was delegated to after one. A turn in
    build mode is bounded by build_steps and build_budget in place of
-   max_steps and turn_budget, as it carries out a whole plan.
+   max_steps and turn_budget, as it carries out a whole plan. A
+   worker's turn is bounded by the budget delegate gives it, out of
+   what the lead's turn has left, with build_steps only a backstop:
+   a cheap model takes many steps for little.
 
    Each call's work is done in an arena, reset after the call: its
    result is copied into the conversation, which keeps its own memory
@@ -101,6 +104,8 @@ type
         worker*: []const U8;        (* the model a worker runs on when none is named; "" for no workers *)
         mode*: Aprompt.Mode;
         working: BOOL;        (* the turn under way is a worker's *)
+        stopAt: F64;          (* spent at which the lead's turn has used its budget; 0 for no limit *)
+        allowance: F64;       (* dollars the worker under way may spend; 0 for no limit *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
         forks: INT;           (* the number of the last worker given a copy of its own *)
         prompt*: Aprompt.Prompt;
@@ -419,7 +424,7 @@ end;
    to out, and kept with its task for the next workers' briefs. One
    that stopped at its cap, its steps used, is said to have. false if
    there was no report. The report line names the worker's model. *)
-proc told(var a: Agent; n: INT; model, task: []const U8; const w: Astore.Conv; var out: Buf.Buf): BOOL;
+proc told(var a: Agent; n: INT; model, task: []const U8; const w: Astore.Conv; cost: F64; var out: Buf.Buf): BOOL;
 var msgs: []Amsg.Msg; report: []const U8; b: Buf.Buf;
 begin
     msgs := Msgs.all(w.msgs);
@@ -431,13 +436,16 @@ begin
     Fmt.write(b, "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
     Strs.push(a.reports, Amsg.keep(Buf.bytes(b)));
     (* a turn at its cap hands back once more, a step past it *)
-    if steps(w) > a.maxSteps then
+    if steps(w) > a.buildSteps then
         Fmt.write(out, "The worker stopped at its cap of {} steps; its report says where it got to: brief the " +
-            "next worker to go on from there.\n", [Fmt.int(a.maxSteps)]);
+            "next worker to go on from there.\n", [Fmt.int(a.buildSteps)]);
+    elsif (a.allowance > 0.0) and (cost > a.allowance) then
+        Fmt.write(out, "The worker stopped at its budget of ${}; its report says where it got to: brief the " +
+            "next worker to go on from there.\n", [Fmt.real(a.allowance, 2)]);
     end;
     Buf.str(out, "worker ");
     if n > 0 then Fmt.write(out, "{} ", [Fmt.int(n)]); end;
-    Fmt.write(out, "({}) report ({} steps):\n{}", [Fmt.str(model), Fmt.int(steps(w)), Fmt.str(report)]);
+    Fmt.write(out, "({}) report ({} steps, ${}):\n{}", [Fmt.str(model), Fmt.int(steps(w)), Fmt.real(cost, 2), Fmt.str(report)]);
     return true;
 end;
 
@@ -495,7 +503,7 @@ end;
    report, or why there is none, and what it changed added to out. *)
 proc delegate(var a: Agent; args: []const U8; var out: Buf.Buf);
 var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; copy: Astage.Work; m: ^Amsg.Msg;
-    b, why: Buf.Buf; task, model: []const U8; n: INT; err: ERROR;
+    b, why: Buf.Buf; task, model: []const U8; n: INT; err: ERROR; budget, before: F64;
 begin
     if a.working then
         Buf.str(out, "error: a worker cannot delegate");
@@ -530,6 +538,17 @@ begin
         Fmt.write(out, "error: {} is not a worker model; the models are: {}", [Fmt.str(model), Fmt.str(Atools.workerModels())]);
         return;
     end;
+    (* a worker is paid out of the lead's turn: what it asks for, at most
+       what the turn has left, and all of that when it asks for nothing *)
+    budget := Atools.real(p, "budget", 0.0);
+    if a.stopAt > 0.0 then
+        if a.spent >= a.stopAt then
+            Buf.str(out, "error: your turn's budget is spent, so no worker can be paid for: say where you got to");
+            return;
+        end;
+        if (budget <= 0.0) or (budget > a.stopAt - a.spent) then budget := a.stopAt - a.spent; end;
+    end;
+    a.allowance := budget;
     Astore.init(w, "worker");
     defer Astore.done(w);
     m := Msgs.add(w.msgs);
@@ -551,8 +570,9 @@ begin
     Fmt.write(b, "worker {}: {}", [Fmt.str(model), Fmt.str(task[0..min(LEN(task), 120)])]);
     note(a, Buf.bytes(b));
     Buf.reset(why);
+    before := a.spent;
     err := work(a, w, model, why);
-    if not told(a, n, model, task, w, out) then
+    if not told(a, n, model, task, w, a.spent - before, out) then
         Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w))]);
         if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(why))]); end;
     end;
@@ -771,14 +791,23 @@ begin
         for i := 0 to a.reports.len - 1 do Str.free(Heap.heap, Strs.all(a.reports)[i]); end;
         Strs.reset(a.reports);
     end;
-    (* build mode's lead carries out a whole plan in a turn *)
+    (* build mode's lead carries out a whole plan in a turn; a worker is
+       bounded by the budget delegate gave it, its steps only a backstop,
+       as a cheap model takes many *)
     most := a.maxSteps;
     allowed := a.budget;
-    if (a.mode = Aprompt.build) and not a.working then
+    if a.working then
+        most := a.buildSteps;
+        allowed := a.allowance;
+    elsif a.mode = Aprompt.build then
         most := a.buildSteps;
         allowed := a.buildBudget;
     end;
     start := a.spent;
+    if not a.working then
+        a.stopAt := 0.0;
+        if allowed > 0.0 then a.stopAt := start + allowed; end;
+    end;
     failing := 0;
     floor := 0;
     err := nil;

@@ -446,6 +446,14 @@ one or more commits that build with `-Werror`.
      first of `workers` if unset. The worker's turn runs, is priced and
      gets its effort as that model's (`prov.model`), and its report
      line names the model. Build mode tells the lead to weigh each step.
+   - [x] Workers bounded by money, not steps. A cheap worker ran out of
+     `max_steps` long before its budget, so a flash model's survey
+     stopped half done. A worker's turn is now bounded by the budget
+     `delegate` gives it (`budget`, in dollars), out of what the lead's
+     turn has left (`Agent.stopAt`) and all of that if it names none;
+     `build_steps` is only a backstop. Its report line says what it
+     cost. `/budget` shows or sets the turn's budget for the session,
+     build mode's in build mode.
    - [ ] Workers in parallel.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
