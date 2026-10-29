@@ -154,13 +154,14 @@ begin
 end;
 
 (* The human's answer to question, after detail: one of keys, the first
-   byte of a line of standard input; 'n' for any other, or for none. *)
+   byte of a line of standard input; 'n' for any other, 0 at its end. *)
 proc asked(question, detail, keys: []const U8): U8;
-var s: []const U8;
+var s: []const U8; more: BOOL;
 begin
     breakLine;
     say(detail, question, " [y/N] ");
-    s, _ := readLine();
+    s, more := readLine();
+    if not more then return 0; end;
     if (LEN(s) > 0) and (Str.find(keys, s[0..1]) >= 0) then return s[0]; end;
     return 'n';
 end;

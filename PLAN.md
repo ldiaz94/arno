@@ -421,8 +421,12 @@ one or more commits that build with `-Werror`.
    - [ ] Workers in parallel.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
-   - [ ] Context files in an editor's sessions: find whether `ask`
-     goes unanswered there; remember the answer for each project root.
+   - [x] Context files in an editor's sessions. `ask` was put once, at
+     start-up, to a human who might not look, and its `n` (also for no
+     answer) held for the session only. The answer is now kept per
+     project (`context.json`), asked once, a turn with nobody to ask
+     uses it, and with none kept says the files are left out. No
+     answer (end of input, a gone screen) is 0, not kept.
    - [ ] `fetch` and `grep` give at most so much, and say where more is.
    - [ ] Profiles: sections of the config for a directory and what is
      under it, setting `run`, `trust`, `stage` and `context_files`, in

@@ -523,10 +523,15 @@ Outside your home directory it looks in
 .Pa ~ ,
 .Pa ~/.claude ,
 the project root and the working directory.
-It lists what it found and asks once whether to send them; if you say
-yes, they go into every request of the session as standing
+It lists what it found and asks once for the project whether to send them,
+and keeps your answer in
+.Pa context.json
+beside the conversations.
+If you say yes, they go into every request as standing
 instructions, the more general first and the more specific last, where
 they read as the last word.
+With no answer kept and nobody to ask, as in an editor's
+session in the background, they are left out, and arno says so.
 Set
 .Cm context_files
 to skip the question.
@@ -1448,8 +1453,12 @@ the default,
 .Cm yes
 or
 .Cm no :
-whether to ask before sending the context files, send them without
-asking, or never look for them.
+whether to ask before sending the context files (once for the project;
+the answer is kept), send them without asking, or never look for them.
+.Cm yes
+and
+.Cm no
+override a kept answer.
 .It Cm project_map , prefetch
 .Cm no
 turns off the map or the prefetch; both are on by default.

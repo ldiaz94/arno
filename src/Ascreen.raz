@@ -222,7 +222,7 @@ end;
 (* The human asked question, after detail: one of keys. *)
 proc ask(q, detail, k: []const U8): U8;
 begin
-    if gone() then return 'n'; end;
+    if gone() then return 0; end;
     post(asked, q, detail, k, false);
     return answer();
 end;

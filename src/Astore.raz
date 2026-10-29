@@ -30,11 +30,12 @@
    it, but back to where a character starts, so that it is UTF-8,
    which rjson must read; and the list holds only conversations, the
    files save writes, not arno's other files beside them (notes.json,
-   stage.json, tests.json), which that arno listed untitled.
+   stage.json, tests.json, context.json), which that arno listed untitled.
 
    Beside the conversations, it keeps a text for each project in a file
    of them (keyed): tests.json, the project's test command, and
-   stage.json, whether its stage is on. It says where the stage's copy
+   stage.json, whether its stage is on, and context.json, whether
+   its context files are read. It says where the stage's copy
    lives, a directory a process (stageDir), and sweeps the copies of
    processes that are gone.
 
@@ -186,7 +187,8 @@ end;
 
 (* What a file of name in arno's directory keeps for each project, a
    text by its root: tests.json, a project's test command, and
-   stage.json, whether its stage is on. Each is an object of roots to
+   stage.json, whether its stage is on, and context.json, whether its
+   context files are read. Each is an object of roots to
    texts, read and written whole. *)
 
 (* The text name keeps for root, added to b; "" if it keeps none, or

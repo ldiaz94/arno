@@ -245,8 +245,9 @@ begin
 end;
 
 (* The human asked question, after detail: one of keys. The host is
-   asked; the refusal, the first key that isn't y, is what a cancel,
-   the host's going, or an answer that is none of keys all mean. *)
+   asked; the refusal, the first key that isn't y, is what a cancel or
+   an answer that is none of keys mean. A host gone, or that can't be
+   asked, is nobody there: 0, which no answer kept takes for one. *)
 proc ask(question, detail, keys: []const U8): U8;
 var no: U8; i: INT;
 begin
@@ -255,7 +256,7 @@ begin
         if keys[i] # 'y' then no := keys[i]; break; end;
     end;
     Buf.reset(reason);
-    if not askHost("ask", question, detail, keys) then return no; end;
+    if not askHost("ask", question, detail, keys) then return 0; end;
     Thread.lock(mutex);
     Buf.str(reason, Buf.bytes(slotWhy));
     i := 0;

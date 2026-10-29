@@ -25,7 +25,8 @@
    They go general first, so that the more particular one comes later,
    where it reads as the last word. config's context_files decides
    whether they are read: ask (the default) says what was found and
-   asks, once; yes reads them; no never looks. Asking is the default
+   asks, once for the project, the answer kept in context.json; yes
+   reads them; no never looks. Asking is the default
    because a context file comes with the repository, not from the
    human, and what it names, which may be anywhere on the disk, goes to
    the provider with every request: the list shows what that would be
@@ -62,6 +63,7 @@ type
     end;
 
 const
+    ContextKept = "context.json";   (* where the answer about the context files is kept, by project *)
     Modes*: [4]ModeInfo = [
         {name: "chat", hint: "questions, explanations, small edits",
             text: "Mode: chat. Answer what is asked: explain, compare, discuss. Do not propose patches, " +
@@ -292,10 +294,38 @@ end;
 
 (* The prompt *)
 
+(* Whether the context files found are to be read, as mode says: yes
+   does, no doesn't, ask goes by the human's answer kept for this
+   project, else asks through h and keeps it. With no answer kept and
+   nobody to ask, they are left out, said through say. A no, kept, is
+   said too, so that the human knows what to change. *)
+proc wanted(mode: []const U8; const h: Atools.Human; say: Aahead.Said): BOOL;
+var b: Buf.Buf; kept: []const U8; key: U8;
+begin
+    if mode = "yes" then return true; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    kept := Astore.keyed(ContextKept, Afence.root, b);
+    if kept = "yes" then return true; end;
+    if kept = "" then
+        key := 0;
+        if h.ask # nil then key := h.ask("read them into every request?", "", "yn"); end;
+        if key = 'y' then _ := Astore.setKeyed(ContextKept, Afence.root, "yes"); return true; end;
+        if key # 0 then
+            _ := Astore.setKeyed(ContextKept, Afence.root, "no");
+        elsif say # nil then
+            say("context files left out: nobody to ask; ask once in a terminal, or set context_files in config", h.arg);
+            return false;
+        end;
+    end;
+    if say # nil then say("context files left out; context_files = yes in config reads them", h.arg); end;
+    return false;
+end;
+
 (* The context files of home, the home directory, made p's section, as
    mode says; the human asked through h if it says ask. *)
 proc readContext(var p: Prompt; home, mode: []const U8; const h: Atools.Human; say: Aahead.Said; mem: ^Mem.Allocator);
-var f: Found; dirs: Strs.Vec; b: Buf.Buf; yes: BOOL;
+var f: Found; dirs: Strs.Vec; b: Buf.Buf;
 begin
     Buf.reset(p.context);
     if mode = "no" then return; end;
@@ -312,12 +342,7 @@ begin
     Buf.init(b, mem);
     Fmt.write(b, "context files: {}", [Fmt.str(Buf.bytes(f.names))]);
     if say # nil then say(Buf.bytes(b), h.arg); end;
-    yes := mode = "yes";
-    if not yes and (h.ask # nil) then yes := h.ask("read them into every request?", "", "yn") = 'y'; end;
-    if not yes then
-        if say # nil then say("context files left out", h.arg); end;
-        return;
-    end;
+    if not wanted(mode, h, say) then return; end;
     Buf.str(p.context, "# Context files\nStanding instructions from the human's context files. Follow " +
         "them. Where two disagree, the later one is more specific and wins.\n\n");
     Buf.str(p.context, Str.trimRight(Buf.bytes(f.text)));
@@ -477,6 +502,19 @@ begin
     failed := true;
 end;
 
+(* "read" if p's context files were read, else "". *)
+proc read(const p: Prompt): []const U8;
+begin
+    if p.context.len > 0 then return "read"; end;
+    return "";
+end;
+
+(* The human who answers yes. *)
+proc yes(_question, _detail, _keys: []const U8): U8;
+begin
+    return 'y';
+end;
+
 proc no(_question, _detail, _keys: []const U8): U8;
 begin
     return 'n';
@@ -523,6 +561,18 @@ begin
         "  - likes tea [me,x]");
     readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
     expect("context, declined", Buf.bytes(p.context), "");
+    h := {ask: yes};
+    readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
+    expect("context, declined stays", read(p), "");
+    _ := Astore.setKeyed(ContextKept, Afence.root, "");
+    readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
+    expect("context, accepted", read(p), "read");
+    h := {ask: nil};
+    readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
+    expect("context, accepted is kept", read(p), "read");
+    _ := Astore.setKeyed(ContextKept, Afence.root, "");
+    readContext(p, Buf.bytes(b), "ask", h, nil, Heap.heap);
+    expect("context, nobody to ask", read(p), "");
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;
