@@ -134,9 +134,9 @@ begin
 end;
 
 (* The models the lead may hand a step to: config's workers, on the
-   provider, and config's worker, the one used when a step names none;
-   the first of workers if worker isn't set, and worker is one of them
-   if it is. *)
+   provider, the first of them used when a step names none. worker,
+   the one model of older configs, is still read: the default when
+   set, and added to workers if it isn't one of them. *)
 proc useWorkers(var s: Session);
 var list: Buf.Buf; w, rest: []const U8; listed: BOOL;
 begin

@@ -134,6 +134,7 @@ these are the ones to start with:
 | `/list [WORD]`, `/load N\|ID\|WORD` | find and resume a saved conversation |
 | `/mode [NAME]` | `chat`, `review`, `improve`, `pair` or `build`; `review` and `improve` offer no editing tools; `build` plans with you, then leads workers through the approved plan |
 | `/model [NAME]`, `/models`, `/provider [NAME]` | switch, or list, what answers |
+| `/budget [DOLLARS]` | what a turn may spend, workers included; 0 for no limit |
 | `/compact [FOCUS]` | replace the history with a summary |
 | `/tools`, `/usage` | the tools on offer; tokens and cost |
 | `/test [COMMAND]` | set and run the project's test command |
@@ -168,7 +169,7 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
-`delegate` (when the config names a `worker` or `workers`; each step picks its model), `merge` (a staged worker's diff, into the copy or
+`delegate` (when the config names `workers`; each step picks its model, the first by default), `merge` (a staged worker's diff, into the copy or
 dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited

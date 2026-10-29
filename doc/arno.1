@@ -509,8 +509,8 @@ though it may look around with
 Then it hands each step to a worker with
 .Ic delegate ,
 or does it itself when no
-.Cm worker
-is set, reviews what each did, merges or drops each staged worker's
+.Cm workers
+are set, reviews what each did, merges or drops each staged worker's
 diff with
 .Ic merge ,
 runs
@@ -826,12 +826,11 @@ see
 Offered only while an editor is reachable.
 .It Ic delegate
 One self-contained step of a larger job, given to a worker: a
-conversation of its own on the model
-.Cm worker
-or the one the step's
+conversation of its own on the model the step's
 .Cm model
-names (one of
-.Cm workers ) ,
+names, one of
+.Cm workers ,
+or the first of them,
 with the brief, the reports of earlier workers of the turn (the
 newest four) and the tools of the session less
 .Ic delegate
@@ -868,8 +867,6 @@ step, a cheaper one for mechanical work.
 A model not listed is refused.
 The report names the model.
 Offered only when
-.Cm worker
-or
 .Cm workers
 is set.
 .It Ic merge
@@ -1537,22 +1534,18 @@ sent in place of
 when that model is the one in use.
 .It Cm mode
 The mode a session starts in.
-.It Cm worker
-The model
-.Ic delegate Ns 's
-workers run on, on the same provider.
-It is the model a step runs on when it names none; if only
-.Cm workers
-is set, the first of them.
 .It Cm workers
 The models the lead may hand a step to, blank-separated, on the same
-provider; each step names one.
+provider; a step names one, or runs on the first.
+List them cheapest first, so that a step names a dearer one only when
+it needs it.
 Without
-.Cm worker
-and
 .Cm workers
 .Ic delegate
 is not offered.
+The older
+.Cm worker ,
+one model, the one a step runs on when it names none, is still read.
 Each model has its own
 .Cm effort
 entry, if any.

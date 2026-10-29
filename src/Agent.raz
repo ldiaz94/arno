@@ -510,7 +510,7 @@ begin
         return;
     end;
     if LEN(a.worker) = 0 then
-        Buf.str(out, "error: there is no worker model; the human sets one with worker or workers = MODEL in the config");
+        Buf.str(out, "error: there is no worker model; the human sets them with workers = MODEL ... in the config");
         return;
     end;
     if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;

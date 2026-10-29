@@ -183,14 +183,14 @@ holds('a search', 'out', 'a%20b')
 configure([])
 expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
   'the tool said: error: there is no worker model')
-configure(['worker = small'])
+configure(['workers = small'])
 expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
   'the tool said: worker (small) report (1 steps, $0.00):')
 holds('a worker', 'out', '2 messages')
 holds('a worker', 'err', 'arno: worker small: look')
 
 // a worker's steps are not the lead's max_steps: a cheap model takes many
-configure(['worker = small', 'max_steps = 2'])
+configure(['workers = small', 'max_steps = 2'])
 expect(['call', 'delegate', '{"task":"always read {\"path\":\"LICENSE\",\"limit\":1}","done_when":"read"}'], 0, 'out',
   'the tool said: worker (small) report (')
 grep -qF 'cap of 2 steps' "$dir/out"
@@ -434,7 +434,7 @@ if `cat "$proj/b.txt"` <> 'made' then fail('the file shell made was not applied'
 // staged, a worker edits in a copy of its own and hands back a diff,
 // which reaches the lead's copy only by merge: merged, the turn's diff
 // holds it; dropped, nothing changes; and no worker's copy is left
-configure(['safety = auto', 'worker = small'])
+configure(['safety = auto', 'workers = small'])
 task := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"two\",\"new\":\"four\"}","done_when":"edited"}'
 again := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"five\"}","done_when":"edited"}'
 stagedRun([], 'call delegate ' + task + #10 + 'call merge {"worker":1,"apply":true}' + #10 + 'y' + #10 +
