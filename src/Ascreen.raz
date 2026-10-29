@@ -24,8 +24,8 @@
    input, C-d on an empty input ends arno, S-TAB steps to the next
    mode, TAB opens or closes the newest call and C-o every one, Page Up
    and Page Down, and S-<up> and S-<down>, scroll the transcript, C-l
-   draws the screen again. A question takes one of its keys; C-c, Esc
-   or RET is no, and C-c stops the turn too. After a no to a change,
+   draws the screen again. A question takes one of its keys; C-c, C-d,
+   Esc or RET is no, and C-c stops the turn too. After a no to a change,
    the rule asks why, a line that RET gives and C-g or Esc leaves empty.
 
    The lines sent are kept (Ahistory). <up> and C-p on the input's
@@ -948,9 +948,10 @@ begin
     fill(s, LEN(s));
 end;
 
-(* A key while a question is asked: one of its keys answers, C-c, Esc
-   and RET are no, C-c stopping the turn too, and the keys that move
-   the transcript move it. *)
+(* A key while a question is asked: one of its keys answers, C-c, C-d,
+   Esc and RET are no, C-c stopping the turn too, and the keys that
+   move the transcript move it. C-d is no rather than what it is on
+   the input, as a turn runs and it would delete a character there. *)
 proc answering(ev: TuiKeys.Event);
 var k: INT;
 begin
@@ -958,7 +959,7 @@ begin
     if (k >= 'A') and (k <= 'Z') then k := k - 'A' + 'a'; end;
     if (k > 0) and (k < 128) and (Str.find(Buf.bytes(keys), [U8(k)]) >= 0) then
         reply(U8(k));
-    elsif (k = TuiKeys.ctrl('c')) or (k = TuiKeys.Esc) or (k = TuiKeys.Enter) then
+    elsif (k = TuiKeys.ctrl('c')) or (k = TuiKeys.ctrl('d')) or (k = TuiKeys.Esc) or (k = TuiKeys.Enter) then
         if k = TuiKeys.ctrl('c') then stop(1); end;
         reply(no);
     else
@@ -993,7 +994,12 @@ begin
         end;
         return;
     end;
-    if question.len > 0 then answering(ev); return; end;
+    (* drawn after, as after any key: a scroll would wait for the next output *)
+    if question.len > 0 then
+        answering(ev);
+        refresh();
+        return;
+    end;
     if Acopy.active() then
         if not Acopy.key(ev) then
             Buf.str(flash, Acopy.saying());
