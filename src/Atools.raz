@@ -36,7 +36,8 @@
    asked about unless trusted, as Readers are; check runs the project's
    test command, the human's, without asking; shell runs a command line the model writes, asking nothing,
    since the sandbox is the fence: Ajail's namespaces, no network, only
-   the stage's copy (Afence.stage) and $ARNO_SCRATCH writable. Its exit
+   the stage's copy (Afence.stage) and $ARNO_SCRATCH writable, unless
+   config's jail_net and jail_rw open more. Its exit
    status comes first, as check's does, then the end of the output; a
    command that runs past its timeout is killed, and so is one that
    writes past 4 MB.
@@ -304,11 +305,23 @@ const
 
 var
     shellOff: BOOL;         (* config's shell is no, which takes the tool away *)
+    jailNet: BOOL;          (* config's jail_net is yes: the jail keeps the network *)
+    jailRw: []const U8;     (* config's jail_rw: more directories the jail leaves writable, split by blanks *)
 
 (* config's shell: whether the shell tool may be offered. *)
 proc shellEnabled*(on: BOOL);
 begin
     shellOff := not on;
+end;
+
+(* config's jail_net and jail_rw: whether the jail of check, run and
+   shell keeps the network, and the directories, split by blanks, it
+   leaves writable beyond the copy and the scratch, which a test may
+   want for a cache in the home. *)
+proc jail*(net: BOOL; rw: []const U8);
+begin
+    jailNet := net;
+    jailRw := rw;
 end;
 
 (* Whether shell can be offered now: config allows it, the session is
@@ -845,20 +858,44 @@ begin
     return Buf.bytes(b);
 end;
 
-(* j put in the jail while the session is staged (safety auto) and the
-   kernel allows it, the copy and the scratch directory its only
-   writable places, with no network: there the model edits unasked, so
-   what check and run start may be its work, a Makefile it rewrote.
-   Safe, j runs as it is: nothing it runs was changed unasked. *)
-proc confine(var j: Arun.Job; mem: ^Mem.Allocator);
-var rw: Strs.Vec;
+(* j made a jailed job, in mem: the copy and the scratch directory
+   writable, and jail_rw's directories, each ~ made $HOME; one that
+   isn't an absolute path to a directory now is passed over, as it
+   would keep the sandbox from being made. The network is cut off
+   unless jail_net keeps it. *)
+proc jailed(var j: Arun.Job; mem: ^Mem.Allocator);
+var rw: Strs.Vec; word, rest: []const U8; b: Buf.Buf; info: Sys.Info; e: INT;
 begin
-    if (LEN(Afence.stage) = 0) or not Arun.jails() then return; end;
     Strs.init(rw, mem);
     Strs.push(rw, Afence.stage);
     if LEN(Afence.scratch) > 0 then Strs.push(rw, Afence.scratch); end;
+    word, rest := Str.field(jailRw);
+    while LEN(word) > 0 do
+        Buf.init(b, mem);
+        if (word = "~") or Str.hasPrefix(word, "~/") then
+            Buf.str(b, Sys.env("HOME"));
+            word := word[1..LEN(word)];
+        end;
+        Buf.str(b, word);
+        info, e := Sys.info(Buf.bytes(b));
+        if Str.hasPrefix(Buf.bytes(b), "/") and (e = 0) and info.dir then Strs.push(rw, Buf.bytes(b)); end;
+        word, rest := Str.field(rest);
+    end;
     j.jail := true;
     j.rw := Strs.all(rw);
+    j.net := jailNet;
+end;
+
+(* j put in the jail while the session is staged (safety auto) and the
+   kernel allows it, the copy and the scratch directory its only
+   writable places, with no network, but as jail_rw and jail_net say:
+   there the model edits unasked, so what check and run start may be
+   its work, a Makefile it rewrote. Safe, j runs as it is: nothing it
+   runs was changed unasked. *)
+proc confine(var j: Arun.Job; mem: ^Mem.Allocator);
+begin
+    if (LEN(Afence.stage) = 0) or not Arun.jails() then return; end;
+    jailed(j, mem);
 end;
 
 (* Whether a jailed job's status and output, got, say the sandbox could
@@ -1016,7 +1053,7 @@ end;
    exit status comes first, as in check and run; a sandbox that can't
    be made is an error, never a command run outside it. *)
 proc shell(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
-var cmd: []const U8; got: Buf.Buf; rw: Strs.Vec; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
+var cmd: []const U8; got: Buf.Buf; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
 begin
     (* a call is not always of a tool offered: a one-shot call, or a name the model made up *)
     if not shellOn() then
@@ -1029,12 +1066,10 @@ begin
     if limit < 1 then limit := ShellTimeout; end;
     clipped := limit > ShellMost;
     if clipped then limit := ShellMost; end;
-    Strs.init(rw, mem);
-    Strs.push(rw, Afence.stage);
-    if LEN(Afence.scratch) > 0 then Strs.push(rw, Afence.scratch); end;
     Buf.init(got, mem);
     j := {args: ["/bin/sh", "-c", cmd], env: [scratchVar(mem)], dir: Afence.zone, detach: true, tail: true,
-        jail: true, rw: Strs.all(rw), timeout: limit, flood: ShellFlood};
+        timeout: limit, flood: ShellFlood};
+    jailed(j, mem);
     status, cut, flooded := Arun.start(j, MaxOut - 1000, got);
     if status < 0 then Buf.str(out, "error: cannot start /bin/sh"); return; end;
     if unjailed(status, got, out) then return; end;
@@ -2026,6 +2061,31 @@ begin
     expect(path, Buf.bytes(b), want);
 end;
 
+(* config's jail_rw and jail_net, with the stage up: ../out made
+   writable, a missing directory passed over, and the network kept,
+   the jail's net namespace then arno's own. top is the directory the
+   test began in. *)
+proc jailOpened(top: []const U8);
+var rw, want: Buf.Buf; ns: []const U8;
+begin
+    Buf.init(rw, Heap.heap);
+    defer Buf.done(rw);
+    Buf.init(want, Heap.heap);
+    defer Buf.done(want);
+    Fmt.write(rw, "~/no-such-dir {}/build/tools/out", [Fmt.str(top)]);
+    jail(false, Buf.bytes(rw));
+    expect("shell writes in jail_rw", run("shell", `{"command":"touch ../out/x"}`, nil), "exit 0: touch ../out/x");
+    ns, _ := Sys.readLink("/proc/self/ns/net");
+    Fmt.write(want, "exit 0: readlink /proc/self/ns/net\n{}", [Fmt.str(ns)]);
+    if run("shell", `{"command":"readlink /proc/self/ns/net"}`, nil) = Buf.bytes(want) then
+        Out.str("Atools: the jail kept the network without jail_net\n");
+        failed := true;
+    end;
+    jail(true, "");
+    expect("shell, jail_net", run("shell", `{"command":"readlink /proc/self/ns/net"}`, nil), Buf.bytes(want));
+    jail(false, "");
+end;
+
 proc main*: INT;
 var dir, s, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
@@ -2117,6 +2177,7 @@ begin
     expect("shell writes in the project", run("shell", `{"command":"echo x > made && cat made"}`, nil), "exit 0: echo x > made && cat made\nx");
     holds("made", "x\n");
     expect("shell can't write outside", run("shell", `{"command":"touch ../out/x"}`, nil)[0..7], "exit 1:");
+    jailOpened(dir);
     expect("shell, no command", run("shell", `{"command":" "}`, nil), "error: give the command line as command");
     expect("shell, a timeout", run("shell", `{"command":"sleep 5","timeout":1}`, nil), "timed out after 1 s: sleep 5");
     _ := Sys.makeDir("../scratch");

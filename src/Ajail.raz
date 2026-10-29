@@ -13,7 +13,10 @@
        mount   the whole file tree read-only, except the directories
                given to enter and a fresh /tmp, /dev/shm and /run; the
                places a login keeps its keys (Secrets) look empty
-       net     no network at all, not even the loopback interface is up
+       net     no network at all, not even the loopback interface is up;
+               unless the caller keeps the network (config's jail_net),
+               and then the host's network, loopback and abstract
+               sockets among it, is reachable as outside
        pid     the program sees only its own processes, and when its
                first one ends, or the time runs out, all are killed
        ipc     no shared memory or queues shared with the rest
@@ -173,18 +176,21 @@ begin
     return 0;
 end;
 
-(* Step 1: the new namespaces, and the user inside mapped to the same
-   uid and gid, so the files it makes belong to the user outside too.
-   The kernel wants setgroups denied before an unprivileged gid_map.
-   "" if all went well, else why not. *)
-proc unshare(): []const U8;
-var uid, gid, r: INT; b: Buf.Buf;
+(* Step 1: the new namespaces, the net one unless net keeps the
+   network, and the user inside mapped to the same uid and gid, so the
+   files it makes belong to the user outside too. The kernel wants
+   setgroups denied before an unprivileged gid_map. "" if all went
+   well, else why not. *)
+proc unshare(net: BOOL): []const U8;
+var uid, gid, r, flags: INT; b: Buf.Buf;
 begin
     uid := Sys.uid();
     gid := SYSTEM.SYSCALL(SysGetgid);
     r := SYSTEM.SYSCALL(SysPrctl, PrSetNoNewPrivs, 1, 0, 0, 0);
     if r < 0 then return failed("no_new_privs", "", r); end;
-    r := SYSTEM.SYSCALL(SysUnshare, NewUser | NewNs | NewNet | NewPid | NewIpc);
+    flags := NewUser | NewNs | NewPid | NewIpc;
+    if not net then flags := flags | NewNet; end;
+    r := SYSTEM.SYSCALL(SysUnshare, flags);
     if r < 0 then return failed("unshare", "", r); end;
     r := putFile("/proc/self/setgroups", "deny");
     if r < 0 then return failed("setgroups", "", r); end;
@@ -347,12 +353,13 @@ begin
 end;
 
 (* This process, a fresh one that has no threads, put in the sandbox,
-   rw the directories that stay writable and timeout the seconds the
-   first process may live, 0 for no limit. "" if it is in, and then it
+   rw the directories that stay writable, timeout the seconds the
+   first process may live, 0 for no limit, and net whether the network
+   is kept. "" if it is in, and then it
    is the first process of the sandbox and must exec the program: its
    parent, which never returns from here, waits for it and exits as it
    did. Else why not, and nothing is run. *)
-proc enter*(rw: [][]const U8; timeout: INT): []const U8;
+proc enter*(rw: [][]const U8; timeout: INT; net: BOOL): []const U8;
 var here: Buf.Buf; cwd, why: []const U8; r, inner, rd, wr: INT;
 begin
     Buf.init(here, Heap.heap);
@@ -360,7 +367,7 @@ begin
     cwd, r := Sys.workDir();
     if r < 0 then return failed("getcwd", "", r); end;
     Buf.str(here, cwd);
-    why := unshare();
+    why := unshare(net);
     if LEN(why) > 0 then return why; end;
     why := tree(rw);
     if LEN(why) > 0 then return why; end;

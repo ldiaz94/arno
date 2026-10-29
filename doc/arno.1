@@ -1028,14 +1028,18 @@ The same uid and gid as outside, with no power over what it does not own
 and no way to gain any.
 .It mount
 The whole file tree read-only, except the copy, the scratch directory,
-and a fresh
+the directories
+.Cm jail_rw
+names, and a fresh
 .Pa /tmp ,
 .Pa /dev/shm
 and
 .Pa /run .
 The places a login keeps its keys look empty.
 .It net
-No network at all, not even the loopback interface.
+No network at all, not even the loopback interface; with
+.Cm jail_net No = Cm yes ,
+the network as outside, loopback included.
 .It pid
 The command sees only its own processes; when its first one ends, or
 the time runs out, all are killed.
@@ -1115,7 +1119,11 @@ It sees
 .Ev ARNO_SCRATCH .
 While staged it runs in the jail, with the copy and
 .Ev ARNO_SCRATCH
-its only writable places and no network; safe, it is not jailed.
+its only writable places and no network, but as
+.Cm jail_rw
+and
+.Cm jail_net
+say; safe, it is not jailed.
 The tool's description names the programs allowed and those that run
 without asking, so a model need not guess.
 .Pp
@@ -1392,9 +1400,11 @@ which is given once for each server.
 Put
 .Cm provider
 first, since it resets the other provider settings.
-What is wrong with the file, an unknown provider or a number that is not
-one, is shown as a warning at start-up, a line each, and the rest is read
-as if the line were not there.
+What is wrong with the file, an unknown provider, a number that is not
+one, or a section that names no directory or sets a key it may not, is
+shown as a warning at start-up, a line each, and the rest is read as if
+the line were not there.
+Sections, below, give a tree of projects settings of its own.
 .Bl -tag -width "context_window"
 .It Cm provider
 One of the names under
@@ -1485,6 +1495,23 @@ has not been given in.
 withdraws the
 .Ic shell
 tool; it is offered while staged, where the jail can run.
+.It Cm jail_net
+.Ql yes
+leaves the network on in the jail of
+.Ic shell ,
+.Ic check
+and
+.Ic run ,
+for tests that fetch; off by default.
+.It Cm jail_rw
+Directories, separated by blanks, that the jail leaves writable beside
+the copy and the scratch directory, for tests that keep a cache in the
+home, such as
+.Pa ~/.npm .
+Each is absolute or starts with
+.Ql ~ ;
+one that is not a directory when a command runs is passed over.
+The jail takes at most six.
 .It Cm run
 Program names, separated by blanks, that
 .Ic run
@@ -1552,6 +1579,65 @@ A reasoning model's thinking is not shown, but it is kept for the rest of
 the turn and sent back with each tool result, since some models lose the
 thread without it.
 It is dropped once the turn ends and never saved.
+.Ss Sections
+A line
+.No \&[ Ns Ar dir Ns \&]
+begins a section: the settings after it, up to the next section, are for
+the project whose root is
+.Ar dir
+or below it.
+.Ar dir
+is absolute, or starts with
+.Ql ~
+for the home; links in it are followed, as in the root.
+The settings before the first section are for every project.
+At start-up, once the project's root is found, each section that holds it
+is applied over them, the shallower first, so the deepest wins; a key's
+value is replaced whole, never merged with another's.
+.Bd -literal -offset indent
+provider = ollama-cloud
+run = tiza man fd
+
+[~/r]
+run = raz robbie concha sauce make
+trust = make
+test_cmd = make check
+
+[~/w/webapp]
+safety = safe
+jail_net = yes
+jail_rw = ~/.npm ~/.cache/ms-playwright
+.Ed
+.Pp
+A section may set only what is one project's:
+.Cm run , run_ro , run_env , trust , test_cmd , safety , shell ,
+.Cm jail_net , jail_rw , context_files , project_map , prefetch ,
+.Cm mode , worker , max_steps , turn_budget , build_steps
+and
+.Cm build_budget .
+The provider's keys, and
+.Cm mcp
+and the rest, are for every project, and a section that sets one is
+warned of.
+A section that names no directory is warned of too, and its settings are
+passed over.
+.Pp
+Only this file holds sections: nothing in a project's tree is read for
+them, so a repository cloned grants itself nothing.
+What
+.Ic /test
+and
+.Ic /safety
+keep for a project
+.Pq Pa tests.json , stage.json
+is the human's later word, and still outranks a section, as it does the
+global settings; the answer about context files
+.Pq Pa context.json
+counts where
+.Cm context_files
+is
+.Cm ask ,
+as before.
 .Sh PROVIDERS
 .Bl -column "ollama-cloud" "anthropic" "ANTHROPIC_API_KEY" "claude-sonnet-5-5"
 .It Em name Ta Em dialect Ta Em key variable Ta Em model
@@ -1663,7 +1749,8 @@ API keys, as named by the provider or by
 .Sh FILES
 .Bl -tag -width Ds -compact
 .It Pa ~/.config/arno/config
-The configuration.
+The configuration, with a section for each tree of projects that has
+settings of its own; no file in a project is read for them.
 .It Pa ~/.local/share/arno/history
 Input history, one entry a line, newest last.
 .It Pa ~/.local/share/arno/ Ns Ar yyyymmdd-hhmmss Ns .json

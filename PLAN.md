@@ -438,10 +438,17 @@ one or more commits that build with `-Werror`.
    - [x] `fetch` and `grep` give at most so much, and say where more is.
      fetch shows 20000 bytes of the text from a byte `offset`, grep the
      same of matches; each ends with what is left out and how to get it.
-   - [ ] Profiles: sections of the config for a directory and what is
-     under it, setting `run`, `trust`, `stage` and `context_files`, in
-     place of `tests.json` and `stage.json`. In the human's config,
-     never the project's, so a cloned repository grants itself nothing.
+   - [x] Profiles: `[DIR]` sections of the config, for the project
+     whose root is DIR or below it, applied over the global keys once
+     the root is found, the deepest last, a value replaced whole
+     (`Aconf.apply`). Only a project's keys may be set there (`run`,
+     `trust`, `test_cmd`, `safety`, `context_files` and the like); a
+     provider's, or a header naming no directory, is warned of.
+     `tests.json` and `stage.json` stay, the human's later word, over
+     the sections. New keys for the jail: `jail_net = yes` keeps the
+     network, `jail_rw` adds writable directories, a missing one passed
+     over. In the human's config, never the project's, so a cloned
+     repository grants itself nothing.
    - [ ] Named checks: `check(name, files?)`, a profile's `check.NAME`
      commands, `{}` standing for files inside the fence.
    - [x] `outline` and `def` know `const f = () =>` and `= function`:

@@ -86,6 +86,24 @@ preset. With no config, arno uses Ollama at
 `top_p` and `max_tokens` (and `anthropic_version` to Claude) in the
 provider's request, and drops the rest.
 
+A section gives a tree of projects settings of its own: the lines after
+`[~/r]` are for every project under `~/r`, a deeper section winning, and
+only the keys of a project (`run`, `trust`, `test_cmd`, `safety`,
+`jail_net`, `jail_rw` and the like) may be set there:
+
+    run = tiza man fd
+
+    [~/r]
+    run = raz robbie make
+    test_cmd = make check
+
+    [~/w/webapp]
+    jail_net = yes
+    jail_rw = ~/.npm
+
+Only this file holds sections; nothing in a project is read for them, so
+a cloned repository grants itself nothing.
+
 
 ## Learn it
 
@@ -164,7 +182,8 @@ instead, and has no shell. With no git repository or no commit there is
 no copy, and the session is safe.
 
 **The shell.** `shell` runs a command inside a jail made of Linux's
-unprivileged namespaces (no root, no helper), with no network.
+unprivileged namespaces (no root, no helper), with no network unless
+the config says `jail_net = yes`.
 In the stage it writes in the copy, never in your tree. It is offered only
 staged, so not in safe mode, and is off if the config says `shell = no`.
 

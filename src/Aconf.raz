@@ -27,22 +27,50 @@
    knows it (temperature, top_p, max_tokens, anthropic_version ...),
    so that a provider's field needs no new key here.
 
-   What is wrong with the file, an unknown provider or a number that
-   isn't one, is said in warnings, a line each, and the rest is read
-   as if the line weren't there.
+   A line [DIR] begins a section: the settings after it, up to the
+   next, are for the project whose root is DIR or below it, so that a
+   tree of projects has settings of its own. DIR is absolute, or ~ or
+   ~/... for the home. Once apply is told the project's root, get gives
+   a key as the deepest section holding the root sets it, else as the
+   settings before the first section, the global ones, set it: a whole
+   value, never a list merged. Only the keys of one project (Sectioned)
+   may be set in a section; the provider's are for every directory.
 
-   Depends on Awire, for Prov. Leaves out what each key of the rest of
-   arno means. *)
+       provider = ollama-cloud     the global settings
+       run = tiza man fd
+       [~/r]                       ~/r and every project under it
+       run = raz robbie make
+       [~/r/arno]                  deeper, so over ~/r's
+       test_cmd = make check
+
+   What is wrong with the file, an unknown provider, a number that
+   isn't one, a section that names no directory or sets a global key,
+   is said in warnings, a line each, and the rest is read as if the
+   line weren't there; a bad section's settings with it.
+
+   Depends on Awire, for Prov, and Afence, which resolves a section's
+   directory as it does the root. Leaves out what each key of the rest
+   of arno means, and any file of the project's own: a section is the
+   human's word, and a repository cloned grants itself nothing. *)
 module Aconf;
-import Awire, Amsg, Buf, Str, Sys, Files, Heap, Mem, Out, Strs := Vec([]const U8);
+import Awire, Amsg, Afence, Buf, Str, Sys, Files, Heap, Mem, Out, Strs := Vec([]const U8), Ints := Vec(INT),
+    Sections := Vec(Section);
 import SYSTEM;
 
 type
+    (* The global settings, or a [DIR] section's. *)
+    Section = record
+        dir: []const U8;   (* as its header names it, ~ not yet the home; "" for the global settings *)
+        rank: INT;         (* how deep it holds the project's root, its resolved path's length; 0 for the global settings, -1 if it doesn't *)
+    end;
+
     Conf* = record
         prov*: Awire.Prov;      (* its strings are the file's, or the preset's *)
         warnings*: Buf.Buf;     (* what is wrong with the file, a line each *)
         text: Buf.Buf;          (* the file, which the settings are slices of *)
         keys, values: Strs.Vec; (* every setting, in the file's order *)
+        sect: Ints.Vec;         (* each setting's section, 0 for the global ones *)
+        sections: Sections.Vec; (* the global settings first, then each section, in the file's order *)
         params: Strs.Vec;       (* the provider's params, each its own block *)
     end;
 
@@ -50,7 +78,12 @@ const
     (* the keys the rest of arno reads, which are no provider's param *)
     Known: []const []const U8 = ["worker", "max_steps", "prune", "turn_budget", "build_steps", "build_budget", "mode", "searxng", "test_cmd", "safety",
         "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
-        "trust", "grant", "context_files", "project_map", "prefetch", "mcp"];
+        "trust", "grant", "context_files", "project_map", "prefetch", "mcp", "jail_net", "jail_rw"];
+
+    (* the keys a section may set, which are one project's *)
+    Sectioned: []const []const U8 = ["run", "run_ro", "run_env", "trust", "test_cmd", "safety", "context_files",
+        "project_map", "prefetch", "shell", "jail_net", "jail_rw", "mode", "worker", "build_steps", "build_budget",
+        "max_steps", "turn_budget"];
 
 (* c made a configuration of nothing: the ollama preset. *)
 proc init*(var c: Conf);
@@ -61,6 +94,9 @@ begin
     Strs.init(c.keys, Heap.heap);
     Strs.init(c.values, Heap.heap);
     Strs.init(c.params, Heap.heap);
+    Ints.init(c.sect, Heap.heap);
+    Sections.init(c.sections, Heap.heap);
+    Sections.push(c.sections, {dir: "", rank: 0});
     _ := Awire.preset("ollama", c.prov);
 end;
 
@@ -79,6 +115,8 @@ proc done*(var c: Conf);
 begin
     dropParams(c);
     Strs.done(c.params);
+    Sections.done(c.sections);
+    Ints.done(c.sect);
     Strs.done(c.keys);
     Strs.done(c.values);
     Buf.done(c.text);
@@ -86,15 +124,51 @@ begin
     c := {};
 end;
 
-(* The value of key, as the file last set it; "" if it doesn't. *)
+(* The value of key, as the deepest section applied sets it, else the
+   global settings; within one, as its last line does; "" if none
+   sets it. *)
 proc get*(const c: Conf; key: []const U8): []const U8;
-var i: INT; keys: [][]const U8;
+var i, best, rank, r: INT; keys: [][]const U8; sect: []INT; s: []Section;
 begin
     keys := Strs.all(c.keys);
-    for i := LEN(keys) - 1 to 0 by -1 do
-        if keys[i] = key then return Strs.all(c.values)[i]; end;
+    sect := Ints.all(c.sect);
+    s := Sections.all(c.sections);
+    best := -1;
+    rank := -1;
+    for i := 0 to LEN(keys) - 1 do
+        r := s[sect[i]].rank;
+        if (keys[i] = key) and (r >= 0) and (r >= rank) then
+            best := i;
+            rank := r;
+        end;
     end;
-    return "";
+    if best < 0 then return ""; end;
+    return Strs.all(c.values)[best];
+end;
+
+(* The sections whose directory holds root, the project's, resolved,
+   applied, a deeper one over a shallower; the others not. Before,
+   only the global settings are. *)
+proc apply*(var c: Conf; root: []const U8);
+var s: []Section; i: INT; dir, at: Buf.Buf;
+begin
+    Buf.init(dir, Heap.heap);
+    defer Buf.done(dir);
+    Buf.init(at, Heap.heap);
+    defer Buf.done(at);
+    s := Sections.all(c.sections);
+    for i := 1 to LEN(s) - 1 do
+        Buf.reset(dir);
+        if s[i].dir[0] = '~' then
+            Buf.str(dir, Sys.env("HOME"));
+            Buf.str(dir, s[i].dir[1..LEN(s[i].dir)]);
+        else
+            Buf.str(dir, s[i].dir);
+        end;
+        Afence.resolve(Buf.bytes(dir), at);
+        s[i].rank := -1;
+        if Afence.within(root, Buf.bytes(at)) then s[i].rank := at.len; end;
+    end;
 end;
 
 (* The nth value, from 0, of key, as the file gave it each time, for a
@@ -165,6 +239,32 @@ begin
     return false;
 end;
 
+(* Whether a section may set key. *)
+proc sectioned(key: []const U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(Sectioned) - 1 do
+        if key = Sectioned[i] then return true; end;
+    end;
+    return false;
+end;
+
+(* The header line, [DIR], made the section the settings after it go
+   to: its number; or -1 if it names no directory, which is warned of,
+   and then its settings are passed by. *)
+proc header(var c: Conf; line: []const U8): INT;
+var dir: []const U8;
+begin
+    dir := "";
+    if line[LEN(line) - 1] = ']' then dir := Str.trim(line[1..LEN(line) - 1]); end;
+    if (dir # "~") and not Str.hasPrefix(dir, "~/") and not Str.hasPrefix(dir, "/") then
+        warn(c, line, " names no directory, as [/dir] or [~/dir]; its settings are passed by");
+        return -1;
+    end;
+    Sections.push(c.sections, {dir: dir, rank: -1});
+    return LEN(Sections.all(c.sections)) - 1;
+end;
+
 (* One setting, key = value, read into c. *)
 proc setting(var c: Conf; key, value: []const U8);
 var word, rest: []const U8; at: INT;
@@ -202,22 +302,29 @@ end;
 (* text, a configuration file, read into c, made with init: c keeps
    a copy of it, which its settings are slices of. *)
 proc read*(var c: Conf; text: []const U8);
-var line, rest, key, value: []const U8; more, eq: BOOL;
+var line, rest, key, value: []const U8; at: INT; more, eq: BOOL;
 begin
     Buf.str(c.text, text);
     rest := Buf.bytes(c.text);
     more := LEN(rest) > 0;
+    at := 0;   (* the section the settings go to, 0 the global ones; -1 after a bad header *)
     while more do
         line, rest, more := Str.cut(rest, "\n");
         line := Str.trim(line);
         if (LEN(line) = 0) or (line[0] = '#') then continue; end;
+        if line[0] = '[' then at := header(c, line); continue; end;
         key, value, eq := Str.cut(line, "=");
-        if not eq then continue; end;
+        if not eq or (at < 0) then continue; end;
         key := Str.trim(key);
         value := Str.trim(value);
+        if (at > 0) and not sectioned(key) then
+            warn(c, key, " is for every directory, set before the first [section]");
+            continue;
+        end;
         Strs.push(c.keys, key);
         Strs.push(c.values, value);
-        setting(c, key, value);
+        Ints.push(c.sect, at);
+        if at = 0 then setting(c, key, value); end;
     end;
     c.prov.params := Strs.all(c.params);
 end;
@@ -243,7 +350,7 @@ begin
     if Files.load(Buf.bytes(path), text) = 0 then read(c, Buf.bytes(text)); end;
 end;
 
-(* The test: a file of every kind of line. *)
+(* The test: a file of every kind of line, and one of sections. *)
 
 var failed: BOOL;
 
@@ -258,6 +365,49 @@ begin
     Out.str(want);
     Out.ln;
     failed := true;
+end;
+
+(* Sections applied for one project's root and then others', the home
+   a made-up one. *)
+proc sections;
+var c: Conf;
+begin
+    _ := Sys.setEnv("HOME", "/nowhere/home");
+    init(c);
+    read(c, `
+        run = tiza man fd
+        test_cmd = make test
+        [~/r]
+        run = raz robbie
+        trust = make
+        provider = claude
+        temperature = 0.5
+        [~/r/arno]
+        run = raz
+        [ /nowhere/home/r ]
+        trust = robbie
+        [w]
+        safety = safe
+        [~/w/webapp
+        safety = safe
+        `);
+    expect("before apply, the global run", get(c, "run"), "tiza man fd");
+    expect("the provider, not set in a section", c.prov.name, "ollama");
+    expect("the section warnings", Buf.bytes(c.warnings),
+        "config: provider is for every directory, set before the first [section]\n" +
+        "config: temperature is for every directory, set before the first [section]\n" +
+        "config: [w] names no directory, as [/dir] or [~/dir]; its settings are passed by\n" +
+        "config: [~/w/webapp names no directory, as [/dir] or [~/dir]; its settings are passed by\n");
+    apply(c, "/nowhere/home/r/arno");
+    expect("the deepest section's run", get(c, "run"), "raz");
+    expect("the same directory twice, the later", get(c, "trust"), "robbie");
+    expect("a global key no section sets", get(c, "test_cmd"), "make test");
+    expect("a bad section's key", get(c, "safety"), "");
+    apply(c, "/nowhere/home/r");
+    expect("the section of the root itself", get(c, "run"), "raz robbie");
+    apply(c, "/nowhere/home/r2");
+    expect("a sibling with a longer name", get(c, "run"), "tiza man fd");
+    done(c);
 end;
 
 proc main*: INT;
@@ -302,6 +452,7 @@ begin
         "config: max_retries wants a number\nconfig: unknown provider nowhere\n");
     expect("the effort for a model", Awire.param(c.prov, "reasoning_effort@kimi-k3"), "high");
     done(c);
+    sections();
     if failed then return 1; end;
     return 0;
 end;

@@ -20,7 +20,8 @@
    detached program is started by arno itself, run again as a helper
    (child), which makes the session and runs the program in its own
    place. The jail is entered the same way: the helper, given the
-   directories that stay writable and a time limit (JailChild), calls
+   directories that stay writable, a time limit and whether the
+   network is kept (JailChild), calls
    Ajail.enter before it runs the program, and the program's
    environment is cut to what a program needs to find its way
    (jailEnv), since arno's holds the human's keys. A program that
@@ -43,6 +44,7 @@ type
         dir*: []const U8;   (* its working directory; "" for arno's *)
         jail*: BOOL;     (* in Ajail's sandbox, with a trimmed environment; implies detach *)
         rw*: [][]const U8;  (* the directories that stay writable in the jail *)
+        net*: BOOL;      (* the jail keeps the network, rather than having none *)
         timeout*: INT;   (* seconds it may run in the jail, then killed, status 124; 0 for no limit *)
         flood*: INT;     (* bytes written past which it is killed, with tail; 0 for no limit; implies detach, so that its whole group can be killed *)
     end;
@@ -51,8 +53,9 @@ const
     EIntr = 4;   (* the errno of a call a signal broke into, given as minus this *)
     Child* = "--arno-child";   (* the first argument of arno run as the helper *)
     (* The first argument of arno run as the helper of a jailed program:
-       then the seconds of the limit, the number of writable
-       directories, those, and the program with its arguments. *)
+       then the seconds of the limit, 1 if the network is kept or 0,
+       the number of writable directories, those, and the program with
+       its arguments. *)
     JailChild* = "--arno-jail";
     (* What a jailed program keeps of arno's environment: the names it
        needs to find its programs, its home and its language, and
@@ -72,7 +75,7 @@ extern proc setsid: I32;
    it won't start, or the sandbox won't be made, which it says on its
    output, as "sandbox: why". The program's main calls it first. *)
 proc child*;
-var args, rw: Strs.Vec; i, first, timeout, n: INT; why: []const U8; jailed, ok, okDirs: BOOL; v: I64; say: Buf.Buf;
+var args, rw: Strs.Vec; i, first, timeout, n: INT; why: []const U8; jailed, ok, okDirs, net: BOOL; v: I64; say: Buf.Buf;
 begin
     if ARGC() < 3 then return; end;
     jailed := Files.arg(1) = JailChild;
@@ -83,12 +86,13 @@ begin
         Strs.init(rw, Heap.heap);
         v, ok := Str.toInt(Files.arg(2));
         timeout := INT(v);
-        v, okDirs := Str.toInt(Files.arg(3));
+        net := Files.arg(3) = "1";
+        v, okDirs := Str.toInt(Files.arg(4));
         n := INT(v);
-        if not ok or not okDirs or (timeout < 0) or (n < 0) or (4 + n >= ARGC()) then Sys.exit(126); end;
-        for i := 4 to 3 + n do Strs.push(rw, Files.arg(i)); end;
-        first := 4 + n;
-        why := Ajail.enter(Strs.all(rw), timeout);
+        if not ok or not okDirs or (timeout < 0) or (n < 0) or (5 + n >= ARGC()) then Sys.exit(126); end;
+        for i := 5 to 4 + n do Strs.push(rw, Files.arg(i)); end;
+        first := 5 + n;
+        why := Ajail.enter(Strs.all(rw), timeout, net);
         if LEN(why) > 0 then
             Buf.init(say, Heap.heap);
             Buf.str(say, "sandbox: ");
@@ -236,6 +240,7 @@ begin
         Strs.push(args, JailChild);
         Fmt.write(secs, "{}", [Fmt.int(j.timeout)]);
         Strs.push(args, Buf.bytes(secs));
+        if j.net then Strs.push(args, "1"); else Strs.push(args, "0"); end;
         Fmt.write(dirs, "{}", [Fmt.int(LEN(j.rw))]);
         Strs.push(args, Buf.bytes(dirs));
         for i := 0 to LEN(j.rw) - 1 do Strs.push(args, j.rw[i]); end;

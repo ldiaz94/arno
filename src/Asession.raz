@@ -135,6 +135,8 @@ begin
     Astore.newId(id);
     Astore.init(s^.conv, Buf.bytes(id));
     Agent.init(s^.agent, SYSTEM.ADR(s^.conf.prov), front);
+    (* the project's root is known now that Agent.init has set the fence: its sections from here on *)
+    Aconf.apply(s^.conf, Afence.root);
     useScratch(s^);
     n, ok := Str.toInt(Aconf.get(s^.conf, "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;
@@ -154,6 +156,7 @@ begin
     Atools.shellEnabled(Aconf.get(s^.conf, "shell") # "no");
     Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
         Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));
+    Atools.jail(Aconf.get(s^.conf, "jail_net") = "yes", Aconf.get(s^.conf, "jail_rw"));
     attachServers(s^);
     stageStart(s^);
     Arena.reset(s^.mem);

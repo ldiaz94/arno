@@ -24,13 +24,14 @@ var
     fails: INT;            (* cases that failed *)
     limit: INT;            (* seconds a command may run *)
     scratch: []const U8;   (* ARNO_SCRATCH, as a job gives it *)
+    net: BOOL;             (* the sandbox keeps the network, as config's jail_net *)
 
 (* The command line cmd run in the sandbox with a and b writable: its
    status, and what it wrote added to out. *)
 proc sh(cmd: []const U8; var out: Buf.Buf): INT;
 var j: Arun.Job; status: INT;
 begin
-    j := {args: ["/bin/sh", "-c", cmd], env: [scratch], jail: true, rw: [a, b], timeout: limit};
+    j := {args: ["/bin/sh", "-c", cmd], env: [scratch], jail: true, rw: [a, b], net: net, timeout: limit};
     status, _, _ := Arun.start(j, 100000, out);
     return status;
 end;
@@ -137,8 +138,8 @@ end;
 
 (* The program with a listener on loopback outside the sandbox: the same
    connection works out here, and fails inside, where there is no
-   network at all, not even lo. bash is asked for, since its /dev/tcp
-   is what connects. *)
+   network at all, not even lo, but where the network is kept. bash is
+   asked for, since its /dev/tcp is what connects. *)
 proc loopback;
 var fd, port: INT; cmd: []const U8; out: Buf.Buf;
 begin
@@ -151,6 +152,9 @@ begin
     defer Buf.done(out);
     if Arun.run(["bash", "-c", cmd], 1000, out) # 0 then report("no loopback", "the control, outside the sandbox, can't connect"); end;
     check("no loopback", cat(["bash -c '", cmd, "'"]), false, "");
+    net := true;
+    check("loopback, the network kept", cat(["bash -c '", cmd, "'"]), true, "");
+    net := false;
 end;
 
 (* The cases that must fail: the escapes. *)
