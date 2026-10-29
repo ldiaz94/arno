@@ -144,8 +144,10 @@ end;
 (* The tree dir's working tree holds, every file not ignored added to
    the index idx first ("" for dir's own): its hash made what tree
    holds. In a copy, pinned to pin, the links to Deps are left out:
-   git ignores a directory's name, not a link's. false if git fails,
-   why saying what it said. *)
+   a .gitignore naming node_modules/ ignores the directory, not the
+   link. One the .gitignore already ignores is not named, as git
+   refuses to add a path it ignores even to leave it out. false if
+   git fails, why saying what it said. *)
 proc snap(idx, dir, pin: []const U8; var tree, why: Buf.Buf): BOOL;
 var args: Strs.Vec; i: INT;
 begin
@@ -158,7 +160,10 @@ begin
     if LEN(pin) > 0 then
         Strs.push(args, "--");
         Strs.push(args, ".");
-        for i := 0 to LEN(Excluded) - 1 do Strs.push(args, Excluded[i]); end;
+        for i := 0 to LEN(Excluded) - 1 do
+            if git(idx, dir, pin, ["check-ignore", "-q", Deps[i]], why) # 0 then Strs.push(args, Excluded[i]); end;
+        end;
+        Buf.reset(why);
     end;
     if git(idx, dir, pin, Strs.all(args), why) # 0 then return false; end;
     Buf.reset(why);
@@ -658,7 +663,7 @@ begin
     Buf.init(cache, Heap.heap);
     _ := sh("rm -rf build/stage; mkdir -p build/stage/cache build/stage/proj/src");
     _ := sh("cd build/stage/proj && git init -q && printf 'one\\n' > a.txt && printf 'two\\n' > src/b.txt && printf 'kept\\n' > src/k.txt && printf 'forced\\n' > f.o && " +
-        "printf '*.o\\nnode_modules/\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t commit -q -m first && " +
+        "printf '*.o\\nnode_modules\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t commit -q -m first && " +
         "mkdir -p node_modules/dep && printf 'lib\\n' > node_modules/dep/i.js && printf 'human\\n' >> a.txt && printf 'new\\n' > new.txt && printf 'obj\\n' > x.o");
     Buf.str(top, sh("cd build/stage && pwd"));
     Buf.str(cache, Buf.bytes(top));
