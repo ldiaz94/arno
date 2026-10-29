@@ -63,7 +63,7 @@
    removed. Leaves out the images read shows as pictures, which come
    with the screen. *)
 module Atools;
-import Afence, Afind, Apeer, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+import Aprice, Afence, Afind, Apeer, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
@@ -293,7 +293,8 @@ const
          params: `{"type":"object","properties":` +
             `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
             `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
-            `"done_when":{"type":"string","description":"how the worker knows the step is done"}},` +
+            `"done_when":{"type":"string","description":"how the worker knows the step is done"},` +
+            `"model":{"type":"string","description":"the worker's model, one of those listed; the default if left out"}},` +
             `"required":["task","done_when"]}`},
         {name: "plan",
          description: "Put your plan to the human for approval. It is written to plan.md in the scratch " +
@@ -1745,6 +1746,9 @@ var
     web: Http.Client;  (* search's and fetch's, made at the first *)
     webbed: BOOL;      (* web is made *)
     offer: Tools.Vec;  (* what offered gives *)
+    workerList: []U8;  (* the models delegate may name, blank-separated; "" for none *)
+    workerTool: Awire.Tool;  (* delegate as offered, its description listing workerList and its schema limiting model to it *)
+    workerBufs: [2]Buf.Buf;  (* what workerTool's description and params are slices of *)
 
 (* search through the SearXNG at url, as config's searxng says; "" for
    none, when search isn't offered. *)
@@ -1753,6 +1757,76 @@ begin
     Str.free(Heap.heap, searx);
     searx := keep(url);
     while Str.hasSuffix(searx, "/") do searx := searx[0..LEN(searx) - 1]; end;
+end;
+
+(* The models delegate may name, blank-separated in list, def the one
+   it runs on when none is named, and p the session's provider, whose
+   price config may give: delegate's description then ends in each model
+   and its list price in and out per million tokens, if known, for the
+   lead to weigh a step against, and its schema limits model to them.
+   list "" for none. *)
+proc workers*(list, def: []const U8; const p: Awire.Prov);
+var m: Awire.Prov; pr: Aprice.Price; known: BOOL; enum, with: Buf.Buf; w, rest: []const U8; t: Awire.Tool; i: INT;
+begin
+    Str.free(Heap.heap, workerList);
+    workerList := keep(list);
+    for i := 0 to LEN(Offered) - 1 do
+        if Offered[i].name = "delegate" then t := Offered[i]; end;
+    end;
+    Buf.done(workerBufs[0]);
+    Buf.done(workerBufs[1]);
+    Buf.init(workerBufs[0], Heap.heap);
+    Buf.init(workerBufs[1], Heap.heap);
+    Buf.init(enum, Heap.heap);
+    defer Buf.done(enum);
+    Buf.init(with, Heap.heap);
+    defer Buf.done(with);
+    Fmt.write(workerBufs[0], "{} Name the model in model, a stronger one for a hard or delicate step, a cheaper " +
+        "one for mechanical work; {} runs it if you name none. Models:", [Fmt.str(t.description), Fmt.str(def)]);
+    m := p;
+    w, rest := Str.field(list);
+    while LEN(w) > 0 do
+        if enum.len > 0 then Buf.add(enum, ','); end;
+        Fmt.write(enum, `"{}"`, [Fmt.str(w)]);
+        m.model := w;
+        pr, known := Aprice.price(m);
+        Fmt.write(workerBufs[0], "\n- {}", [Fmt.str(w)]);
+        if known then
+            Fmt.write(workerBufs[0], " (${} in, ${} out per million tokens)", [Fmt.real(pr.inp, 2), Fmt.real(pr.out, 2)]);
+        end;
+        w, rest := Str.field(rest);
+    end;
+    Buf.str(with, `"model":{"type":"string","enum":[`);   (* not Fmt: it reads a brace as its own *)
+    Buf.str(with, Buf.bytes(enum));
+    Buf.str(with, "]");
+    Str.replace(workerBufs[1], t.params, `"model":{"type":"string"`, Buf.bytes(with));
+    workerTool := {name: t.name, description: Buf.bytes(workerBufs[0]), params: Buf.bytes(workerBufs[1])};
+end;
+
+(* Whether delegate may name model. *)
+proc isWorker*(model: []const U8): BOOL;
+var w, rest: []const U8;
+begin
+    w, rest := Str.field(workerList);
+    while LEN(w) > 0 do
+        if w = model then return true; end;
+        w, rest := Str.field(rest);
+    end;
+    return false;
+end;
+
+(* The models delegate may name, blank-separated. *)
+proc workerModels*(): []const U8;
+begin
+    return workerList;
+end;
+
+(* t, the delegate tool, as offered: with the models listed, once workers
+   was given them. *)
+proc delegateOffer(t: Awire.Tool): Awire.Tool;
+begin
+    if LEN(workerList) = 0 then return t; end;
+    return workerTool;
 end;
 
 (* s added to b with every byte but a letter, a digit and -._~
@@ -1958,7 +2032,7 @@ begin
         match Offered[i].name of
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
-        | "delegate": if not lead then continue; end;
+        | "delegate": if not lead then continue; end; Tools.push(offer, delegateOffer(Offered[i])); continue;
         | "plan": if not plan then continue; end;
         | "merge": if not lead or not edits or (LEN(Afence.stage) = 0) then continue; end;
         | "editor", "open": if not Apeer.reachable() then continue; end;
@@ -2248,6 +2322,28 @@ begin
     jail(false, "");
 end;
 
+(* delegate's offer names the workers with their prices, and limits model to them. *)
+proc testWorkers();
+var t: []Awire.Tool; i: INT; p: Awire.Prov; d: []const U8; schema: []const U8;
+begin
+    p := {};
+    workers("deepseek-v4-pro mine", "mine", p);
+    t := offered(true, true, false);
+    d := "";
+    schema := "";
+    for i := 0 to LEN(t) - 1 do
+        if t[i].name = "delegate" then d := t[i].description; schema := t[i].params; end;
+    end;
+    if Str.find(d, "- deepseek-v4-pro ($") < 0 then expect("a priced worker listed", d, "- deepseek-v4-pro ($..."); end;
+    if Str.find(d, "\n- mine\n") >= 0 then expect("an unpriced worker, no price", d, "- mine"); end;
+    if Str.find(d, "mine runs it if you name none") < 0 then expect("the default named", d, "mine runs it ..."); end;
+    if Str.find(schema, `"model":{"type":"string","enum":["deepseek-v4-pro","mine"]`) < 0 then
+        expect("model limited to the workers", schema, "an enum");
+    end;
+    if not isWorker("mine") or isWorker("other") then expect("isWorker", "wrong", "right"); end;
+    workers("", "", p);
+end;
+
 proc main*: INT;
 var dir, s, t, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
@@ -2270,6 +2366,7 @@ begin
     dir, _ := Str.copy(Heap.heap, dir);
     if Sys.setWorkDir("build/tools/proj") # 0 then Out.str("Atools: no build/tools\n"); return 1; end;
     Afence.init;
+    testWorkers();
 
     expect("read", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
     expect("offset and limit", run("read", `{"path":"f","offset":"2","limit":1}`, nil), "    2\ttwo\n");

@@ -789,7 +789,11 @@ Offered only while an editor is reachable.
 One self-contained step of a larger job, given to a worker: a
 conversation of its own on the model
 .Cm worker
-names, with the brief, the reports of earlier workers of the turn (the
+or the one the step's
+.Cm model
+names (one of
+.Cm workers ) ,
+with the brief, the reports of earlier workers of the turn (the
 newest four) and the tools of the session less
 .Ic delegate
 and
@@ -809,8 +813,15 @@ diff, kept in the scratch directory as
 and summed up file by file in the result, and its copy is removed.
 Safe, there is no copy to make one from: a worker works in the project
 itself, each change asked, as the model's own.
+The description lists the models with their list prices per million
+tokens, for the model to weigh each step: a stronger one for a hard
+step, a cheaper one for mechanical work.
+A model not listed is refused.
+The report names the model.
 Offered only when
 .Cm worker
+or
+.Cm workers
 is set.
 .It Ic merge
 A staged worker's diff, by its number, applied to the stage's copy or
@@ -1481,9 +1492,21 @@ The mode a session starts in.
 The model
 .Ic delegate Ns 's
 workers run on, on the same provider.
-Without it
+It is the model a step runs on when it names none; if only
+.Cm workers
+is set, the first of them.
+.It Cm workers
+The models the lead may hand a step to, blank-separated, on the same
+provider; each step names one.
+Without
+.Cm worker
+and
+.Cm workers
 .Ic delegate
 is not offered.
+Each model has its own
+.Cm effort
+entry, if any.
 .It Cm max_steps
 Steps of tool calls a turn takes before it hands back; 30 by default.
 .It Cm prune
@@ -1664,7 +1687,7 @@ jail_rw = ~/.npm ~/.cache/ms-playwright
 A section may set only what is one project's:
 .Cm run , run_ro , run_env , trust , test_cmd , check.NAME , safety , shell ,
 .Cm jail_net , jail_rw , context_files , project_map , prefetch ,
-.Cm mode , worker , max_steps , turn_budget , build_steps
+.Cm mode , worker , workers , max_steps , turn_budget , build_steps
 and
 .Cm build_budget .
 The provider's keys, and

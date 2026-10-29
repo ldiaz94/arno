@@ -94,7 +94,9 @@ const
             "excerpts and signatures it needs, quoted rather than left to find, the project's rules that matter, " +
             "and done_when. Pass on what earlier workers found and read, so that nobody reads it again. Prefer a " +
             "few larger steps to many small ones. Tell each worker to batch its probes, several commands to a " +
-            "call. A worker that ran out of steps reports where it got to: the next one's brief starts there.\n" +
+            "call. A worker that ran out of steps reports where it got to: the next one's brief starts there. " +
+            "When delegate lists several models, choose one per step: a stronger one for a hard or delicate step, " +
+            "a cheaper one for mechanical work, and say which, and why, in a line of your reasoning.\n" +
             "3. Review each worker's report and its changes, and run check. Staged, a worker works in a copy of " +
             "its own and hands back a diff: read it, then merge it into your copy or drop it.\n" +
             "4. Fix only small things yourself, a few lines; anything more goes back to a worker with what is " +

@@ -185,7 +185,7 @@ expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
   'the tool said: error: there is no worker model')
 configure(['worker = small'])
 expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
-  'the tool said: worker report (1 steps):')
+  'the tool said: worker (small) report (1 steps):')
 holds('a worker', 'out', '2 messages')
 holds('a worker', 'err', 'arno: worker small: look')
 configure([])
@@ -426,7 +426,7 @@ task := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"two\",\"new\":\"four\"
 again := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"five\"}","done_when":"edited"}'
 stagedRun([], 'call delegate ' + task + #10 + 'call merge {"worker":1,"apply":true}' + #10 + 'y' + #10 +
   'call delegate ' + again + #10 + 'call merge {"worker":2,"apply":false}' + #10 + 'call merge {"worker":2,"apply":true}')
-holds('a worker in a copy', 'out', 'the tool said: worker 1 report (2 steps):')
+holds('a worker in a copy', 'out', 'the tool said: worker 1 (small) report (2 steps):')
 holds('a worker in a copy', 'out', 'Worker 1 changed 1 file(s), in a copy of its own:')
 holds('a worker in a copy', 'out', '+1 -1 a.txt')
 holds('a worker merged', 'out', 'the tool said: merged: worker 1')

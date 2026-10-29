@@ -168,7 +168,7 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
-`delegate` (when the config names a `worker`), `merge` (a staged worker's diff, into the copy or
+`delegate` (when the config names a `worker` or `workers`; each step picks its model), `merge` (a staged worker's diff, into the copy or
 dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited

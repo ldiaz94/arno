@@ -76,13 +76,13 @@ type
 
 const
     (* the keys the rest of arno reads, which are no provider's param *)
-    Known: []const []const U8 = ["worker", "max_steps", "prune", "turn_budget", "build_steps", "build_budget", "mode", "searxng", "test_cmd", "safety",
+    Known: []const []const U8 = ["worker", "workers", "max_steps", "prune", "turn_budget", "build_steps", "build_budget", "mode", "searxng", "test_cmd", "safety",
         "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
         "trust", "grant", "context_files", "project_map", "prefetch", "mcp", "jail_net", "jail_rw"];
 
     (* the keys a section may set, which are one project's *)
     Sectioned: []const []const U8 = ["run", "run_ro", "run_env", "trust", "test_cmd", "safety", "context_files",
-        "project_map", "prefetch", "shell", "jail_net", "jail_rw", "mode", "worker", "build_steps", "build_budget",
+        "project_map", "prefetch", "shell", "jail_net", "jail_rw", "mode", "worker", "workers", "build_steps", "build_budget",
         "max_steps", "turn_budget"];
 
     (* the prefixes of keys PREFIX.NAME, each name its own setting, that
@@ -446,6 +446,7 @@ begin
         temperature = 0.5
         [~/r/arno]
         run = raz
+        workers = fast cheap:cloud
         [ /nowhere/home/r ]
         trust = robbie
         [w]
@@ -462,6 +463,7 @@ begin
         "config: [~/w/webapp names no directory, as [/dir] or [~/dir]; its settings are passed by\n");
     apply(c, "/nowhere/home/r/arno");
     expect("the deepest section's run", get(c, "run"), "raz");
+    expect("workers in a section", get(c, "workers"), "fast cheap:cloud");
     expect("the same directory twice, the later", get(c, "trust"), "robbie");
     expect("a global key no section sets", get(c, "test_cmd"), "make test");
     expect("a bad section's key", get(c, "safety"), "");

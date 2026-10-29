@@ -439,7 +439,13 @@ one or more commits that build with `-Werror`.
      comparing with `Afence.stage`. Left for parallel workers: the
      zone, the stage and the working directory are the process's,
      swapped for a worker's turn.
-   - [ ] Worker models chosen per brief, from config's `workers`.
+   - [x] Worker models chosen per brief, from config's `workers`.
+     `delegate` takes a `model`, one of `workers` (an enum in its
+     schema, listed in its description with each one's list price);
+     another is refused with the list. `worker` stays the default, the
+     first of `workers` if unset. The worker's turn runs, is priced and
+     gets its effort as that model's (`prov.model`), and its report
+     line names the model. Build mode tells the lead to weigh each step.
    - [ ] Workers in parallel.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.

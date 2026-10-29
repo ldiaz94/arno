@@ -116,6 +116,28 @@ begin
     end;
 end;
 
+(* The models the lead may hand a step to: config's workers, on the
+   provider, and config's worker, the one used when a step names none;
+   the first of workers if worker isn't set, and worker is one of them
+   if it is. *)
+proc useWorkers(var s: Session);
+var list: Buf.Buf; w, rest: []const U8; listed: BOOL;
+begin
+    s.agent.worker := Aconf.get(s.conf, "worker");
+    w, rest := Str.field(Aconf.get(s.conf, "workers"));
+    if LEN(s.agent.worker) = 0 then s.agent.worker := w; end;
+    Buf.init(list, Heap.heap);
+    defer Buf.done(list);
+    Buf.str(list, Aconf.get(s.conf, "workers"));
+    listed := false;
+    while LEN(w) > 0 do
+        if w = s.agent.worker then listed := true; end;
+        w, rest := Str.field(rest);
+    end;
+    if not listed and (LEN(s.agent.worker) > 0) then Fmt.write(list, " {}", [Fmt.str(s.agent.worker)]); end;
+    Atools.workers(Str.trim(Buf.bytes(list)), s.agent.worker, s.conf.prov);
+end;
+
 (* s made the session the config sets up, telling front of turns and
    show of commands, with a new conversation. What is wrong with the
    config is shown. *)
@@ -148,7 +170,7 @@ begin
     x, ok := Math.toReal(Aconf.get(s^.conf, "build_budget"));
     if ok and (x >= 0.0) then s^.agent.buildBudget := x; end;
     s^.agent.prefetch := Aconf.get(s^.conf, "prefetch") # "no";
-    s^.agent.worker := Aconf.get(s^.conf, "worker");
+    useWorkers(s^);
     for i := 0 to LEN(Aprompt.Modes) - 1 do
         if Aprompt.Modes[i].name = Aconf.get(s^.conf, "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
