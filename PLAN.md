@@ -442,9 +442,9 @@ one or more commits that build with `-Werror`.
    - [x] Worker models chosen per brief, from config's `workers`.
      `delegate` takes a `model`, one of `workers` (an enum in its
      schema, listed in its description with each one's list price);
-     another is refused with the list. `worker` stays the default, the
-     first of `workers` if unset. The worker's turn runs, is priced and
-     gets its effort as that model's (`prov.model`), and its report
+     another is refused with the list; the first of `workers` is the
+     default (`worker`, which named it, is read only for old configs).
+     The worker's turn runs, is priced and gets its effort as that model's (`prov.model`), and its report
      line names the model. Build mode tells the lead to weigh each step.
    - [x] Workers bounded by money, not steps. A cheap worker ran out of
      `max_steps` long before its budget, so a flash model's survey
@@ -455,6 +455,14 @@ one or more commits that build with `-Werror`.
      cost. `/budget` shows or sets the turn's budget for the session,
      build mode's in build mode.
    - [ ] Workers in parallel.
+   - [ ] Queued prompts. Enter while a turn runs does nothing now, so the
+     human waits to say the next thing. It is queued instead: shown above
+     the input, dim, with a count on the status line, and run in order,
+     each as its own turn, as the last ends; a slash command takes its
+     place in the line. Up takes the last back to edit; ^C stops the turn
+     and keeps the queue, a second ^C clears it. A turn that ends on an
+     error or a stop holds the queue until Enter. An attached viewer
+     queues on the host, so every screen shows the same queue.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
    - [x] Context files in an editor's sessions. `ask` was put once, at
