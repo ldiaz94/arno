@@ -256,6 +256,9 @@ begin
     writeln('url = http://127.0.0.1:', started[0], '/v1')
     writeln('model = demo')
     writeln('context_files = no')
+    // its edits asked one by one, as the keys answer them; and no
+    // warning that the project, no repository, has no stage
+    writeln('safety = safe')
   end > $Work/home/.config/arno/config
 
   // the cast, kept only if the play went through
