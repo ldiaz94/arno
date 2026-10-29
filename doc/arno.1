@@ -821,6 +821,19 @@ It writes in the stage's copy.
 Offered only staged (safety
 .Ic auto )
 where the jail can run.
+.It Ic skill
+One of your skills, by name: the text of
+.Pa ~/.config/arno/skills/ Ns Ar name Ns Pa .md
+but its first line, which says what kind of work it is for.
+The skills are listed in the tool's description, each with that line,
+so the model reads one when the work calls for it, and a long one costs
+nothing until then.
+They are yours, kept for every project: how you write a review's
+comments, a ticket, a commit.
+A name holds only letters, digits and
+.Ql -_. ;
+another file is passed over.
+Offered only when there is one.
 .It Ic note
 A line kept for later sessions on this project; see
 .Sx Project notes .
@@ -2045,6 +2058,10 @@ API keys, as named by the provider or by
 .It Pa ~/.config/arno/config
 The configuration, with a section for each tree of projects that has
 settings of its own; no file in a project is read for them.
+.It Pa ~/.config/arno/skills/ Ns Ar name Ns Pa .md
+A skill: its first line what kind of work it is for, the rest how you
+want it done; see
+.Ic skill .
 .It Pa ~/.local/share/arno/history
 Input history, one entry a line, newest last.
 .It Pa ~/.local/share/arno/ Ns Ar yyyymmdd-hhmmss Ns .json

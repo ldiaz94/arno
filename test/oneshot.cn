@@ -201,6 +201,15 @@ expect(['call', 'delegate', '{"task":"look","done_when":"seen","role":"nope"}'],
   'the tool said: error: nope is not a role; the roles are: security')
 rm -rf $roles
 
+// a skill, kept in arno's configuration directory, read; another refused
+skills := "$dir/config/arno/skills"
+mkdir -p $skills
+writeln('When writing a Linear comment.' + chr(10) + chr(10) + 'Terse, findings first.') > "$skills/linear.md"
+expect(['call', 'skill', '{"name":"linear"}'], 0, 'out', 'the tool said: Terse, findings first.')
+expect(['call', 'skill', '{"name":"nope"}'], 0, 'out',
+  'the tool said: error: nope is not a skill; the skills are: linear')
+rm -rf $skills
+
 // a worker's steps are not the lead's max_steps: a cheap model takes many
 configure(['workers = small', 'max_steps = 2'])
 expect(['call', 'delegate', '{"task":"always read {\"path\":\"LICENSE\",\"limit\":1}","done_when":"read"}'], 0, 'out',

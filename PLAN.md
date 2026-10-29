@@ -480,6 +480,15 @@ one or more commits that build with `-Werror`.
      and the role's text leads the brief. arno-claude writes the
      project's and `~/.claude/agents`' as roles, their front matter
      (Claude Code's tools and models) left out.
+   - [x] Skills. How the human wants a kind of work done (a Linear
+     comment in their style, a ticket) belongs to no project, and in a
+     context file it is sent with every request. A skill is
+     `~/.config/arno/skills/NAME.md`, its first line what it is for, as
+     a role's; `skill` lists them in its description, `name` an enum, and
+     gives one's text when the work calls for it. Roles and skills share
+     the reading of such a directory (`shelf`). Offered to workers too.
+     Left out: a project's own skills, and Claude Code's
+     (`SKILL.md` in a directory, with front matter), until wanted.
    - [ ] The human's words in every brief. An audit's lead turned "can a
      user reach data that isn't theirs" into briefs about "procedures
      that take an ID", and its workers, given the profile and sign-up

@@ -217,6 +217,18 @@ begin
     end;
 end;
 
+(* The human's skills, kept for every project in arno's configuration
+   directory, skills/NAME.md. *)
+proc useSkills;
+var dir: Buf.Buf;
+begin
+    Buf.init(dir, Heap.heap);
+    defer Buf.done(dir);
+    Aconf.dir(dir);
+    Buf.str(dir, "/skills");
+    Atools.skills(Buf.bytes(dir));
+end;
+
 (* s made the session the config sets up, telling front of turns and
    show of commands, with a new conversation. What is wrong with the
    config is shown. *)
@@ -256,6 +268,7 @@ begin
         if Aprompt.Modes[i].name = Aconf.get(s^.conf, "mode") then s^.agent.mode := Aprompt.Mode(i); end;
     end;
     Atools.search(Aconf.get(s^.conf, "searxng"));
+    useSkills;
     Atools.shellEnabled(Aconf.get(s^.conf, "shell") # "no");
     Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
         Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));

@@ -61,8 +61,13 @@
    unsaved changes included, and an edit, once approved, is made by the
    editor, as one of the human's own undo steps; the disk is used for
    what the editor lacks. A file the editor has open is neither moved nor
-   removed. Leaves out the images read shows as pictures, which come
-   with the screen. *)
+   removed.
+
+   skill gives one of the human's skills, their how-to for a kind of
+   work kept for every project (Asession says where), listed in its
+   description and read only when the work calls for it, so a long one
+   costs nothing until then. Leaves out the images read shows as
+   pictures, which come with the screen. *)
 module Atools;
 import Aprice, Afence, Afind, Apeer, Arun, Alsp, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Math, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
@@ -241,6 +246,11 @@ const
          params: `{"type":"object","properties":` +
             `{"path":{"type":"string","description":"the file to delete, relative to the working directory"}},` +
             `"required":["path"]}`},
+        {name: "skill",
+         description: "Read a skill: the human's own instructions for a kind of work, kept for every project. " +
+            "Before you do work a skill below is for, read it, and follow it over your own habits.",
+         params: `{"type":"object","properties":{"name":{"type":"string","description":"the skill to read"}},` +
+            `"required":["name"]}`},
         {name: "note",
          description: "Keep a note about this project for your later sessions, which see every note in " +
             "their instructions. Note what you had to search for and the next session would too: where a " +
@@ -358,7 +368,7 @@ end;
 proc readOnly*(name: []const U8): BOOL;
 begin
     match name of
-    | "read", "find", "grep", "def", "outline", "git": return true;
+    | "read", "find", "grep", "def", "outline", "git", "skill": return true;
     | else: return false;
     end;
 end;
@@ -1640,6 +1650,12 @@ var
     allowed: []U8;       (* the builtins the host allows, a blank at each end of each; "" for all *)
     limited: BOOL;       (* the host named the builtins it allows *)
 
+var   (* the human's skills, a shelf (skills, below) *)
+    skillDir: []U8;    (* where the skills are, each NAME.md; "" for none *)
+    skillList: []U8;   (* the skills skill may read, blank-separated; "" for none, when it isn't offered *)
+    skillTool: Awire.Tool;  (* skill as offered, its description listing the skills and its schema limiting name to them *)
+    skillBufs: [2]Buf.Buf;  (* what skillTool's description and params are slices of *)
+
 (* Whether the host has a tool called name. *)
 proc isHost(name: []const U8): BOOL;
 var t: []Awire.Tool; i: INT;
@@ -1687,7 +1703,8 @@ begin
     Buf.str(res, name);
     Buf.str(res, "\". The tools are:");
     for i := 0 to LEN(Offered) - 1 do
-        if usable(Offered[i].name) and (Apeer.reachable() or (Offered[i].name # "editor") and (Offered[i].name # "open")) then
+        if usable(Offered[i].name) and (Apeer.reachable() or (Offered[i].name # "editor") and (Offered[i].name # "open")) and
+            ((LEN(skillList) > 0) or (Offered[i].name # "skill")) then
             Buf.add(res, ' ');
             Buf.str(res, Offered[i].name);
         end;
@@ -1821,25 +1838,34 @@ begin
     workerTool := {name: t.name, description: Buf.bytes(workerBufs[0]), params: Buf.bytes(workerBufs[1])};
 end;
 
-(* The roles in dir, each NAME.md, its first line what it is for and the
-   rest its instructions: delegate, as workers made it, then lists them
-   and takes role, one of them, whose instructions the worker gets with
-   its brief (roleText). Called after workers; with no workers, or no
-   roles in dir, it changes nothing. *)
-proc roles*(dir: []const U8);
-var d: Sys.Dir; name, first: []const U8; more: BOOL; enum, names, listed, path, text, with, params: Buf.Buf;
+(* Shelves: a directory of NAME.md files, each one's first line what it
+   is for and the rest its text. The roles a worker may be given and the
+   skills a model may read are each a shelf. *)
+
+(* Whether name may stand on a shelf: not empty, and only letters,
+   digits and -_. so it can be listed among blanks and written in a
+   schema as it is. *)
+proc plainName(name: []const U8): BOOL;
+var i: INT;
 begin
-    Str.free(Heap.heap, roleDir);
-    Str.free(Heap.heap, roleList);
-    roleDir := keep(dir);
-    roleList := keep("");
-    if (LEN(workerList) = 0) or (Sys.openDir(d, dir) < 0) then return; end;
-    Buf.init(enum, Heap.heap);
-    defer Buf.done(enum);
-    Buf.init(listed, Heap.heap);
-    defer Buf.done(listed);
-    Buf.init(names, Heap.heap);
-    defer Buf.done(names);
+    if LEN(name) = 0 then return false; end;
+    for i := 0 to LEN(name) - 1 do
+        match name[i] of
+        | 'a'..'z', 'A'..'Z', '0'..'9', '-', '_', '.':
+        | else: return false;
+        end;
+    end;
+    return true;
+end;
+
+(* The NAME.md files of dir, added to names (blank-separated), enum (the
+   names as a JSON enum's strings, comma-separated) and listed (a line
+   "- NAME: what it is for" each). A directory that can't be opened has
+   none. *)
+proc shelf(dir: []const U8; var names, enum, listed: Buf.Buf);
+var d: Sys.Dir; name, first: []const U8; more: BOOL; path, text: Buf.Buf;
+begin
+    if Sys.openDir(d, dir) < 0 then return; end;
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     Buf.init(text, Heap.heap);
@@ -1849,7 +1875,7 @@ begin
         Buf.reset(path);
         Fmt.write(path, "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
         Buf.reset(text);
-        if Str.hasSuffix(name, ".md") and (LEN(name) > 3) and (Files.load(Buf.bytes(path), text) = 0) then
+        if Str.hasSuffix(name, ".md") and plainName(name[0..LEN(name) - 3]) and (Files.load(Buf.bytes(path), text) = 0) then
             name := name[0..LEN(name) - 3];
             first, _, _ := Str.cut(Buf.bytes(text), "\n");
             if enum.len > 0 then Buf.add(enum, ','); Buf.add(names, ' '); end;
@@ -1860,6 +1886,51 @@ begin
         name, more := Sys.nextEntry(d);
     end;
     Sys.closeDir(d);
+end;
+
+(* The text of name on the shelf dir, whose names are names: its file
+   but the first line, added to b; false if it is none of names or can't
+   be read. *)
+proc shelved(dir, names, name: []const U8; var b: Buf.Buf): BOOL;
+var w, rest: []const U8; path, text: Buf.Buf; listed: BOOL;
+begin
+    listed := false;
+    w, rest := Str.field(names);
+    while LEN(w) > 0 do
+        if w = name then listed := true; end;
+        w, rest := Str.field(rest);
+    end;
+    if not listed then return false; end;
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Fmt.write(path, "{}/{}.md", [Fmt.str(dir), Fmt.str(name)]);
+    if Files.load(Buf.bytes(path), text) # 0 then return false; end;
+    _, rest, _ := Str.cut(Buf.bytes(text), "\n");
+    Buf.str(b, Str.trim(rest));
+    return true;
+end;
+
+(* The roles in dir, a shelf: delegate, as workers made it, then lists
+   them and takes role, one of them, whose instructions the worker gets
+   with its brief (roleText). Called after workers; with no workers, or
+   no roles in dir, it changes nothing. *)
+proc roles*(dir: []const U8);
+var enum, names, listed, with, params: Buf.Buf;
+begin
+    Str.free(Heap.heap, roleDir);
+    Str.free(Heap.heap, roleList);
+    roleDir := keep(dir);
+    roleList := keep("");
+    if LEN(workerList) = 0 then return; end;
+    Buf.init(enum, Heap.heap);
+    defer Buf.done(enum);
+    Buf.init(listed, Heap.heap);
+    defer Buf.done(listed);
+    Buf.init(names, Heap.heap);
+    defer Buf.done(names);
+    shelf(dir, names, enum, listed);
     if enum.len = 0 then return; end;
     Str.free(Heap.heap, roleList);
     roleList := keep(Buf.bytes(names));
@@ -1882,24 +1953,51 @@ end;
 (* role's instructions, its file but its first line, added to b: false
    if it is no role delegate offers. *)
 proc roleText*(role: []const U8; var b: Buf.Buf): BOOL;
-var w, rest: []const U8; path, text: Buf.Buf; listed: BOOL;
 begin
-    listed := false;
-    w, rest := Str.field(roleList);
-    while LEN(w) > 0 do
-        if w = role then listed := true; end;
-        w, rest := Str.field(rest);
+    return shelved(roleDir, roleList, role, b);
+end;
+
+(* The skills in dir, a shelf: the human's how-to for a kind of work,
+   kept for every project. skill is offered with them listed, each with
+   when to read it, and gives one's text when the model asks: a long
+   how-to then costs nothing until the work needs it. With none in dir,
+   skill isn't offered. *)
+proc skills*(dir: []const U8);
+var enum, names, listed: Buf.Buf; t: Awire.Tool; i: INT;
+begin
+    Str.free(Heap.heap, skillDir);
+    Str.free(Heap.heap, skillList);
+    skillDir := keep(dir);
+    Buf.init(enum, Heap.heap);
+    defer Buf.done(enum);
+    Buf.init(listed, Heap.heap);
+    defer Buf.done(listed);
+    Buf.init(names, Heap.heap);
+    defer Buf.done(names);
+    shelf(dir, names, enum, listed);
+    skillList := keep(Buf.bytes(names));
+    for i := 0 to LEN(Offered) - 1 do
+        if Offered[i].name = "skill" then t := Offered[i]; end;
     end;
-    if not listed then return false; end;
-    Buf.init(path, Heap.heap);
-    defer Buf.done(path);
-    Buf.init(text, Heap.heap);
-    defer Buf.done(text);
-    Fmt.write(path, "{}/{}.md", [Fmt.str(roleDir), Fmt.str(role)]);
-    if Files.load(Buf.bytes(path), text) # 0 then return false; end;
-    _, rest, _ := Str.cut(Buf.bytes(text), "\n");
-    Buf.str(b, Str.trim(rest));
-    return true;
+    Buf.done(skillBufs[0]);
+    Buf.done(skillBufs[1]);
+    Buf.init(skillBufs[0], Heap.heap);
+    Buf.init(skillBufs[1], Heap.heap);
+    Buf.str(skillBufs[0], t.description);
+    Buf.str(skillBufs[0], " Skills:");
+    Buf.str(skillBufs[0], Buf.bytes(listed));
+    Buf.str(skillBufs[1], `{"type":"object","properties":{"name":{"type":"string","enum":[`);
+    Buf.str(skillBufs[1], Buf.bytes(enum));
+    Buf.str(skillBufs[1], `],"description":"the skill to read"}},"required":["name"]}`);
+    skillTool := {name: t.name, description: Buf.bytes(skillBufs[0]), params: Buf.bytes(skillBufs[1])};
+end;
+
+(* skill's call: the text of the skill a names, or what the skills are. *)
+proc skill(const a: Args; var out: Buf.Buf);
+begin
+    if not shelved(skillDir, skillList, str(a, "name"), out) then
+        Fmt.write(out, "error: {} is not a skill; the skills are: {}", [Fmt.str(str(a, "name")), Fmt.str(skillList)]);
+    end;
 end;
 
 (* The roles delegate may name, blank-separated. *)
@@ -2192,6 +2290,7 @@ begin
         match Offered[i].name of
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
+        | "skill": if LEN(skillList) = 0 then continue; end; Tools.push(offer, skillTool); continue;
         | "delegate": if not lead then continue; end; Tools.push(offer, delegateOffer(Offered[i])); continue;
         | "plan": if not plan then continue; end;
         | "merge": if not lead or not edits or (LEN(Afence.stage) = 0) then continue; end;
@@ -2364,6 +2463,8 @@ begin
         move(a, h, mem, res);
     elsif name = "remove" then
         remove(a, h, mem, res);
+    elsif name = "skill" then
+        skill(a, res);
     elsif name = "note" then
         Aahead.note(str(a, "text"), mem, res);
     elsif (name = "search") and (LEN(searx) > 0) then
@@ -2535,6 +2636,36 @@ begin
     roles("");
 end;
 
+(* Skills: listed in skill's offer, name limited to them, one's text
+   without its first line, a file whose name won't fit a schema left
+   out, and skill not offered with none. *)
+proc testSkills();
+var t: []Awire.Tool; i: INT; d, schema: []const U8;
+begin
+    _ := Sys.makeDir("skills");
+    _ := Files.write("skills/linear.md", "When writing a Linear comment.\n\nTerse, findings first.\n");
+    _ := Files.write("skills/a \"b\".md", "not one: a quote in its name\n");
+    skills("skills");
+    t := offered(false, true, false);
+    d := "";
+    schema := "";
+    for i := 0 to LEN(t) - 1 do
+        if t[i].name = "skill" then d := t[i].description; schema := t[i].params; end;
+    end;
+    if Str.find(d, "- linear: When writing a Linear comment.") < 0 then expect("a skill listed", d, "- linear: ..."); end;
+    if Str.find(d, "quote") >= 0 then expect("a name that won't fit left out", d, "no quote"); end;
+    expect("skill's schema", schema, `{"type":"object","properties":{"name":{"type":"string","enum":["linear"],` +
+        `"description":"the skill to read"}},"required":["name"]}`);
+    expect("a skill", run("skill", `{"name":"linear"}`, nil), "Terse, findings first.");
+    expect("no skill", run("skill", `{"name":"../skills/linear"}`, nil),
+        "error: ../skills/linear is not a skill; the skills are: linear");
+    skills("none");
+    t := offered(false, true, false);
+    for i := 0 to LEN(t) - 1 do
+        if t[i].name = "skill" then expect("skill offered with none", "offered", "not"); end;
+    end;
+end;
+
 proc main*: INT;
 var dir, s, t, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
@@ -2559,6 +2690,7 @@ begin
     Afence.init;
     testWorkers();
     testRoles();
+    testSkills();
 
     expect("read", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
     expect("offset and limit", run("read", `{"path":"f","offset":"2","limit":1}`, nil), "    2\ttwo\n");

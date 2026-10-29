@@ -181,7 +181,9 @@ keys, the copy-mode keys, and the config keys.
 ### What the model may do
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
-`run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
+`run`, `check`, `edit`, `move`, `remove`, `note`, `skill` (your how-to for a kind of work, from
+`~/.config/arno/skills/NAME.md`, its first line what it is for, read
+when the work calls for it), `search`, `fetch`,
 `delegate` (when the config names `workers`; each step picks its model, the first by default), `merge` (a staged worker's diff, into the copy or
 dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a

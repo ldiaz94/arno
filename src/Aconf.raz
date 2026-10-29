@@ -485,24 +485,33 @@ begin
     c.prov.params := Strs.all(c.params);
 end;
 
+(* arno's directory of configuration, $XDG_CONFIG_HOME/arno or
+   ~/.config/arno, added to b. *)
+proc dir*(var b: Buf.Buf);
+var base: []const U8;
+begin
+    base := Sys.env("XDG_CONFIG_HOME");
+    if LEN(base) > 0 then
+        Buf.str(b, base);
+    else
+        Buf.str(b, Sys.env("HOME"));
+        Buf.str(b, "/.config");
+    end;
+    Buf.str(b, "/arno");
+end;
+
 (* c made the configuration in arno's file, or the ollama preset if
    there is none. *)
 proc load*(var c: Conf);
-var path, text: Buf.Buf; base: []const U8;
+var path, text: Buf.Buf;
 begin
     init(c);
     Buf.init(path, Heap.heap);
     Buf.init(text, Heap.heap);
     defer Buf.done(path);
     defer Buf.done(text);
-    base := Sys.env("XDG_CONFIG_HOME");
-    if LEN(base) > 0 then
-        Buf.str(path, base);
-    else
-        Buf.str(path, Sys.env("HOME"));
-        Buf.str(path, "/.config");
-    end;
-    Buf.str(path, "/arno/config");
+    dir(path);
+    Buf.str(path, "/config");
     if Files.load(Buf.bytes(path), text) = 0 then read(c, Buf.bytes(text)); end;
 end;
 
