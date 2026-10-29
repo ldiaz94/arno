@@ -39,6 +39,7 @@ const
     MaxHits = 200;         (* lines grep finds *)
     MaxContext* = 10;      (* lines of context grep shows around a match *)
     MaxLine = 200;         (* bytes of a line grep shows *)
+    MaxResult = 20000;     (* bytes of matches grep shows: about 5K tokens, so one call can't flood the context *)
     MaxDecl = 160;         (* bytes of a line outline shows *)
     MaxDefs* = 10;         (* definitions def shows *)
     MaxBody = 300;         (* lines of each *)
@@ -247,7 +248,9 @@ type
         context: INT;
         glob: Rwglob.Glob;
         globbed: BOOL;      (* glob is set *)
-        hits: INT;
+        hits: INT;          (* matches shown *)
+        full: BOOL;         (* MaxResult is reached: matches are counted, not shown *)
+        left: INT;          (* matches counted once full *)
         starts: Ints.Vec;   (* where each line of the file starts, and its end after the last *)
     end;
 
@@ -271,8 +274,9 @@ end;
    context as "path-n- line", as grep -n -C has them, and "--" between
    groups that don't touch. last is the last line shown, which keeps
    groups that overlap from showing a line twice; upto is how far the
-   group's trailing context reaches. False once MaxHits are found and
-   the last one's context is shown. *)
+   group's trailing context reaches. Once the matches shown fill
+   MaxResult, the rest are only counted, in g.left. False once MaxHits
+   are found, shown and counted, and the last one's context is shown. *)
 proc scan(var g: Grep; var s: Source; path: []const U8; var out: Buf.Buf): BOOL;
 var lines: [][]const U8; text: []const U8; n, a, k, last, upto, at: INT; more: BOOL;
 begin
@@ -287,7 +291,10 @@ begin
     at := 0;
     for n := 1 to LEN(lines) do
         (* the line in text, which may be the lowered copy *)
-        if Str.find(text[at..at + LEN(lines[n - 1])], g.pat) >= 0 then
+        if g.full and more and (Str.find(text[at..at + LEN(lines[n - 1])], g.pat) >= 0) then
+            INC(g.left);
+            if g.hits + g.left >= MaxHits then more := false; end;
+        elsif Str.find(text[at..at + LEN(lines[n - 1])], g.pat) >= 0 then
             if not more then break; end;
             a := n - g.context;
             if a <= last then a := last + 1; end;
@@ -300,6 +307,7 @@ begin
             upto := n + g.context;
             INC(g.hits);
             if g.hits >= MaxHits then more := false; end;
+            if out.len >= MaxResult then g.full := true; end;
         elsif n <= upto then
             show(out, path, s, n, '-');
             last := n;
@@ -346,7 +354,16 @@ begin
     defer close(w);
     p, ok := next(w);
     while ok and scan(g, s, p, out) do p, ok := next(w); end;
-    if g.hits >= MaxHits then Buf.str(out, "[stopped at 200 matches]"); end;
+    if g.full then
+        Buf.str(out, "[cut at ");
+        int(out, MaxResult);
+        Buf.str(out, " bytes: ");
+        if g.hits + g.left >= MaxHits then Buf.str(out, "at least "); end;
+        int(out, g.left);
+        Buf.str(out, " more matches left out; search a narrower path or glob, or a longer text]");
+    elsif g.hits >= MaxHits then
+        Buf.str(out, "[stopped at 200 matches]");
+    end;
     if out.len = 0 then Buf.str(out, "no matches"); end;
 end;
 
@@ -931,7 +948,7 @@ begin
 end;
 
 proc main*: INT;
-var b: Buf.Buf; dir: []const U8; n: INT;
+var b: Buf.Buf; dir, res: []const U8; n: INT;
 begin
     if not Arena.init(mem, 1 shl 26) then return 1; end;
     Buf.init(b, Heap.heap);
@@ -966,6 +983,10 @@ begin
     _ := Files.write("build/find/.gitignore", "gen/\n");
     _ := Files.write("build/find/src/a.c", "int\nadd(int a, int b)\n{\n    return a + b;\n}\n");
     _ := Files.write("build/find/src/feature/x.py", "def add(a):\n    return a\n");
+    _ := Sys.makeDir("build/find/big");
+    for n := 1 to 190 do Buf.str(b, "zzz 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\n"); end;
+    _ := Files.write("build/find/big/b", Buf.bytes(b));
+    Buf.init(b, Heap.heap);
     _ := Files.write("build/find/src/bin", "add\x00");
     _ := Files.write("build/find/gen/g.c", "int add;\n");
     _ := Files.write("build/find/.hidden/h.c", "int add;\n");
@@ -993,6 +1014,11 @@ begin
     expect("grep, context", result(b), "src/a.c-3- {\nsrc/a.c:4:     return a + b;\nsrc/a.c-5- }\n");
     grep(".", "add", "*.py", false, 0, SYSTEM.ADR(mem.base), b);
     expect("grep, a glob", result(b), "src/feature/x.py:1: def add(a):\n");
+    grep("big", "zzz", "", false, 0, SYSTEM.ADR(mem.base), b);
+    res := result(b);
+    expect("grep, cut", res[LEN(res) - 96..LEN(res)],
+        "[cut at 20000 bytes: 16 more matches left out; search a narrower path or glob, or a longer text]");
+    if LEN(res) > MaxResult + 400 then Out.str("Afind: grep's result is too long\n"); failed := true; end;
     grep(".", "nowhere", "", false, 0, SYSTEM.ADR(mem.base), b);
     expect("grep, none", result(b), "no matches");
 

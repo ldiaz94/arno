@@ -113,6 +113,7 @@ const
     ShellFlood = 4 * 1024 * 1024;   (* bytes of output past which it is killed *)
     MaxResults = 8;    (* search's results *)
     MaxPage = 1 shl 20;   (* bytes of a page fetch reads; it shows far fewer *)
+    MaxText = 20000;   (* bytes of a page fetch shows at once: about 5K tokens, so a long page can't flood the context *)
     WebWait = 30;      (* seconds search and fetch wait for a page *)
     Hex = "0123456789ABCDEF";
 
@@ -259,9 +260,11 @@ const
             "after search to read the pages found, not just the first hit: snippets are not evidence. When the " +
             "answer matters, read two or three sources, and prefer primary ones - official documentation, the " +
             "project's own repository, a man page - to pages that retell them. Say in your answer which URLs " +
-            "you relied on. http and https only.",
+            "you relied on. http and https only. A long page comes back in parts, " +
+            "each ending with the offset to read on from.",
          params: `{"type":"object","properties":` +
-            `{"url":{"type":"string","description":"the page's URL, http:// or https://, as search gave it"}},` +
+            `{"url":{"type":"string","description":"the page's URL, http:// or https://, as search gave it"},` +
+            `"offset":{"type":"integer","description":"first byte of the text to show, from 0; default 0"}},` +
             `"required":["url"]}`},
         {name: "editor",
          description: "See what the human has open in their editor: the current file and line, and the other " +
@@ -1638,12 +1641,40 @@ begin
     if out.len = 0 then Buf.str(out, "no results"); end;
 end;
 
+(* s cut to at most max bytes, at where a character starts. *)
+proc cutAt(s: []const U8; max: INT): []const U8;
+begin
+    if LEN(s) <= max then return s; end;
+    while (max > 0) and (s[max] & 0C0H = 80H) do DEC(max); end;   (* where a character starts *)
+    return s[0..max];
+end;
+
+(* text from byte offset on, at most MaxText bytes of it; when cut, a
+   last line says how much is left and the offset to read on from. *)
+proc window(text: []const U8; offset: INT; var out: Buf.Buf);
+var start, stop: INT;
+begin
+    start := offset;
+    if start < 0 then start := 0; end;
+    if start > LEN(text) then start := LEN(text); end;
+    while (start < LEN(text)) and (text[start] & 0C0H = 80H) do INC(start); end;   (* where a character starts *)
+    stop := start + LEN(cutAt(text[start..LEN(text)], MaxText));
+    Buf.str(out, text[start..stop]);
+    if stop < LEN(text) then
+        Fmt.write(out, "\n[cut at byte {} of {}; {} bytes left; fetch again with offset {} to read on]",
+            [Fmt.int(stop), Fmt.int(LEN(text)), Fmt.int(LEN(text) - stop), Fmt.int(stop)]);
+    elsif out.len = 0 then
+        Buf.str(out, "(empty)");
+    end;
+end;
+
 (* fetch: the page at the URL, as text: an HTML page's laid out by
    Ahtml, any other text's as it is. A body with a NUL in its first 8 KB
    is refused, as read refuses a binary file: its Content-Type can't be
-   trusted to say so. *)
+   trusted to say so. The text is shown from the byte offset, MaxText at
+   a time. *)
 proc fetch(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
-var body: Buf.Buf; url, kind, s: []const U8; err: ERROR;
+var body, text: Buf.Buf; url, kind, s: []const U8; err: ERROR;
 begin
     url := str(a, "url");
     if not Str.hasPrefix(url, "http://") and not Str.hasPrefix(url, "https://") then
@@ -1660,8 +1691,10 @@ begin
         return;
     end;
     s := Buf.bytes(body);
+    Buf.init(text, mem);
     if (Str.find(kind, "text/html") >= 0) or (Str.find(kind, "application/xhtml") >= 0) then
-        Ahtml.text(s, kind, out);
+        Ahtml.text(s, kind, text);
+        window(Buf.bytes(text), int(a, "offset", 0), out);
         return;
     end;
     if LEN(s) > 8192 then s := s[0..8192]; end;
@@ -1669,16 +1702,7 @@ begin
         Fmt.write(out, "error: not text ({})", [Fmt.str(kind)]);
         return;
     end;
-    Buf.str(out, Buf.bytes(body));
-    if out.len = 0 then Buf.str(out, "(empty)"); end;
-end;
-
-(* s cut to at most max bytes, at where a character starts. *)
-proc cutAt(s: []const U8; max: INT): []const U8;
-begin
-    if LEN(s) <= max then return s; end;
-    while (max > 0) and (s[max] & 0C0H = 80H) do DEC(max); end;   (* where a character starts *)
-    return s[0..max];
+    window(Buf.bytes(body), int(a, "offset", 0), out);
 end;
 
 (* The tool name, one an MCP server offers, run with a's arguments, once
@@ -1991,7 +2015,7 @@ begin
 end;
 
 proc main*: INT;
-var dir, s: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
+var dir, s, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
     Arun.child();
     Buf.init(hostSaid, Heap.heap);
@@ -2041,6 +2065,21 @@ begin
     expect("git, no args", run("git", `{}`, nil), "error: args must be an array of strings, the subcommand first");
     expect("grep outside, nobody", run("grep", `{"pattern":"far","path":"../out"}`, nil)[0..9], "declined:");
     expect("git outside, nobody", run("git", `{"args":["log","--","../out/g"]}`, nil)[0..9], "declined:");
+    Buf.init(long, Heap.heap);
+    for i := 1 to 3000 do Buf.str(long, "0123456789\n"); end;
+    Buf.init(store, Heap.heap);
+    window(Buf.bytes(long), 0, store);
+    w := Buf.bytes(store);
+    expect("fetch, cut", w[MaxText..LEN(w)],
+        "\n[cut at byte 20000 of 33000; 13000 bytes left; fetch again with offset 20000 to read on]");
+    Buf.init(store, Heap.heap);
+    window(Buf.bytes(long), 20000, store);
+    w := Buf.bytes(store);
+    expect("fetch, the rest", w[LEN(w) - 11..LEN(w)], "0123456789\n");
+    if LEN(w) # 13000 then Out.str("Atools: fetch's offset wrong\n"); return 1; end;
+    Buf.init(store, Heap.heap);
+    window("", 0, store);
+    expect("fetch, empty", Buf.bytes(store), "(empty)");
     s := run("read", `{"path":"long"}`, nil);
     expect("cut", s[LEN(s) - 49..LEN(s)], "\n[cut before line 1065; read on with offset 1065]");
 

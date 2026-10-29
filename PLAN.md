@@ -427,7 +427,9 @@ one or more commits that build with `-Werror`.
      project (`context.json`), asked once, a turn with nobody to ask
      uses it, and with none kept says the files are left out. No
      answer (end of input, a gone screen) is 0, not kept.
-   - [ ] `fetch` and `grep` give at most so much, and say where more is.
+   - [x] `fetch` and `grep` give at most so much, and say where more is.
+     fetch shows 20000 bytes of the text from a byte `offset`, grep the
+     same of matches; each ends with what is left out and how to get it.
    - [ ] Profiles: sections of the config for a directory and what is
      under it, setting `run`, `trust`, `stage` and `context_files`, in
      place of `tests.json` and `stage.json`. In the human's config,

@@ -645,6 +645,8 @@ does.
 With
 .Ar context ,
 that many lines either side of each match, up to 10.
+The result is cut at about 20000 bytes, ending with how many matches
+were left out.
 .It Ic def
 Where a name is defined, and the whole definition with the comment above
 it, numbered as
@@ -730,6 +732,10 @@ is set.
 A web page, by its URL, as text: its title, then its text as a text
 browser shows it, scripts and styles left out; a plain-text, JSON or
 Markdown body as it is.
+At most 20000 bytes come at once; a longer page ends with a line saying
+how much is left and the
+.Ar offset
+to fetch again with.
 .Li http:
 and
 .Li https:
