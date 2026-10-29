@@ -454,6 +454,30 @@ one or more commits that build with `-Werror`.
      `build_steps` is only a backstop. Its report line says what it
      cost. `/budget` shows or sets the turn's budget for the session,
      build mode's in build mode.
+   - [ ] Who said it. A worker's text, calls and results reach the
+     screen through the lead's Front, so its sixty calls read as the
+     lead's own and nothing tells them apart. Front gets the speaker,
+     0 for the lead and N for worker N, set by `work`; each
+     `Aboard.Entry` keeps it, and `--serve` sends it (arno-serve(5)).
+     Nothing on the screen changes yet.
+   - [ ] Workers' conversations kept. A worker's conversation is gone
+     once it reports, so what it read can't be checked afterwards. It
+     is kept as `worker-N.json` in the scratch, beside `worker-N.diff`,
+     and the report line names it.
+   - [ ] Views. `/view [lead|all|N]` and a key that cycles them choose
+     what the transcript draws; every entry stays on the board, as
+     draw only lays out what is shown, and copy mode follows the view.
+     The status line says the view, so a filtered one is never taken
+     for the whole. In `all`, every line says who spoke, the lead most
+     plainly: its entries flush left in the plain colours, a worker's
+     indented under a gutter label, `w2 glm-5.3-flash`, in a colour of
+     its own, and a header where the speaker changes, so a worker's
+     run reads as one block and the lead's return is plain.
+   - [ ] A worker as one line. In the lead's view each worker is a line
+     under its `delegate`, kept up to date: `w2 glm-5.3-flash · step 23
+     · $0.04 · read enterprise/cv.ts`. Opening it shows its view. The
+     shape parallel workers need, and may wait for them.
+   - [ ] arnold filters by the speaker as the screen does.
    - [ ] Workers in parallel.
    - [ ] Queued prompts. Enter while a turn runs does nothing now, so the
      human waits to say the next thing. It is queued instead: shown above
