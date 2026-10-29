@@ -49,6 +49,7 @@ const
     MaxLead = 600;         (* bytes of the README's first paragraph *)
     MaxLook = 5;           (* names prefetch looks up *)
     MaxAttach = 3;         (* and attaches *)
+    FileMemory = 64 * 1024 * 1024;   (* a file's search in lookup: its text twice, its lines; pages taken as used *)
     MaxSeen = 10;          (* definitions of a name looked at before it is given up as common *)
     MaxText = 64000;       (* bytes of a <file> block *)
     MaxNotes* = 30;        (* notes kept for a project *)
@@ -616,15 +617,20 @@ end;
    its lines ("12-30") and its numbered text; false if there is none,
    or more than one. A definition of a single line where another has a
    body is a forward declaration, a prototype in a C header or a Pascal
-   interface's routine, and doesn't count against the body. *)
+   interface's routine, and doesn't count against the body. Each file
+   is read in an arena of its own, let go before the next: in mem, a
+   long message's names over a large project's files ran out of it. *)
 proc lookup(name: []const U8; files: [][]const U8; mem: ^Mem.Allocator): ([]const U8, []const U8, []const U8, BOOL);
 var b: Buf.Buf; starts: Offsets.Vec; s, head, path, lines, first, last: []const U8; at: []INT;
-    f, n, i, j, stop, pick, bodies: INT; a, z: I64; long: [MaxSeen + 1]BOOL;
+    f, n, i, j, stop, pick, bodies: INT; a, z: I64; long: [MaxSeen + 1]BOOL; each: Arena.Arena;
 begin
     Buf.init(b, mem);
     n := 0;
+    if not Arena.init(each, FileMemory) then return "", "", "", false; end;
+    defer Arena.done(each);
     for f := 0 to LEN(files) - 1 do
-        INC(n, Afind.defs(files[f], name, mem, b));
+        INC(n, Afind.defs(files[f], name, SYSTEM.ADR(each.base), b));
+        Arena.reset(each);
         if n > MaxSeen then return "", "", "", false; end;
     end;
     (* def's text: each definition's "path:first-last", then its lines,
@@ -1045,6 +1051,33 @@ begin
     Buf.str(seen, s);
 end;
 
+(* lookup over many files that mention a name and don't define it, as a
+   long message's common words find in a large project, in an arena of
+   8 MB: what each file took is let go before the next, or the arena
+   runs out and arno stops. *)
+proc lookupMany;
+var small: Arena.Arena; b, path: Buf.Buf; files: Strs.Vec; i: INT; found: BOOL;
+begin
+    if not Arena.init(small, 8 shl 20) then failed := true; return; end;
+    defer Arena.done(small);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Strs.init(files, Heap.heap);
+    defer Strs.done(files);
+    _ := Sys.makeDir("build/ahead/many");
+    for i := 0 to 4000 do Buf.str(b, "x := manyName + 1;\n"); end;
+    for i := 0 to 59 do
+        Buf.reset(path);
+        Fmt.write(path, "build/ahead/many/f{}.pas", [Fmt.int(i)]);
+        _ := Files.write(Buf.bytes(path), Buf.bytes(b));
+        Strs.push(files, copy(Heap.heap, Buf.bytes(path)));
+    end;
+    _, _, _, found := lookup("manyName", Strs.all(files), SYSTEM.ADR(small.base));
+    if found then expect("many files, a small arena", "a definition", "none"); end;
+end;
+
 proc main*: INT;
 var b: Buf.Buf; dir: []const U8;
 begin
@@ -1119,6 +1152,7 @@ begin
     expect("notes.json", result(b), result(seen));
 
     _ := Sys.setWorkDir(dir);
+    lookupMany();
     if failed then return 1; end;
     return 0;
 end;
