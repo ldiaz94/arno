@@ -14,6 +14,9 @@
    A reply is read as markdown, lightly: a fence of three backquotes
    starts or ends a block of code, a line of #s and a space is a
    heading, and **bold** and `code` are styled, their marks dropped. A
+   line of >s is quoted, a bar for each > before it, and so are the
+   lines that follow it lazily, as CommonMark has it: up to a blank
+   line or one that opens a block of its own, a list's item say. A
    tool call is a line, its name, its arguments and what came of it,
    until it is opened: then its arguments in full, the diff its
    question showed, and its result, 400 lines at most, follow, a diff
@@ -60,6 +63,7 @@ const
     MaxShown = 400;     (* lines of a result an open call shows *)
     UserBar = "\u{258C} ";
     ReplyBar = "\u{258C} ";
+    QuoteBar = "\u{2502} ";   (* one for each level of a quote *)
     Gutter = "    \u{2502} ";
     Plan = "    ";   (* a plan's lines, under its call *)
 
@@ -313,12 +317,45 @@ begin
     until not ok;
 end;
 
+(* Whether t, a line without its leading blanks, opens a block of its
+   own: a fence, a heading, a list's item, a table's row or a rule.
+   Such a line, or a blank one, ends a quote; any other continues it. *)
+proc opens(t: []const U8): BOOL;
+var i: INT;
+begin
+    if (LEN(t) = 0) or (t[0] = '#') or (t[0] = '|') or Str.hasPrefix(t, "```") or Str.hasPrefix(t, "---") then
+        return true;
+    end;
+    if Str.hasPrefix(t, "- ") or Str.hasPrefix(t, "* ") or Str.hasPrefix(t, "+ ") then return true; end;
+    i := 0;
+    while (i < LEN(t)) and Str.isDigit(t[i]) do INC(i); end;
+    return (i > 0) and (i + 1 < LEN(t)) and ((t[i] = '.') or (t[i] = ')')) and (t[i + 1] = ' ');
+end;
+
 (* A reply's line, as markdown, into text and looks; fence says whether
-   a block of code is open, before and after. *)
-proc markdown(line: []const U8; var fence: BOOL);
-var h, i: INT; bold, quoted: BOOL; l: Look;
+   a block of code is open, and quote how many quotes deep the line is,
+   before and after. *)
+proc markdown(line: []const U8; var fence: BOOL; var quote: INT);
+var t: []const U8; h, i, depth: INT; bold, quoted: BOOL; l: Look;
 begin
     start();
+    if not fence then
+        (* each > and the blank after it is a level of quote *)
+        t := line;
+        depth := 0;
+        while Str.hasPrefix(Str.trimLeft(t), ">") do
+            t := Str.trimLeft(t);
+            t := t[1..LEN(t)];
+            if Str.hasPrefix(t, " ") then t := t[1..LEN(t)]; end;
+            INC(depth);
+        end;
+        if depth > 0 then
+            quote := depth;
+            line := t;
+        elsif opens(Str.trimLeft(line)) then
+            quote := 0;
+        end;
+    end;
     if Str.hasPrefix(Str.trimLeft(line), "```") then
         fence := not fence;
         add(line, dim);
@@ -348,6 +385,25 @@ begin
             INC(i);
         end;
     end;
+end;
+
+(* s, as markdown, each line wrapped at w columns after pre and a bar
+   for each quote it is in, drawn dim. *)
+proc prose(s, pre: []const U8; w: INT);
+var line: []const U8; fence, ok: BOOL; quote, i: INT; bars: Buf.Buf;
+begin
+    Buf.init(bars, Heap.heap);
+    defer Buf.done(bars);
+    fence := false;
+    quote := 0;
+    repeat
+        line, s, ok := Str.cut(s, "\n");
+        markdown(line, fence, quote);
+        Buf.reset(bars);
+        Buf.str(bars, pre);
+        for i := 1 to quote do Buf.str(bars, QuoteBar); end;
+        wrap(Buf.bytes(bars), dim, w - quote * TuiScreen.columns(QuoteBar));
+    until not ok;
 end;
 
 (* s on one line: its line breaks and tabs as blanks. *)
@@ -439,7 +495,7 @@ end;
 
 (* Entry i laid out at w columns, its rows counted from row on. *)
 proc layout(i: INT; w: INT);
-var e: ^Entry; s, line: []const U8; fence, ok: BOOL; more: INT; note: Buf.Buf;
+var e: ^Entry; s: []const U8; more: INT; note: Buf.Buf;
 begin
     e := SYSTEM.ADR(all()[i]);
     s := Buf.bytes(e^.text);
@@ -453,12 +509,7 @@ begin
         if LEN(s) = 0 then return; end;
         start();
         emit("", plain, 0, 0);
-        fence := false;
-        repeat
-            line, s, ok := Str.cut(s, "\n");
-            markdown(line, fence);
-            wrap(ReplyBar, dim, w - 2);
-        until not ok;
+        prose(s, ReplyBar, w - 2);
     | tool:
         header(e^, w - 2);
         if not e^.open then return; end;
@@ -467,13 +518,7 @@ begin
         if (Buf.bytes(e^.text) = "plan") and (e^.detail.len > 0) then
             start();
             emit("", plain, 0, 0);
-            s := Str.trimRight(Buf.bytes(e^.detail));
-            fence := false;
-            repeat
-                line, s, ok := Str.cut(s, "\n");
-                markdown(line, fence);
-                wrap(Plan, plain, w - 4);
-            until not ok;
+            prose(Str.trimRight(Buf.bytes(e^.detail)), Plan, w - 4);
             start();
             emit("", plain, 0, 0);
         else
@@ -606,6 +651,10 @@ begin
     call("plan", `{"plan":"# Steps"}`);
     detail("# Steps\n1. **one** thing");
     ok := expect("a plan", 30, 6, 0, "  \u{25BE} plan {\"plan\":\"#   running\u{2026}\n\n    Steps\n    1. one thing\n\n\nback 0\n") and ok;
+    (* a quote wrapped, continued lazily, ended by a list's item, and nested *)
+    clear;
+    reply("> a quote long enough to wrap\nlazily\n- item\n> > deep\n\nafter");
+    ok := expect("quotes", 24, 8, 0, "\n\u{258C} \u{2502} a quote long enough\n\u{258C} \u{2502} to wrap\n\u{258C} \u{2502} lazily\n\u{258C} - item\n\u{258C} \u{2502} \u{2502} deep\n\u{258C}\n\u{258C} after\nback 0\n") and ok;
     if ok then return 0; end;
     return 1;
 end;
