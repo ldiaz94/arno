@@ -1763,6 +1763,8 @@ var
     workerList: []U8;  (* the models delegate may name, blank-separated; "" for none *)
     workerTool: Awire.Tool;  (* delegate as offered, its description listing workerList and its schema limiting model to it *)
     workerBufs: [2]Buf.Buf;  (* what workerTool's description and params are slices of *)
+    roleDir: []U8;     (* where the roles are, each NAME.md; "" for none *)
+    roleList: []U8;    (* the roles delegate may name, blank-separated; "" for none *)
 
 (* search through the SearXNG at url, as config's searxng says; "" for
    none, when search isn't offered. *)
@@ -1815,6 +1817,93 @@ begin
     Buf.str(with, "]");
     Str.replace(workerBufs[1], t.params, `"model":{"type":"string"`, Buf.bytes(with));
     workerTool := {name: t.name, description: Buf.bytes(workerBufs[0]), params: Buf.bytes(workerBufs[1])};
+end;
+
+(* The roles in dir, each NAME.md, its first line what it is for and the
+   rest its instructions: delegate, as workers made it, then lists them
+   and takes role, one of them, whose instructions the worker gets with
+   its brief (roleText). Called after workers; with no workers, or no
+   roles in dir, it changes nothing. *)
+proc roles*(dir: []const U8);
+var d: Sys.Dir; name, first: []const U8; more: BOOL; enum, names, listed, path, text, with, params: Buf.Buf;
+begin
+    Str.free(Heap.heap, roleDir);
+    Str.free(Heap.heap, roleList);
+    roleDir := keep(dir);
+    roleList := keep("");
+    if (LEN(workerList) = 0) or (Sys.openDir(d, dir) < 0) then return; end;
+    Buf.init(enum, Heap.heap);
+    defer Buf.done(enum);
+    Buf.init(listed, Heap.heap);
+    defer Buf.done(listed);
+    Buf.init(names, Heap.heap);
+    defer Buf.done(names);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    name, more := Sys.nextEntry(d);
+    while more do
+        Buf.reset(path);
+        Fmt.write(path, "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
+        Buf.reset(text);
+        if Str.hasSuffix(name, ".md") and (LEN(name) > 3) and (Files.load(Buf.bytes(path), text) = 0) then
+            name := name[0..LEN(name) - 3];
+            first, _, _ := Str.cut(Buf.bytes(text), "\n");
+            if enum.len > 0 then Buf.add(enum, ','); Buf.add(names, ' '); end;
+            Fmt.write(enum, `"{}"`, [Fmt.str(name)]);
+            Buf.str(names, name);
+            Fmt.write(listed, "\n- {}: {}", [Fmt.str(name), Fmt.str(Str.trim(first))]);
+        end;
+        name, more := Sys.nextEntry(d);
+    end;
+    Sys.closeDir(d);
+    if enum.len = 0 then return; end;
+    Str.free(Heap.heap, roleList);
+    roleList := keep(Buf.bytes(names));
+    Buf.str(workerBufs[0], "\n\nA role is standing instructions for a kind of work, written for this project: " +
+        "name one in role when the step is that kind of work, and the worker gets them with your brief. Roles:");
+    Buf.str(workerBufs[0], Buf.bytes(listed));
+    Buf.init(with, Heap.heap);
+    defer Buf.done(with);
+    Buf.str(with, `"properties":{"role":{"type":"string","enum":[`);
+    Buf.str(with, Buf.bytes(enum));
+    Buf.str(with, `],"description":"the role whose instructions the worker gets; none if left out"},`);
+    Buf.init(params, Heap.heap);
+    defer Buf.done(params);
+    Str.replace(params, Buf.bytes(workerBufs[1]), `"properties":{`, Buf.bytes(with));
+    Buf.reset(workerBufs[1]);
+    Buf.str(workerBufs[1], Buf.bytes(params));
+    workerTool := {name: workerTool.name, description: Buf.bytes(workerBufs[0]), params: Buf.bytes(workerBufs[1])};
+end;
+
+(* role's instructions, its file but its first line, added to b: false
+   if it is no role delegate offers. *)
+proc roleText*(role: []const U8; var b: Buf.Buf): BOOL;
+var w, rest: []const U8; path, text: Buf.Buf; listed: BOOL;
+begin
+    listed := false;
+    w, rest := Str.field(roleList);
+    while LEN(w) > 0 do
+        if w = role then listed := true; end;
+        w, rest := Str.field(rest);
+    end;
+    if not listed then return false; end;
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Fmt.write(path, "{}/{}.md", [Fmt.str(roleDir), Fmt.str(role)]);
+    if Files.load(Buf.bytes(path), text) # 0 then return false; end;
+    _, rest, _ := Str.cut(Buf.bytes(text), "\n");
+    Buf.str(b, Str.trim(rest));
+    return true;
+end;
+
+(* The roles delegate may name, blank-separated. *)
+proc roleNames*(): []const U8;
+begin
+    return roleList;
 end;
 
 (* Whether delegate may name model. *)
@@ -2358,6 +2447,36 @@ begin
     workers("", "", p);
 end;
 
+(* Roles, after the workers: listed in delegate's offer, role limited
+   to them, and a role's instructions without its first line; a name
+   that isn't one of them reads nothing. *)
+proc testRoles();
+var t: []Awire.Tool; i: INT; p: Awire.Prov; d, schema: []const U8; b: Buf.Buf;
+begin
+    p := {};
+    _ := Sys.makeDir("roles");
+    _ := Files.write("roles/security.md", "Security review of a change.\n\nFollow the data.\n");
+    _ := Files.write("roles/notes.txt", "not a role\n");
+    workers("mine", "mine", p);
+    roles("roles");
+    t := offered(true, true, false);
+    d := "";
+    schema := "";
+    for i := 0 to LEN(t) - 1 do
+        if t[i].name = "delegate" then d := t[i].description; schema := t[i].params; end;
+    end;
+    if Str.find(d, "- security: Security review of a change.") < 0 then expect("a role listed", d, "- security: ..."); end;
+    if Str.find(schema, `"role":{"type":"string","enum":["security"]`) < 0 then expect("role limited to the roles", schema, "an enum"); end;
+    if Str.find(schema, `"model":{"type":"string","enum":["mine"]`) < 0 then expect("the workers kept", schema, "an enum"); end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    if not roleText("security", b) then expect("roleText", "false", "true"); end;
+    expect("a role's instructions", Buf.bytes(b), "Follow the data.");
+    if roleText("../roles/security", b) or roleText("notes", b) then expect("roleText of no role", "true", "false"); end;
+    workers("", "", p);
+    roles("");
+end;
+
 proc main*: INT;
 var dir, s, t, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
@@ -2381,6 +2500,7 @@ begin
     if Sys.setWorkDir("build/tools/proj") # 0 then Out.str("Atools: no build/tools\n"); return 1; end;
     Afence.init;
     testWorkers();
+    testRoles();
 
     expect("read", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
     expect("offset and limit", run("read", `{"path":"f","offset":"2","limit":1}`, nil), "    2\ttwo\n");

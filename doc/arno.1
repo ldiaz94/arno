@@ -848,6 +848,16 @@ and
 .Ic merge .
 Only its report goes back to the model, with the steps it took and
 what it cost.
+A step may name a
+.Cm role ,
+one of those kept in
+.Nm Ns 's
+own directory for the project,
+.Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /roles/ Ns Ar name Ns Pa .md ,
+whose first line says what it is for and the rest is given to the
+worker with the brief; they are listed in the tool's description.
+.Xr arno-claude 1
+writes Claude Code's agents there.
 A worker is paid out of the turn's budget: the step's
 .Cm budget
 if it names one, at most what the turn has left, and all of that if

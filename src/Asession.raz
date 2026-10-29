@@ -166,6 +166,12 @@ begin
     end;
     if not listed and (LEN(s.agent.worker) > 0) then Fmt.write(list, " {}", [Fmt.str(s.agent.worker)]); end;
     Atools.workers(Str.trim(Buf.bytes(list)), s.agent.worker, s.conf.prov);
+    (* the roles kept in arno's own directory for the project (arno-claude writes them) *)
+    if Afence.rooted then
+        Buf.reset(list);
+        Fmt.write(list, "{}projects{}/roles", [Fmt.str(Astore.dir()), Fmt.str(Afence.root)]);
+        Atools.roles(Buf.bytes(list));
+    end;
 end;
 
 (* s made the session the config sets up, telling front of turns and

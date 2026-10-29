@@ -189,6 +189,16 @@ expect(['call', 'delegate', '{"task":"look","done_when":"seen"}'], 0, 'out',
 holds('a worker', 'out', '2 messages')
 holds('a worker', 'err', 'arno: worker small: look')
 
+// a role, kept in arno's own directory for the project, taken; another refused
+roles := "$dir/data/arno/projects" + `pwd -P` + '/roles'
+mkdir -p $roles
+writeln('Security review of a change.' + chr(10) + chr(10) + 'Follow the data.') > "$roles/security.md"
+expect(['call', 'delegate', '{"task":"look","done_when":"seen","role":"security"}'], 0, 'out',
+  'the tool said: worker (small) report (1 steps')
+expect(['call', 'delegate', '{"task":"look","done_when":"seen","role":"nope"}'], 0, 'out',
+  'the tool said: error: nope is not a role; the roles are: security')
+rm -rf $roles
+
 // a worker's steps are not the lead's max_steps: a cheap model takes many
 configure(['workers = small', 'max_steps = 2'])
 expect(['call', 'delegate', '{"task":"always read {\"path\":\"LICENSE\",\"limit\":1}","done_when":"read"}'], 0, 'out',

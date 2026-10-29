@@ -367,9 +367,9 @@ end;
 proc turn*(var a: Agent; var c: Astore.Conv; var why: Buf.Buf): ERROR; forward;
 
 (* The brief of a worker, from delegate's arguments p, added to b: the
-   task, the files, when it is done, and what earlier workers of the
-   turn reported. *)
-proc brief(const a: Agent; const p: Atools.Args; task: []const U8; var b: Buf.Buf);
+   task, the files, when it is done, its role's instructions (role, ""
+   for none), and what earlier workers of the turn reported. *)
+proc brief(const a: Agent; const p: Atools.Args; task, role: []const U8; var b: Buf.Buf);
 var files: [][]const U8; reports: [][]U8; i: INT;
 begin
     Fmt.write(b, "Task: {}", [Fmt.str(task)]);
@@ -379,6 +379,7 @@ begin
     if LEN(Str.trim(Atools.str(p, "done_when"))) > 0 then
         Fmt.write(b, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(p, "done_when")))]);
     end;
+    if LEN(role) > 0 then Fmt.write(b, "\n\nYour role, standing instructions for this kind of work:\n{}", [Fmt.str(role)]); end;
     (* what earlier workers of this turn found goes along, so that the
        next one needn't find it again: a worker blind to a survey's
        findings wrote its own rule for what a unit already did *)
@@ -505,7 +506,7 @@ end;
    report, or why there is none, and what it changed added to out. *)
 proc delegate(var a: Agent; args: []const U8; var out: Buf.Buf);
 var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; copy: Astage.Work; m: ^Amsg.Msg;
-    b, why: Buf.Buf; task, model: []const U8; n: INT; err: ERROR; budget, before: F64;
+    b, why, role: Buf.Buf; task, model, named: []const U8; n: INT; err: ERROR; budget, before: F64;
 begin
     if a.working then
         Buf.str(out, "error: a worker cannot delegate");
@@ -551,11 +552,18 @@ begin
         if (budget <= 0.0) or (budget > a.stopAt - a.spent) then budget := a.stopAt - a.spent; end;
     end;
     a.allowance := budget;
+    Buf.init(role, Heap.heap);
+    defer Buf.done(role);
+    named := Str.trim(Atools.str(p, "role"));
+    if (LEN(named) > 0) and not Atools.roleText(named, role) then
+        Fmt.write(out, "error: {} is not a role; the roles are: {}", [Fmt.str(named), Fmt.str(Atools.roleNames())]);
+        return;
+    end;
     Astore.init(w, "worker");
     defer Astore.done(w);
     m := Msgs.add(w.msgs);
     Amsg.init(m^, Amsg.Role.user);
-    brief(a, p, task, b);
+    brief(a, p, task, Buf.bytes(role), b);
     Amsg.setText(m^, Buf.bytes(b));
 
     (* staged, the worker gets a copy of its own; safe, there is none to
