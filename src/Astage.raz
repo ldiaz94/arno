@@ -146,15 +146,23 @@ end;
    holds. In a copy, pinned to pin, the links to Deps are left out:
    a .gitignore naming node_modules/ ignores the directory, not the
    link. One the .gitignore already ignores is not named, as git
-   refuses to add a path it ignores even to leave it out. false if
-   git fails, why saying what it said. *)
+   refuses to add a path it ignores even to leave it out. A copy's
+   git runs only while we wait for it, so a lock on its index is one
+   left by a git a stop killed, and is removed. false if git fails,
+   why saying what it said. *)
 proc snap(idx, dir, pin: []const U8; var tree, why: Buf.Buf): BOOL;
-var args: Strs.Vec; i: INT;
+var args: Strs.Vec; i: INT; lock: Buf.Buf;
 begin
     Buf.reset(tree);
     Buf.reset(why);
     Strs.init(args, Heap.heap);
     defer Strs.done(args);
+    if LEN(pin) > 0 then
+        Buf.init(lock, Heap.heap);
+        defer Buf.done(lock);
+        Fmt.write(lock, "{}/index.lock", [Fmt.str(pin)]);
+        _ := Sys.remove(Buf.bytes(lock));
+    end;
     Strs.push(args, "add");
     Strs.push(args, "-A");
     if LEN(pin) > 0 then
@@ -700,6 +708,13 @@ begin
     _ := sh("printf 'gitdir: /nonexistent\\n' > ../.git");
     n := changes(diff, why);
     expect("a rewritten .git is not trusted", yes(n = 0), "yes");
+
+    (* a lock left by a git a stop killed does not jam the copy *)
+    _ := Sys.setEnv("GITDIR", gitDir);
+    _ := sh("touch $GITDIR/index.lock");
+    Buf.reset(why);
+    n := changes(diff, why);
+    expect("a stale lock is no hindrance", Buf.bytes(why), "");
 
     (* the model's work is the diff, and the human's is not in it *)
     _ := sh("printf 'model\\n' >> ../a.txt && printf 'fresh\\n' > ../c.txt && rm b.txt");
