@@ -17,6 +17,8 @@
 .Op Ar pid | Fl l
 .Nm
 .Fl h | \-help
+.Nm
+.Fl \-version
 .Sh DESCRIPTION
 .Nm
 puts a language model in a terminal next to your code.
@@ -105,6 +107,10 @@ root and title, a line each, parted by tabs; or
 .It Fl h , \-help
 Print the usage and exit.
 Only as the first argument; anywhere else it is a word of the prompt.
+.It Fl \-version
+Print the version, as the release is tagged, and exit.
+Only as the first argument, as for
+.Fl \-help .
 .El
 .Sh THE SCREEN
 The screen shows, from the top, the transcript, a rule, the input

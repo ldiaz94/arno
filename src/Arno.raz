@@ -36,20 +36,24 @@
    (Aserve). --attach shows another arno's session, a terminal's or a
    host's, in this terminal, and types into it (Aview, Ascreen); -l
    lists the sessions: process id, owner, project root and title.
+   --version says which arno this is.
 
    Depends on Asession, Ascreen, Aserve, Aview and Awire. *)
 module Arno;
 import Asession, Ascreen, Aserve, Aview, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
 import SYSTEM;
 
-const Usage = `
+const
+    Usage = `
     usage: arno
            arno prompt ...
            arno --resume id prompt ...
            arno --serve
            arno --attach [pid | -l]
            arno -h | --help
+           arno --version
     `;
+    Version = "arno 0.2.0\n";    (* as the release is tagged, v0.2.0 *)
 
 var stopped: BOOL;
 
@@ -272,6 +276,10 @@ begin
     Arun.child();
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
         Out.str(Usage);
+        return 0;
+    end;
+    if (ARGC() >= 2) and (Files.arg(1) = "--version") then
+        Out.str(Version);
         return 0;
     end;
     first := 1;

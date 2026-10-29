@@ -119,7 +119,7 @@ From the project you want to work on:
     arno --resume ID 'Simplify it.'             # one more turn of a saved one
     arno --serve                  # one session, for a program that drives it
     arno --attach [PID | -l]      # show another arno's session here, and type into it
-    arno -h
+    arno -h | --version
 
 The reply goes to standard output as it streams; tool calls and
 questions go to standard error. With no terminal, each line of
