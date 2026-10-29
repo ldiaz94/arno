@@ -1,0 +1,136 @@
+#!/usr/bin/env concha
+// arno-claude: what Claude Code learned of each project, made arno's.
+//
+// For each of Claude Code's memory directories, ~/.claude/projects/NAME/memory,
+// it takes the repository the sessions beside it ran in (the cwd they
+// record) and, for every worktree of that repository, writes arno's own
+// context file for the project, ~/.local/share/arno/projects/ROOT/AGENTS.md:
+// the memory's entries, then where each of the worktree's .claude/rules/*.md
+// applies. Only this script writes that file, whole, to a temporary renamed
+// over it. arno itself knows nothing of Claude Code's files.
+//
+// Run by hand, or hourly by arno-claude.timer; arno-claude(1) says more.
+
+home := getenv('HOME')
+data := getenv('XDG_DATA_HOME')
+if data = '' then data := home + '/.local/share'
+projects := data + '/arno/projects'
+
+// The directory a Claude Code project's sessions ran in, as the first
+// one that records it says; '' if none does.
+function repoOf(dir);
+var f, c;
+begin
+  result := ''
+  for f in glob(dir + '/*.jsonl') do begin
+    c := `grep -o -m 1 '"cwd":"[^"]*"' $f`
+    if c <> '' then exit(copy(c, 8, length(c) - 8))
+  end
+end;
+
+// Whether p is a worktree a person works in: not one of arno's stage
+// copies, nor a scratch directory, which are worktrees too.
+function lived(p);
+begin
+  result := (copy(p, 1, length(home) + 8) <> home + '/.cache/') and (copy(p, 1, 5) <> '/tmp/')
+end;
+
+// The roots arno would see for repo: each worktree it has, a bare one
+// left out; repo itself when it is no git repository.
+function rootsOf(repo);
+var l, p;
+begin
+  result := []
+  p := ''
+  for l in lines(`git -C $repo worktree list --porcelain 2> /dev/null`) do begin
+    if copy(l, 1, 9) = 'worktree ' then p := copy(l, 10)
+    else if (l = 'bare') then p := ''
+    else if (l = '') and (p <> '') then begin
+      if lived(p) then result := result + [p]
+      p := ''
+    end
+  end;
+  if (p <> '') and lived(p) then result := result + [p];
+  if (length(result) = 0) and isdir(repo) and lived(repo) and not isdir(repo + '/worktrees') then result := [repo]
+end;
+
+// The value of a front matter line 'key: value', its quotes taken off,
+// and the quotes YAML escapes inside them.
+function value(line);
+begin
+  result := trim(copy(line, pos(':', line) + 1));
+  if (length(result) > 1) and (copy(result, 1, 1) = '"') then
+    result := replace(copy(result, 2, length(result) - 2), '\"', '"')
+end;
+
+// A memory entry, the file f, as a section: its name, its description,
+// then its text without the front matter.
+procedure entry(f);
+var l, name, desc, body, inFront, seen;
+begin
+  name := basename(f, '.md')
+  desc := ''
+  body := []
+  inFront := false
+  seen := false
+  for l in lines(`cat $f`) do begin
+    if (l = '---') and not seen then begin
+      inFront := not inFront
+      if not inFront then seen := true
+    end else if inFront then begin
+      if copy(l, 1, 5) = 'name:' then name := value(l)
+      else if copy(l, 1, 12) = 'description:' then desc := value(l)
+    end else
+      body := body + [l]
+  end;
+  writeln('### ', name)
+  if desc <> '' then writeln(desc)
+  writeln(trim(join(body, chr(10))))
+  writeln()
+end;
+
+// A rule, the file f under root, as a line: the paths it is for, and
+// where to read it.
+procedure rule(root, f);
+var l, paths;
+begin
+  paths := 'the whole project'
+  for l in lines(`cat $f`) do
+    if copy(l, 1, 6) = 'paths:' then paths := replace(replace(replace(value(l), '[', ''), ']', ''), '"', '')
+  writeln('- ', paths, ': ', copy(f, length(root) + 2))
+end;
+
+// root's context file written from the memory directory mem.
+procedure save(root, mem);
+var dir, out, f, rules;
+begin
+  dir := projects + root
+  mkdir -p $dir
+  out := dir + '/AGENTS.md'
+  begin
+    writeln('# What Claude Code learned of this project')
+    writeln()
+    writeln('Kept by arno-claude from Claude Code''s memory and rules; it is rewritten every hour,')
+    writeln('so change those, not this file.')
+    writeln()
+    writeln('## Memory')
+    writeln()
+    for f in sort(glob(mem + '/*.md')) do
+      if basename(f) <> 'MEMORY.md' then entry(f)
+    rules := sort(glob(root + '/.claude/rules/*.md'))
+    if length(rules) > 0 then begin
+      writeln('## Rules')
+      writeln()
+      writeln('Read the rule for a part of the project before working in it:')
+      writeln()
+      for f in rules do rule(root, f)
+    end
+  end > $(out + '.tmp')
+  mv $(out + '.tmp') $out
+end;
+
+for mem in glob(home + '/.claude/projects/*/memory') do begin
+  repo := repoOf(dirname(mem))
+  if repo <> '' then
+    for root in rootsOf(repo) do save(root, mem)
+end

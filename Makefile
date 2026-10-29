@@ -28,8 +28,10 @@ SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)
 CONCHA = concha
-# where make install puts the program (bin) and its man pages (share/man)
+# where make install puts the program (bin) and its man pages (share/man),
+# and arno-claude's systemd user units
 PREFIX ?= $(HOME)/.local
+UNITS ?= $(HOME)/.config/systemd/user
 
 all: build/arno
 
@@ -61,7 +63,7 @@ build/peerhost: test/Apeerhost.raz src/Apeer.raz | build
 	$(RAZ) -Werror -I src -o $@ test/Apeerhost.raz
 
 # each module's main is its test; then the program's, test/oneshot.cn,
-# test/serve.cn and test/peer.cn; then the man pages
+# test/serve.cn and test/peer.cn; then arno-claude's, test/claude.cn; then the man pages
 check: build/arno build/stub build/mcpstub build/host build/peerhost build/lspstub man
 	@mkdir -p build/run; chmod 700 build/run
 	@for m in $(MODS); do \
@@ -70,6 +72,7 @@ check: build/arno build/stub build/mcpstub build/host build/peerhost build/lspst
 	@$(CONCHA) test/oneshot.cn build/stub build/arno
 	@$(CONCHA) test/serve.cn build/stub build/arno build/host
 	@$(CONCHA) test/peer.cn build/stub build/arno build/peerhost
+	@$(CONCHA) test/claude.cn tools/arno-claude.cn
 
 # the man pages, doc/*.1 and doc/*.5, must give no groff warning at all
 man:
@@ -80,14 +83,16 @@ man:
 
 # the program to $(PREFIX)/bin and the man pages to $(PREFIX)/share/man
 install: build/arno man
-	install -d $(PREFIX)/bin $(PREFIX)/share/man/man1 $(PREFIX)/share/man/man5
+	install -d $(PREFIX)/bin $(PREFIX)/share/man/man1 $(PREFIX)/share/man/man5 $(UNITS)
 	install -m 755 build/arno $(PREFIX)/bin/
+	install -m 755 tools/arno-claude.cn $(PREFIX)/bin/arno-claude
+	install -m 644 tools/arno-claude.service tools/arno-claude.timer $(UNITS)/
 	for f in $(wildcard doc/*.1); do install -m 644 $$f $(PREFIX)/share/man/man1/; done
 	for f in $(wildcard doc/*.5); do install -m 644 $$f $(PREFIX)/share/man/man5/; done
 
 # removes what install put in place
 uninstall:
-	rm -f $(PREFIX)/bin/arno \
+	rm -f $(PREFIX)/bin/arno $(PREFIX)/bin/arno-claude $(UNITS)/arno-claude.service $(UNITS)/arno-claude.timer \
 	    $(addprefix $(PREFIX)/share/man/man1/,$(notdir $(wildcard doc/*.1))) \
 	    $(addprefix $(PREFIX)/share/man/man5/,$(notdir $(wildcard doc/*.5)))
 

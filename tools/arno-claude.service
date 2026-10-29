@@ -1,0 +1,6 @@
+[Unit]
+Description=Claude Code's memory and rules made arno's (arno-claude(1))
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/concha %h/.local/bin/arno-claude

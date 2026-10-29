@@ -1,0 +1,68 @@
+// test/claude.cn: arno-claude, run by make check from arno's top directory:
+//
+//     concha test/claude.cn tools/arno-claude.cn
+//
+// In a home of its own: a repository with a second worktree and a rule, and
+// a Claude Code memory directory whose session ran in it. Each worktree gets
+// arno's context file, with the entry and the rule; a second run leaves it
+// whole, and nothing is written into the repository.
+if length(args) <> 1 then begin
+  echo 'usage: concha test/claude.cn arno-claude' >&2
+  halt(2)
+end
+script := `pwd` + '/' + args[0]
+dir := `pwd` + '/build/claude'
+failed := false
+
+procedure fail(what);
+begin
+  writeln('claude: ', what)
+  failed := true
+end;
+
+// a line holding text in the file f, or a failure named what
+procedure holds(what, f, text);
+begin
+  grep -qF -- $text $f
+  if status <> 0 then fail("$what: no '$text' in $f")
+end;
+
+rm -rf $dir
+mkdir -p $dir/home/.claude/projects/-repo/memory $dir/repo/.claude/rules
+git init -q $dir/repo
+begin
+  writeln('---')
+  writeln('paths: ["backend/**"]')
+  writeln('---')
+  writeln('Queries go in data/.')
+end > $dir/repo/.claude/rules/backend.md
+git -C $dir/repo add -A
+git -C $dir/repo -c user.name=t -c user.email=t@t commit -q -m first
+git -C $dir/repo worktree add -q $dir/other
+writeln('{"type":"user","cwd":"', dir, '/repo","message":"hi"}') > $dir/home/.claude/projects/-repo/s.jsonl
+begin
+  writeln('---')
+  writeln('name: stale-infra')
+  writeln('description: "the \"infra\" folder is stale"')
+  writeln('metadata:')
+  writeln('  type: project')
+  writeln('---')
+  writeln()
+  writeln('Ignore infrastructure/.')
+end > $dir/home/.claude/projects/-repo/memory/stale-infra.md
+writeln('- [Stale](stale-infra.md)') > $dir/home/.claude/projects/-repo/memory/MEMORY.md
+
+for i := 1 to 2 do
+  env HOME=$dir/home XDG_DATA_HOME=$dir/data concha $script
+for root in [dir + '/repo', dir + '/other'] do begin
+  f := dir + '/data/arno/projects' + root + '/AGENTS.md'
+  holds('the entry', f, '### stale-infra')
+  holds('its description, unquoted', f, 'the "infra" folder is stale')
+  holds('its text', f, 'Ignore infrastructure/.')
+  holds('the rule', f, '- backend/**: .claude/rules/backend.md')
+  grep -qF -- 'MEMORY.md' $f
+  if status = 0 then fail('the index is in ' + f)
+end
+if length(lines(`git -C $dir/repo status --porcelain`)) <> 0 then fail('the repository was written to')
+if failed then halt(1)
+echo 'arno-claude ok'

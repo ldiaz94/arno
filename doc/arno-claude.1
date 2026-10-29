@@ -1,0 +1,71 @@
+.Dd October 29, 2026
+.Dt ARNO-CLAUDE 1
+.Os
+.Sh NAME
+.Nm arno-claude
+.Nd make what Claude Code learned of each project arno's
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+Claude Code keeps what it learns of a project in a memory directory,
+.Pa ~/.claude/projects/ Ns Ar name Ns Pa /memory ,
+one file a fact, and a repository may hold rules for parts of it in
+.Pa .claude/rules .
+.Xr arno 1
+reads neither.
+.Nm
+writes them into arno's own context file for each project, which arno
+reads last, after the project's own:
+.Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md .
+.Pp
+For each memory directory,
+.Nm
+takes the repository the sessions beside it ran in, as the first of them
+that records its working directory says, and writes a file for every
+worktree of that repository, so that a new worktree gets the
+repository's memory on the next run.
+Worktrees under
+.Pa ~/.cache
+and
+.Pa /tmp ,
+such as arno's own copies of a project, are left out; so is a bare
+repository.
+The file holds each memory entry, its name, its description and its text,
+then a line for each rule in the worktree's
+.Pa .claude/rules :
+the paths it is for, from its
+.Ql paths:
+line, and where to read it.
+.Pp
+The file is
+.Nm Ns 's
+alone: it is written whole on every run, to a temporary renamed over it,
+so change the memory or the rules, not the file.
+Nothing is written into a repository, and arno knows nothing of Claude
+Code's files.
+.Pp
+.Pa arno-claude.timer ,
+a systemd user timer, runs it every hour; it can be run by hand at any
+time.
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.claude/projects/*/memory/*.md
+Claude Code's memory entries, each with front matter giving its name and
+description;
+.Pa MEMORY.md ,
+the index, is left out.
+.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md
+What it writes, under
+.Ev XDG_DATA_HOME
+if that is set.
+.It Pa ~/.config/systemd/user/arno-claude.service , arno-claude.timer
+The hourly run, installed by arno's
+.Ic make install
+and turned on once with
+.Ic systemctl --user enable --now arno-claude.timer .
+.El
+.Sh EXIT STATUS
+0, or 2 if concha stopped on an error.
+.Sh SEE ALSO
+.Xr arno 1 ,
+.Xr concha 1

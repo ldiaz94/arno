@@ -59,6 +59,11 @@ installed into `~/.raz/lib` first, with `make install` in each checkout.
     make check        # the tests
     make install      # arno and its manual pages into ~/.local
 
+`make install` also puts in `arno-claude`, which writes what Claude Code
+learned of each project (its memory and `.claude/rules`) into arno's own
+context file for the project, and the systemd user timer that runs it
+hourly; `systemctl --user enable --now arno-claude.timer` turns that on.
+
 `make install` puts `arno` in `~/.local/bin` and its manual pages in
 `~/.local/share/man`. For another place for rnet, set `RNET`. The
 [Makefile](Makefile) has the other settings.
