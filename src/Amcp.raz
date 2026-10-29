@@ -603,6 +603,17 @@ begin
     return false;
 end;
 
+(* The config name of the server the tool name is from, "" if it is no
+   MCP tool's. Not read off the name: a server's name may hold _. *)
+proc serverOf*(name: []const U8): []const U8;
+var i: INT;
+begin
+    for i := 0 to belt.len - 1 do
+        if Belt.all(belt)[i].name = name then return Servers.all(servers)[Origins.all(origins)[i].server].name; end;
+    end;
+    return "";
+end;
+
 (* The tool name for a tool of the server called server: SERVER_TOOL,
    each byte a provider would not take (it takes letters, digits, _ and
    -) made _, and cut at MaxName bytes; put into b. *)
@@ -966,6 +977,8 @@ begin
     expect("a name made fit", t[7].name, "stub_odd_name_");
     expect("owns", num(INT(owns("stub_echo"))), "1");
     expect("owns not", num(INT(owns("echo"))), "0");
+    expect("serverOf", serverOf("stub_echo"), "stub");
+    expect("serverOf not", serverOf("echo"), "");
     err := attach("stub", ["build/mcpstub"]);
     expect("the same again", err, "stub: offers no tool that is new");
     expect("no duplicates", num(LEN(tools())), "8");

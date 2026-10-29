@@ -556,6 +556,15 @@ one or more commits that build with `-Werror`.
      the access token again from it as it starts (mcp_token.NAME goes
      first), and Amcp.renew, Alogin's, renews it a minute before it
      runs out and once on a 401. /mcp says what became of each server.
+   - [x] `trust` names MCP tools, servers and prefixes. A word of
+     `trust` that is a tool's full name, a server's config name (by
+     Amcp's record, `Amcp.serverOf`, not the name's prefix) or a
+     prefix ending in `*` lets the call run unasked; the ask gains
+     `a`, always, kept in its own Buf (`trustTools`) so run's
+     description, now only the trusted words that are programs, is not
+     rebuilt. And a config value goes on over lines that begin with a
+     blank or tab (Aconf.read, a stray one warned of; a joined value
+     is a block of the Conf's `folds`).
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
    - [x] Context files in an editor's sessions. `ask` was put once, at

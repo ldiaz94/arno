@@ -47,9 +47,10 @@
    Aahead (note), Ahtml (fetch), Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
    rnet's Http (search and fetch), rjson's Json.
    Delegate and plan are the agent's, which runs the worker and keeps
-   the plan; they are described here, with the rest. A call of an MCP server's tool is asked about
-   every time, and is not fenced. A change in the conversation's scratch
-   directory (Afence.ours) needs no approval, and run, check and shell
+   the plan; they are described here, with the rest. A call of an MCP
+   server's tool is asked about every time, unless trust names the
+   tool, its server or a prefix of its name with *, and is not fenced.
+   A change in the conversation's scratch directory (Afence.ours) needs no approval, and run, check and shell
    see its path as $ARNO_SCRATCH. shell is offered only while the
    stage is up (Afence.stage): in the project's own tree it could
    rewrite .git or the Makefile, which git and check then run outside
@@ -765,7 +766,8 @@ var
     runs: Buf.Buf;     (* the programs run may start, config's run, a blank at either end and between *)
     runsRO: Buf.Buf;   (* those of them that only read, config's run_ro *)
     runsEnv: Buf.Buf;  (* the variables run may set, config's run_env *)
-    trust: Buf.Buf;    (* those run starts without asking: config's trust, and each answered always *)
+    trust: Buf.Buf;    (* config's trust: the programs run starts without asking, and the MCP tools and servers called without *)
+    trustTools: Buf.Buf;   (* each MCP tool the human answered always, a blank at either end of each *)
     trustRun: INT;     (* trust's length from config, before the answers *)
     testCmd: []const U8;     (* config's test_cmd, for a project with none of its own *)
     runDesc: Buf.Buf;  (* the run tool's description with the programs it names *)
@@ -2080,23 +2082,74 @@ begin
     window(Buf.bytes(body), int(a, "offset", 0), out);
 end;
 
-(* The tool name, one an MCP server offers, run with a's arguments, once
-   the human says yes: an MCP server is a program of someone else's,
-   which may do anything, so every call is asked about, with its
-   arguments (cut at MaxAsked bytes) shown. *)
-proc mcp(name: []const U8; const a: Args; const h: Human; var out: Buf.Buf);
-var q, shown: Buf.Buf;
+(* Whether a word of list, parted by blanks, is a prefix of name and a
+   "*": linear-server_list_* trusts every tool whose name begins so. A
+   bare "*" is no word of that kind and trusts nothing. *)
+proc starred(name, list: []const U8): BOOL;
+var rest, w: []const U8; more: BOOL;
 begin
-    if h.ask = nil then Buf.str(out, "declined: there is nobody to ask. Nothing was run."); return; end;
-    Buf.init(q, a.mem);
-    Buf.init(shown, a.mem);
-    Fmt.write(q, "run {}?", [Fmt.str(name)]);
-    Amsg.compact(a.d, a.v, shown);
-    if h.ask(Buf.bytes(q), cutAt(Buf.bytes(shown), MaxAsked), "yn") # 'y' then
-        declined(h, "Nothing was run.", out);
-        return;
+    rest := list;
+    more := true;
+    while more do
+        w, rest, more := Str.cut(Str.trim(rest), " ");
+        if (LEN(w) > 1) and (w[LEN(w) - 1] = '*') and Str.hasPrefix(name, w[0..LEN(w) - 1]) then return true; end;
+    end;
+    return false;
+end;
+
+(* Whether the MCP tool name runs without asking: config's trust names
+   it, or the server it is from (as Amcp records, not by the name's
+   prefix), or begins as a word of trust ending in * does, or the
+   human answered always for it. *)
+proc trustedTool(name: []const U8): BOOL;
+var server: []const U8;
+begin
+    server := Amcp.serverOf(name);
+    return Afind.listed(name, Buf.bytes(trust)) or Afind.listed(server, Buf.bytes(trust)) or
+        starred(name, Buf.bytes(trust)) or Afind.listed(name, Buf.bytes(trustTools));
+end;
+
+(* The tool name, one an MCP server offers, run with a's arguments: an
+   MCP server is a program of someone else's, which may do anything,
+   so every call is asked about, with its arguments (cut at MaxAsked
+   bytes) shown, unless the tool or its server is trusted: by config's
+   trust or the human's answer always, which lasts as run's does. *)
+proc mcp(name: []const U8; const a: Args; const h: Human; var out: Buf.Buf);
+var q, shown: Buf.Buf; answer: U8;
+begin
+    if not trustedTool(name) then
+        if h.ask = nil then Buf.str(out, "declined: there is nobody to ask. Nothing was run."); return; end;
+        Buf.init(q, a.mem);
+        Buf.init(shown, a.mem);
+        Fmt.write(q, "run {}? (a: always {})", [Fmt.str(name), Fmt.str(name)]);
+        Amsg.compact(a.d, a.v, shown);
+        answer := h.ask(Buf.bytes(q), cutAt(Buf.bytes(shown), MaxAsked), "yna");
+        if answer = 'a' then
+            Buf.add(trustTools, ' ');
+            Buf.str(trustTools, name);
+            Buf.add(trustTools, ' ');
+        elsif answer # 'y' then
+            declined(h, "Nothing was run.", out);
+            return;
+        end;
     end;
     Amcp.call(name, a.d, a.v, h.stopped, out);
+end;
+
+(* The words of trust that are programs run may start, parted by
+   blanks, into b: trust also holds MCP tools and servers. *)
+proc trustedPrograms(var b: Buf.Buf);
+var rest, w: []const U8; more: BOOL;
+begin
+    rest := Buf.bytes(trust);
+    more := true;
+    while more do
+        w, rest, more := Str.cut(Str.trim(rest), " ");
+        if Afind.listed(w, Buf.bytes(runs)) then
+            if b.len > 0 then Buf.add(b, ' '); end;
+            Buf.str(b, w);
+        end;
+    end;
 end;
 
 (* t, the run tool, with its description ending in the programs it may
@@ -2106,11 +2159,15 @@ end;
    new buffer, not the old one reset, so that a description handed out
    before stays whole. *)
 proc runOffer(t: Awire.Tool): Awire.Tool;
+var programs: Buf.Buf;
 begin
     if runDescFor # trust.len then
+        Buf.init(programs, Heap.heap);
+        defer Buf.done(programs);
+        trustedPrograms(programs);
         Buf.init(runDesc, Heap.heap);
         Fmt.write(runDesc, "{} Programs: {} (these run without asking: {}).",
-            [Fmt.str(t.description), Fmt.str(Str.trim(Buf.bytes(runs))), Fmt.str(Str.trim(Buf.bytes(trust)))]);
+            [Fmt.str(t.description), Fmt.str(Str.trim(Buf.bytes(runs))), Fmt.str(Buf.bytes(programs))]);
         runDescFor := trust.len;
     end;
     t.description := Buf.bytes(runDesc);
@@ -2190,6 +2247,7 @@ proc forgive*;
 var r: []Refusal; i: INT;
 begin
     trust.len := trustRun;
+    trustTools.len := 0;
     r := Refusals.all(refused);
     for i := 0 to LEN(r) - 1 do
         Str.free(Heap.heap, r[i].key);
@@ -2682,6 +2740,37 @@ begin
     _ := run("run", `{"args":["echo"]}`, human);
     if asked # 1 then Out.str("Atools: run's trust outlived the conversation\n"); failed := true; end;
 
+    (* MCP tools: asked unless trust names the tool or its server, or the human said always *)
+    expect("mcp, attach the stub", Amcp.attach("stub", ["../../mcpstub"]), "");
+    commands("", "", "", "stub_echo", "");
+    expect("mcp, nobody to ask", run("stub_fail", `{}`, nil), "declined: there is nobody to ask. Nothing was run.");
+    expect("mcp, a trusted tool", run("stub_echo", `{"text":"hi"}`, nil), "hi\n");
+    answer := 'n';
+    asked := 0;
+    expect("mcp, declined", run("stub_fail", `{}`, human), "declined by user. Nothing was run.");
+    answer := 'a';
+    expect("mcp, always", run("stub_fail", `{}`, human), "error: boom\n");
+    expect("mcp, trusted by always", run("stub_fail", `{}`, nil), "error: boom\n");
+    if asked # 2 then Out.str("Atools: an MCP tool was asked about too often\n"); failed := true; end;
+    forgive;
+    expect("mcp, always forgiven", run("stub_fail", `{}`, nil), "declined: there is nobody to ask. Nothing was run.");
+    commands("", "", "", "stub", "");
+    expect("mcp, a trusted server", run("stub_fail", `{}`, nil), "error: boom\n");
+    commands("", "", "", "stu stub_ech", "");
+    expect("mcp, no prefix match", run("stub_echo", `{"text":"hi"}`, nil),
+        "declined: there is nobody to ask. Nothing was run.");
+    commands("", "", "", "stub_ec* *", "");
+    expect("mcp, a starred prefix", run("stub_echo", `{"text":"hi"}`, nil), "hi\n");
+    expect("mcp, a prefix not matching", run("stub_fail", `{}`, nil),
+        "declined: there is nobody to ask. Nothing was run.");
+    commands("", "", "", "stub stub_echo", "");
+    tools := offered(false, true, false);
+    for i := 0 to LEN(tools) - 1 do
+        if tools[i].name = "run" then s := tools[i].description; end;
+    end;
+    if Str.find(s, "stub") >= 0 then Out.str("Atools: run's description names an MCP tool\n"); failed := true; end;
+    Amcp.stop();
+
     (* check: config's command, or the project's own in tests.json *)
     Buf.init(store, Heap.heap);
     Buf.str(store, dir);
@@ -2748,4 +2837,5 @@ begin
     Tools.init(offer, Heap.heap);
     Tools.init(hosted, Heap.heap);
     Buf.init(refusal, Heap.heap);
+    Buf.init(trustTools, Heap.heap);
 end Atools.

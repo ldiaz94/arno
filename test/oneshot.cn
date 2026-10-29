@@ -259,7 +259,7 @@ holds('a declined edit', 'out', 'the tool said: declined by user: not now. Nothi
 configure(['mcp = stub build/mcpstub', 'mcp = bad no-such-server-of-arno'])
 answering(['call', 'stub_echo', '{"text":"hi"}'], 'y')
 holds('an mcp call', 'out', 'the tool said: hi')
-holds('an mcp call', 'err', 'run stub_echo? [y/N]')
+holds('an mcp call', 'err', 'run stub_echo? (a: always stub_echo) [y/N]')
 holds('a bad server', 'err', 'mcp bad: cannot start')
 answering(['call', 'stub_echo', '{"text":"hi"}'], 'n' + #10 + 'not now')
 holds('an mcp no', 'out', 'the tool said: declined by user: not now. Nothing was run.')

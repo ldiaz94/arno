@@ -75,6 +75,13 @@ to a line and `#` for a comment:
     provider = ollama
     model = llama3.2
 
+A line that begins with a blank or a tab goes on with the setting above
+it, so a long value can stand on several lines:
+
+    trust = man fd
+        linear-server_list_issues
+        linear-server_get_user
+
 | Provider | `provider =` | Key, read from the environment |
 |---|---|---|
 | Ollama | `ollama` | none |
@@ -214,8 +221,12 @@ whose first line is the token, so the secret stays in your password
 store.
 
 Its tools reach the model as `NAME_TOOL`, and every call asks first,
-with the arguments shown. A server is somebody else's program: the
-question is the only guard.
+with the arguments shown (`a` answers always, for that tool until the
+conversation changes). A server is somebody else's program: the
+question is the only guard. To skip it for tools you know, name them in
+`trust`: a tool (`linear_list_issues`), a whole server (`linear`), or
+the tools that begin so (`linear_get_*`, which takes in tools the
+server adds later).
 
 **Serve and attach.** `arno --serve` runs one session for the program
 that started it, speaking the protocol of `arno-serve(5)` on standard input

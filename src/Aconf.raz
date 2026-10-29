@@ -6,6 +6,18 @@
    or has no = is passed by. A key given twice is the last one's, except for mcp, which
    may be given for each server, and which nth reads.
 
+   A line that begins with a blank or a tab goes on with the setting
+   above it: its text, trimmed, is added to the value after one blank.
+
+       trust = man fd
+           linear-server_list_issues
+           linear-server_get_user
+
+   is trust = man fd linear-server_list_issues linear-server_get_user.
+   A # line, wherever it stands, is a comment and does not end the
+   setting; an empty line, a header or another setting does. An indented
+   line with nothing above to go on with is warned of and passed by.
+
    The keys that say which provider and how to ask it are read into a
    provider, an Awire.Prov:
 
@@ -75,6 +87,7 @@ type
         sect: Ints.Vec;         (* each setting's section, 0 for the global ones *)
         sections: Sections.Vec; (* the global settings first, then each section, in the file's order *)
         params: Strs.Vec;       (* the provider's params, each its own block *)
+        folds: Strs.Vec;        (* the values made of several lines, each its own block *)
     end;
 
 const
@@ -105,6 +118,7 @@ begin
     Strs.init(c.keys, Heap.heap);
     Strs.init(c.values, Heap.heap);
     Strs.init(c.params, Heap.heap);
+    Strs.init(c.folds, Heap.heap);
     Ints.init(c.sect, Heap.heap);
     Sections.init(c.sections, Heap.heap);
     Sections.push(c.sections, {dir: "", rank: 0});
@@ -123,8 +137,12 @@ begin
 end;
 
 proc done*(var c: Conf);
+var f: [][]const U8; i: INT;
 begin
     dropParams(c);
+    f := Strs.all(c.folds);
+    for i := 0 to LEN(f) - 1 do Mem.free(Heap.heap, SYSTEM.PTR(f[i])); end;
+    Strs.done(c.folds);
     Strs.done(c.params);
     Sections.done(c.sections);
     Ints.done(c.sect);
@@ -375,33 +393,95 @@ begin
     end;
 end;
 
+(* The setting key = value, in section at, kept; and, in the global
+   section, applied. *)
+proc commit(var c: Conf; key, value: []const U8; at: INT);
+begin
+    Strs.push(c.keys, key);
+    Strs.push(c.values, value);
+    Ints.push(c.sect, at);
+    if at = 0 then setting(c, key, value); end;
+end;
+
+(* A setting as the file gives it so far: the one a continuation line
+   may add to. A value that has been added to is in folded, which owns
+   the bytes; else it is a slice of the file's text. *)
+type Pending = record
+    open: BOOL;               (* whether there is a setting to add to *)
+    key, value: []const U8;
+    at: INT;                  (* its section *)
+    folded: Buf.Buf;          (* the value, once a line was added to it *)
+    joined: BOOL;             (* whether it was *)
+end;
+
+(* p's setting added to c, and p left with none. A joined value is
+   copied to c.folds, which lives as long as c. *)
+proc flush(var c: Conf; var p: Pending);
+var v: []const U8;
+begin
+    if not p.open then return; end;
+    v := p.value;
+    if p.joined then
+        v, _ := Str.copy(Heap.heap, Buf.bytes(p.folded));
+        Strs.push(c.folds, v);
+        Buf.reset(p.folded);
+    end;
+    commit(c, p.key, v, p.at);
+    p.open := false;
+    p.joined := false;
+end;
+
+(* The line, trimmed, added to p's value after a blank; or, with no
+   setting open, warned of and passed by. *)
+proc continued(var c: Conf; var p: Pending; line: []const U8);
+begin
+    if not p.open then
+        warn(c, "nothing for this indented line to continue, passed by: ", line);
+        return;
+    end;
+    if not p.joined then
+        Buf.str(p.folded, p.value);
+        p.joined := true;
+    end;
+    Buf.add(p.folded, ' ');
+    Buf.str(p.folded, line);
+    p.value := Buf.bytes(p.folded);
+end;
+
 (* text, a configuration file, read into c, made with init: c keeps
    a copy of it, which its settings are slices of. *)
 proc read*(var c: Conf; text: []const U8);
-var line, rest, key, value: []const U8; at: INT; more, eq: BOOL;
+var line, rest, key, value, bare: []const U8; at: INT; more, eq: BOOL; p: Pending;
 begin
     Buf.str(c.text, text);
+    Buf.init(p.folded, Heap.heap);
+    defer Buf.done(p.folded);
+    p.open := false;
+    p.joined := false;
     rest := Buf.bytes(c.text);
     more := LEN(rest) > 0;
     at := 0;   (* the section the settings go to, 0 the global ones; -1 after a bad header *)
     while more do
         line, rest, more := Str.cut(rest, "\n");
-        line := Str.trim(line);
-        if (LEN(line) = 0) or (line[0] = '#') then continue; end;
-        if line[0] = '[' then at := header(c, line); continue; end;
-        key, value, eq := Str.cut(line, "=");
+        bare := Str.trim(line);
+        if (LEN(bare) > 0) and (bare[0] = '#') then continue; end;
+        if (LEN(bare) > 0) and ((line[0] = ' ') or (line[0] = '\t')) then continued(c, p, bare); continue; end;
+        flush(c, p);
+        if LEN(bare) = 0 then continue; end;
+        if bare[0] = '[' then at := header(c, bare); continue; end;
+        key, value, eq := Str.cut(bare, "=");
         if not eq or (at < 0) then continue; end;
         key := Str.trim(key);
-        value := Str.trim(value);
         if (at > 0) and not sectioned(key) then
             warn(c, key, " is for every directory, set before the first [section]");
             continue;
         end;
-        Strs.push(c.keys, key);
-        Strs.push(c.values, value);
-        Ints.push(c.sect, at);
-        if at = 0 then setting(c, key, value); end;
+        p.open := true;
+        p.key := key;
+        p.value := Str.trim(value);
+        p.at := at;
     end;
+    flush(c, p);
     c.prov.params := Strs.all(c.params);
 end;
 
@@ -525,6 +605,37 @@ begin
     done(c);
 end;
 
+(* Values on several lines: folded, a comment inside, an empty line
+   that ends one, a line with nothing to go on, and a section's. *)
+proc folding;
+var c: Conf;
+begin
+    _ := Sys.setEnv("HOME", "/nowhere/home");
+    init(c);
+    read(c, `
+        trust = man fd
+            linear-server_list_issues
+        	# a comment, which ends nothing
+            linear-server_get_user
+        run = raz
+
+            stray after an empty line
+        safety = safe
+        [~/r]
+            stray after a header
+        trust = make
+          robbie
+        `);
+    expect("a folded value", get(c, "trust"), "man fd linear-server_list_issues linear-server_get_user");
+    expect("the setting after it", get(c, "run"), "raz");
+    apply(c, "/nowhere/home/r");
+    expect("a fold in a section", get(c, "trust"), "make robbie");
+    expect("the strays", Buf.bytes(c.warnings),
+        "config: nothing for this indented line to continue, passed by: stray after an empty line\n" +
+        "config: nothing for this indented line to continue, passed by: stray after a header\n");
+    done(c);
+end;
+
 proc main*: INT;
 var c: Conf; b: Buf.Buf; v: []const U8; ok: BOOL;
 begin
@@ -533,7 +644,7 @@ begin
         # arno's configuration
         temperature = 0.9
         provider = claude
-          model=claude-opus-5-5
+        model=claude-opus-5-5
         not a setting
         max_steps = 60
         run = tiza man fd
@@ -571,6 +682,7 @@ begin
     done(c);
     sections();
     checks();
+    folding();
     if failed then return 1; end;
     return 0;
 end;

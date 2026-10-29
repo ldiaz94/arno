@@ -1370,7 +1370,15 @@ A byte a provider would not take in a name becomes
 and a name is cut at 64 bytes.
 .Pp
 Every call is asked about, with the arguments shown (cut at 300 bytes),
-and runs only on a yes; MCP tools are not fenced and not subject to a
+and runs only on a yes, unless
+.Cm trust
+names the tool, its server, or a prefix of its name ending in
+.Ql * ;
+the answer
+.Ql a
+trusts the tool until the conversation changes, as for
+.Ic run .
+MCP tools are not fenced and not subject to a
 host's list of builtins.
 A server runs in a process group of its own, so that ^C stops the turn and
 not the server; its standard error is thrown away.
@@ -1580,6 +1588,21 @@ and lines with no
 .Ql =
 are ignored.
 Blanks around either part are dropped.
+A line that begins with a blank or a tab goes on with the setting above
+it: its text, trimmed, is added to the value after one blank, so
+.Bd -literal -offset indent
+trust = man fd
+    linear-server_list_issues
+    linear-server_get_user
+.Ed
+.Pp
+is
+.Ql "trust = man fd linear-server_list_issues linear-server_get_user" .
+A
+.Ql #
+line inside does not end the setting; an empty line, a section header or
+another setting does.
+An indented line with nothing to go on with is warned of and passed by.
 A key given twice is the last one's, except
 .Cm mcp ,
 which is given once for each server.
@@ -1763,9 +1786,31 @@ Environment variable names that
 .Ic run
 may set for its programs; none by default.
 .It Cm trust
-Of the programs
+Programs that start without asking, MCP tools that are called without
+asking, and MCP servers all of whose tools are.
+A word is a program
 .Cm run
-names, those that start without asking.
+names; or an MCP tool's full name, as offered
+.Pq Ql linear-server_list_issues ;
+or an MCP server's name in
+.Cm mcp
+.Pq Ql linear-server ;
+or a tool name's start followed by
+.Ql * ,
+as
+.Ql linear-server_get_* ,
+which also trusts the tools the server adds later under that prefix.
+A bare
+.Ql *
+trusts nothing, and a
+.Ql *
+means nothing in a program's name.
+Example:
+.Pp
+.Dl trust = man fd linear-server_list_* linear
+.Pp
+See
+.Sx MCP .
 .It Cm context_files
 .Cm ask ,
 the default,
