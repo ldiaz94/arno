@@ -513,7 +513,7 @@ one or more commits that build with `-Werror`.
      steps are areas, there is nothing to merge, and the end is a
      report whose every finding and every all-clear the lead has
      checked.
-   - [ ] Who said it. A worker's text, calls and results reach the
+   - [x] Who said it. A worker's text, calls and results reach the
      screen through the lead's Front, so its sixty calls read as the
      lead's own and nothing tells them apart. Front gets the speaker,
      0 for the lead and N for worker N, set by `work`; each

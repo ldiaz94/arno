@@ -91,6 +91,7 @@ type
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
         counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
         edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
+        speaker*: proc(n: INT; arg: ^U8);          (* who speaks from now on: 0 the lead, N worker N; nil if it is not asked *)
         arg*: ^U8;
     end;
 
@@ -401,8 +402,9 @@ end;
 
 (* A worker's turn over w, whose one message is its brief: the same
    loop, on model, which prices it and sets its effort as the provider's
-   params say of it. *)
-proc work(var a: Agent; var w: Astore.Conv; model: []const U8; var why: Buf.Buf): ERROR;
+   params say of it. The front is told that worker number who speaks
+   for the turn, and that the lead does again after it. *)
+proc work(var a: Agent; var w: Astore.Conv; model: []const U8; who: INT; var why: Buf.Buf): ERROR;
 var prov: Awire.Prov; lead: ^Awire.Prov; err: ERROR;
 begin
     prov := a.prov^;
@@ -410,7 +412,9 @@ begin
     lead := a.prov;
     a.prov := SYSTEM.ADR(prov);
     a.working := true;
+    if a.front.speaker # nil then a.front.speaker(who, a.front.arg); end;
     err := turn(a, w, why);
+    if a.front.speaker # nil then a.front.speaker(0, a.front.arg); end;
     a.working := false;
     a.prov := lead;
     forget(a);   (* what the worker saw is no call of the lead's *)
@@ -549,7 +553,7 @@ end;
    report, or why there is none, and what it changed added to out. *)
 proc delegate(var a: Agent; args: []const U8; var out: Buf.Buf);
 var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; copy: Astage.Work; m: ^Amsg.Msg;
-    b, why, role: Buf.Buf; task, model, named: []const U8; n: INT; err: ERROR; budget, before: F64;
+    b, why, role: Buf.Buf; task, model, named: []const U8; n, who: INT; err: ERROR; budget, before: F64;
 begin
     if a.working then
         Buf.str(out, "error: a worker cannot delegate");
@@ -618,13 +622,17 @@ begin
             Fmt.write(out, "error: cannot make the worker's copy: {}", [Fmt.str(Buf.bytes(why))]);
             return;
         end;
+        who := n;
+    else
+        INC(a.forks);   (* in the lead's zone it is still a worker, and has a number *)
+        who := a.forks;
     end;
     Buf.reset(b);
     Fmt.write(b, "worker {}: {}", [Fmt.str(model), Fmt.str(task[0..min(LEN(task), 120)])]);
     note(a, Buf.bytes(b));
     Buf.reset(why);
     before := a.spent;
-    err := work(a, w, model, why);
+    err := work(a, w, model, who, why);
     if not told(a, n, model, task, w, a.spent - before, out) then
         Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w))]);
         if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(why))]); end;

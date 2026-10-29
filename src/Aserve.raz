@@ -67,6 +67,7 @@ type
         sort: Sort;             (* what it tells *)
         a, b, c, d: Buf.Buf;   (* its texts: a request's verb, then its fields *)
         going: BOOL;           (* ended: the session goes on *)
+        who: INT;              (* who said it: 0 the lead, N worker N *)
     end;
 
     (* How many fields, the verb's own included, a verb takes. *)
@@ -84,6 +85,7 @@ const
 
 var
     session: Asession.Session;
+    speaking: INT;        (* who speaks for the turn under way: 0 the lead, N worker N; under mutex *)
     host: INT;            (* where messages to the host go *)
     inbox: Buf.Buf;       (* what the host sent that isn't a whole message yet *)
     hostName: Buf.Buf;    (* who the host says it is, from hello *)
@@ -156,6 +158,7 @@ begin
     e := Events.add(events);
     e^.sort := s;
     e^.going := going;
+    e^.who := speaking;
     Buf.init(e^.a, Heap.heap);
     Buf.init(e^.b, Heap.heap);
     Buf.init(e^.c, Heap.heap);
@@ -173,6 +176,14 @@ end;
 proc text(s: []const U8; _arg: ^U8);
 begin
     post(said, s, "", "", "", false);
+end;
+
+(* The front's speaker: who speaks from now on, kept for what is posted. *)
+proc speaker(n: INT; _arg: ^U8);
+begin
+    Thread.lock(mutex);
+    speaking := n;
+    Thread.unlock(mutex);
 end;
 
 (* The front's call: a tool about to run, told. *)
@@ -294,7 +305,8 @@ end;
 (* The front end the session tells. *)
 proc front: Agent.Front;
 begin
-    return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted};
+    return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted,
+        speaker: speaker};
 end;
 
 (* c shown again from its start, on the job's thread, which has it: the
@@ -816,6 +828,8 @@ end;
 (* What a job told, applied to the Board and told on. *)
 proc apply(const e: Event);
 begin
+    Aboard.speak(e.who);
+    defer Aboard.speak(0);
     match e.sort of
     | typed: Aview.typed(Buf.bytes(e.a));
     | said: Aview.said(Buf.bytes(e.a));

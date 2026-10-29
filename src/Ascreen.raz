@@ -87,6 +87,7 @@ type
         sort: Sort;
         a, b, c: Buf.Buf;   (* its texts: a question's, its detail and keys *)
         going: BOOL;        (* ended: the session goes on *)
+        who: INT;           (* who said it: 0 the lead, N worker N *)
     end;
 
 const
@@ -109,6 +110,7 @@ var
 
     (* shared by the loop's thread and a job's, under mutex *)
     mutex: Thread.Mutex;
+    speaking: INT;      (* who speaks for the turn under way: 0 the lead, N worker N *)
     events: Events.Vec;
     stopping: BOOL;     (* the human said to stop the turn *)
     ending: BOOL;       (* the loop has ended: a question is a no, unasked *)
@@ -175,6 +177,7 @@ begin
     e := Events.add(events);
     e^.sort := s;
     e^.going := going;
+    e^.who := speaking;
     Buf.init(e^.a, Heap.heap);
     Buf.init(e^.b, Heap.heap);
     Buf.init(e^.c, Heap.heap);
@@ -188,6 +191,14 @@ end;
 proc text(s: []const U8; _arg: ^U8);
 begin
     post(said, s, "", "", false);
+end;
+
+(* Who speaks from now on, the front's speaker: kept for what is posted. *)
+proc speaker(n: INT; _arg: ^U8);
+begin
+    Thread.lock(mutex);
+    speaking := n;
+    Thread.unlock(mutex);
 end;
 
 proc call(name, args: []const U8; _arg: ^U8);
@@ -292,7 +303,7 @@ end;
 proc front*: Agent.Front;
 begin
     return {text: text, call: call, result: result, note: note, ask: ask, why: reasoned, stopped: stopped,
-        counted: counted, edit: revise};
+        counted: counted, edit: revise, speaker: speaker};
 end;
 
 (* c shown again from its start, on the job's thread, which has it: the
@@ -520,6 +531,7 @@ begin
     Thread.lock(mutex);
     e := Events.all(events);
     for i := 0 to LEN(e) - 1 do
+        Aboard.speak(e[i].who);
         match e[i].sort of
         | said: Aview.said(Buf.bytes(e[i].a));
         | called: Aview.called(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0;
@@ -546,6 +558,7 @@ begin
         Buf.done(e[i].b);
         Buf.done(e[i].c);
     end;
+    Aboard.speak(0);
     Events.reset(events);
     Thread.unlock(mutex);
     (* the editor runs with the queue let go: reviseNow takes the mutex

@@ -47,6 +47,7 @@ type
 
     Entry* = record
         kind*: Kind;
+        speaker*: INT;      (* who said it: 0 the lead, N worker N *)
         text*: Buf.Buf;     (* what was said; a tool's name *)
         args*: Buf.Buf;     (* a tool's arguments, JSON as the model wrote them *)
         res*: Buf.Buf;      (* its result *)
@@ -76,6 +77,7 @@ const
     MaxCols = 16;    (* a table's columns shown; those past are left out *)
 
 var
+    speaker*: INT;      (* who the entries pushed now are said by, as Entry.speaker; set by speak *)
     entries: Entries.Vec;
     styles: [10]TuiScreen.Style;   (* each Look's *)
     (* the line being laid out: its text, and the Look of each byte *)
@@ -108,12 +110,19 @@ begin
     return SYSTEM.ADR(Entries.all(entries)[entries.len - 1]);
 end;
 
+(* The entries pushed from now on are said by n: 0 the lead, N worker N. *)
+proc speak*(n: INT);
+begin
+    speaker := n;
+end;
+
 (* A new entry of kind k saying s, at the end. *)
 proc push*(k: Kind; s: []const U8): ^Entry;
 var e: ^Entry;
 begin
     e := Entries.add(entries);
     e^.kind := k;
+    e^.speaker := speaker;
     Buf.init(e^.text, Heap.heap);
     Buf.init(e^.args, Heap.heap);
     Buf.init(e^.res, Heap.heap);

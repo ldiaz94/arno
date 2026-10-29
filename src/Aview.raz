@@ -174,16 +174,19 @@ end;
 (* Entry i's message, appended to b: push, or tool, with its result's
    done if it has come. *)
 proc entry(i: INT; var b: Buf.Buf);
-var e: ^Aboard.Entry; d: [20]U8; n: []const U8;
+var e: ^Aboard.Entry; d, w: [20]U8; m: [5][]const U8; k: INT;
 begin
     e := SYSTEM.ADR(Aboard.all()[i]);
-    n := num(i, d);
+    m[1] := num(i, d);
     if e^.kind = Aboard.tool then
-        Aframe.pack(b, ["tool", n, Buf.bytes(e^.text), Buf.bytes(e^.args)]);
-        if e^.done then Aframe.pack(b, ["done", n, Buf.bytes(e^.res)]); end;
+        m[0] := "tool"; m[2] := Buf.bytes(e^.text); m[3] := Buf.bytes(e^.args);
     else
-        Aframe.pack(b, ["push", n, kinds[INT(e^.kind)], Buf.bytes(e^.text)]);
+        m[0] := "push"; m[2] := kinds[INT(e^.kind)]; m[3] := Buf.bytes(e^.text);
     end;
+    k := 4;
+    if e^.speaker > 0 then m[4] := num(e^.speaker, w); k := 5; end;   (* the lead's entries say nothing of it *)
+    Aframe.pack(b, m[0..k]);
+    if (e^.kind = Aboard.tool) and e^.done then Aframe.pack(b, ["done", m[1], Buf.bytes(e^.res)]); end;
 end;
 
 (* Entry i, the last, told as a new one. *)
@@ -528,6 +531,18 @@ begin
     return Aboard.info;
 end;
 
+(* Who said the entry that message f, a push or a tool, tells of, put in
+   Aboard.speaker: the fifth field, or the lead if it has none. *)
+proc speaking(f: [][]const U8);
+var n: I64; ok: BOOL;
+begin
+    Aboard.speak(0);
+    if LEN(f) >= 5 then
+        n, ok := Str.toInt(f[4]);
+        if ok then Aboard.speak(INT(n)); end;
+    end;
+end;
+
 (* One message of the session applied to the Board here: status is
    the status line it set, busy whether a turn runs. A message that is
    not understood, or an entry that isn't there, is left out. *)
@@ -543,8 +558,8 @@ begin
     e := Aboard.all();
     match f[0] of
     | "reset": Aboard.clear;
-    | "push": if (LEN(f) >= 4) and (n >= LEN(e)) then _ := Aboard.push(kindOf(f[2]), f[3]); end;
-    | "tool": if (LEN(f) >= 4) and (n >= LEN(e)) then Aboard.call(f[2], f[3]); end;
+    | "push": if (LEN(f) >= 4) and (n >= LEN(e)) then speaking(f); _ := Aboard.push(kindOf(f[2]), f[3]); end;
+    | "tool": if (LEN(f) >= 4) and (n >= LEN(e)) then speaking(f); Aboard.call(f[2], f[3]); end;
     | "append": if (LEN(f) >= 3) and (n >= 0) and (n < LEN(e)) then Buf.str(e[n].text, f[2]); end;
     | "done":
         if (LEN(f) >= 3) and (n >= 0) and (n < LEN(e)) then
@@ -555,6 +570,7 @@ begin
     | "busy": if LEN(f) >= 2 then running := f[1] = "1"; end;
     | else:
     end;
+    Aboard.speak(0);
 end;
 
 (* Sessions *)
