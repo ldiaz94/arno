@@ -422,9 +422,22 @@ A project with a test command offers the model
 .Ic check .
 Success is only reported; a failure is put to the model, with the end of
 its output, as a turn asking what to fix.
-.It Ic /stage Op Ic on | off | drop
-Work on a copy of the project, each turn's changes coming as one diff to
-apply; see
+.It Ic /stage Op Ic drop
+Say whether the session is staged, working on a copy of the project, each
+turn's changes coming as one diff to apply, and offer what the copy
+holds; with
+.Ic drop ,
+discard it.
+See
+.Sx THE STAGE .
+.It Ic /safety Op Ic auto | safe
+Say which safety the session has, or set it:
+.Ic auto
+works on a copy, as above;
+.Ic safe
+asks about each change and has no
+.Ic shell .
+Remembered for the project; see
 .Sx THE STAGE .
 .It Ic /quit
 Leave; so does
@@ -685,9 +698,10 @@ names; see
 .It Ic shell
 A command line, run in the jail, in the project; see
 .Sx THE JAIL .
-The project is read-only to it unless the stage is up, when it writes
-in the stage's copy.
-Offered only where the jail can run.
+It writes in the stage's copy.
+Offered only staged (safety
+.Ic auto )
+where the jail can run.
 .It Ic note
 A line kept for later sessions on this project; see
 .Sx Project notes .
@@ -847,13 +861,11 @@ starts another.
 At start-up those whose conversation is no longer saved, and that have
 not changed in a day, are removed.
 .Sh THE STAGE
-Staged, with
-.Ic /stage on
-or
-.Ql "stage = on"
-in the configuration,
+By default
 .Nm
-moves into a copy of the project, a
+is staged (safety
+.Ic auto ) :
+it moves into a copy of the project, a
 .Xr git-worktree 1
 in
 .Pa ~/.cache/arno/stage/ Ns Ar pid ,
@@ -871,6 +883,19 @@ The diff is also written to the scratch directory as
 .Pa stage.diff ,
 for a run with no one to answer; it is removed once applied or dropped.
 .Pp
+Safety
+.Ic safe
+is not staged: each edit, move and remove is asked, and
+.Ic shell
+is not offered.
+A session starts safe when the configuration's
+.Cm safety
+or the project's
+.Pa stage.json
+says so, or when no stage can be made, in which case it says why at
+start-up:
+.Ql "safety: safe, each change asked, since there is no stage: WHY" .
+.Pp
 The copy starts from your tree as it is, not from the last commit: your
 uncommitted changes and new files come along, and the diff holds only
 the model's work.
@@ -884,7 +909,8 @@ when
 .Nm
 leaves.
 It needs a git repository with at least one commit.
-A project under other version control has no stage.
+A project under other version control, or with no commit yet, has no
+stage, and the session is safe.
 .Pp
 The copy's own
 .Pa .git
@@ -905,15 +931,18 @@ with no argument says whether the session is staged and offers what the
 copy holds.
 .Ic /stage drop
 discards that, putting the copy back as it was when last applied.
-.Ic /stage off
-leaves the copy once nothing is pending.
-.Ic /stage on
+.Ic /safety
+with no argument says which safety the session has.
+.Ic /safety safe
+leaves the copy, and is refused while it holds changes:
+.Ql "the copy holds changes: /stage to apply them, /stage drop to discard them" .
+.Ic /safety auto
 and
-.Ic /stage off
+.Ic /safety safe
 are remembered for the project, in
 .Pa stage.json :
 its next session starts the same way, whatever
-.Cm stage
+.Cm safety
 says.
 .Pp
 A copy whose
@@ -979,23 +1008,21 @@ A sandbox that cannot be made is an error, never a command run outside
 it.
 .Pp
 .Ic shell
-is offered where the jail can run, unless
+is offered only while staged, where the jail can run, unless
 .Ql "shell = no" .
-Without the stage your tree is read-only to it, and only
-.Ev ARNO_SCRATCH
-and
-.Pa /tmp
-are writable: it can look, count and try, but not change the project.
-It never writes in your own tree, where it could rewrite
+It writes in the copy, never in your own tree, where it could rewrite
 .Pa .git
 or the Makefile, which git and
 .Ic check
 then run outside the sandbox, with no diff shown.
-While the stage is up it writes in the copy, and is not offered in
+It is not offered when safe: there every read outside the project goes
+through the path fence's question, which a jailed shell, reading whatever
+you can, would pass by.
+It is not offered in
 .Cm review
 or
 .Cm improve
-mode.
+mode either.
 A call of it when it is not on offer is refused:
 .Ql "error: shell is not on offer" .
 .Pp
@@ -1365,18 +1392,18 @@ and
 run in a project
 .Ic /test
 has not been given a command for.
-.It Cm stage
-.Ql on
-starts a session staged in every project that neither
-.Ic /stage on
-nor
-.Ic /stage off
-has been given in.
+.It Cm safety
+.Ql auto
+(the default) starts a session staged;
+.Ql safe
+starts it asking each change, in every project that
+.Ic /safety
+has not been given in.
 .It Cm shell
 .Ql no
 withdraws the
 .Ic shell
-tool; it is offered otherwise, where the jail can run.
+tool; it is offered while staged, where the jail can run.
 .It Cm run
 Program names, separated by blanks, that
 .Ic run
@@ -1566,10 +1593,10 @@ Each project's notes, by project root.
 .It Pa ~/.local/share/arno/tests.json
 Each project's test command, by project root.
 .It Pa ~/.local/share/arno/stage.json
-Whether each project starts staged, as
-.Ic /stage on
+Each project's safety, as
+.Ic /safety auto
 or
-.Ic /stage off
+.Ic /safety safe
 last left it, by project root.
 .It Pa ~/.local/share/arno/lock
 Locked while one session changes the files above, so that two sessions at
@@ -1625,10 +1652,10 @@ temperature = 0.3
 test_cmd    = make test
 .Ed
 .Pp
-Work on a copy of every project, and let the model read manuals and
+Work on a copy of every project (the default), and let the model read manuals and
 draw:
 .Bd -literal -offset indent
-stage = on
+safety = auto
 run   = tiza arkusz man
 trust = man
 .Ed

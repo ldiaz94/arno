@@ -9,7 +9,8 @@ Every feature of the Pascal arno is kept: the full screen, `@path`
 attachments, the stage, the jail and the shell tool, MCP, peers,
 `--serve` and `--attach`, and what arno tells the model ahead of time.
 What changes is the design, below, and what the eval log showed to be
-dead weight (auto mode, brain and worker, plans) stays out.
+dead weight (auto mode, brain and worker, plans) stays out, though
+stage 8 takes workers up again, behind a plan agreed first.
 
 ## Decisions
 
@@ -386,12 +387,35 @@ one or more commits that build with `-Werror`.
      that run without asking (`Atools.runOffer`), and `Readers` (`ls wc
      head file stat`) are always allowed, trusted and fenced as
      `run_ro`'s, so `run` is offered even with an empty `run`.
-   - [x] `shell` offered wherever the jail works, not only staged.
-     Without the stage the project is read-only to it, `$ARNO_SCRATCH`
-     and `/tmp` writable, and it runs in the project (`Afence.zone`):
-     `ls | wc`, `concha -c`, `git -C` cost no refusal. As staged, it
-     reads what the human can, the secrets aside, without the fence's
-     question.
+   - [x] `shell` offered wherever the jail works, not only staged
+     (`4a80d17`); withdrawn again by the next step, for safe.
+   - [x] Safety, auto or safe. Auto, the default, is staged: edits in
+     the copy unasked, `shell` there, one diff a turn. Safe is not:
+     each change asked, no `shell`, so every read outside the project
+     goes through the fence's question. Config's `safety`,
+     `/safety auto|safe`, kept per project in `stage.json`; `/stage`
+     keeps only offering and `drop`. A project git doesn't keep has no
+     stage, and is safe, said at start-up.
+   - [ ] Auto runs `check` and `run` in the jail too, the copy and the
+     scratch writable, no network: in the copy the model can rewrite
+     the Makefile that `check` runs.
+   - [ ] The ignored dependency directories (`node_modules`, `.venv`)
+     reach the copy read-only, and the prompt says installing is the
+     human's: no network in the jail, and an install's scripts are the
+     classic way in.
+   - [ ] `/mode build`: a supervisor, the session's model, plans with
+     the human first and has the plan approved, then hands its steps
+     to workers by `delegate`, reviews and merges what they did, and
+     runs `check`. It edits only small fixes itself; anything more goes
+     back to a worker.
+   - [ ] Each worker in a jailed worktree of its own, made from the
+     supervisor's copy, giving back its diff and a report (what it did,
+     read, left); one that hits its step cap hands back its copy, not
+     nothing.
+   - [ ] Worker models chosen per brief, from config's `workers`.
+   - [ ] Workers in parallel.
+   - [ ] An eval: a task with a good plan approved first, supervisor
+     and workers against one model alone.
    - [ ] Context files in an editor's sessions: find whether `ask`
      goes unanswered there; remember the answer for each project root.
    - [ ] `fetch` and `grep` give at most so much, and say where more is.
@@ -411,9 +435,10 @@ one or more commits that build with `-Werror`.
    - [ ] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as
      concha-lsp is.
    Left out: an index of the code (the map, notes, memory and context
-   files are there; the context files did not arrive), an auto mode
-   (the stage and profiles cover it), and raz's tools as an MCP server
-   (raz-lsp serves other harnesses better).
+   files are there; the context files did not arrive), and raz's tools
+   as an MCP server (raz-lsp serves other harnesses better). Round 7 of
+   the Pascal arno's eval dropped a brain and workers; that task was
+   one vague line, and a plan agreed first is what workers lack.
 
 ## Asked of others first
 

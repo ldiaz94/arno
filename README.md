@@ -121,7 +121,8 @@ these are the ones to start with:
 | `/test [COMMAND]` | set and run the project's test command |
 | `/remember [#tag,...] FACT`, `/forget`, `/my-memory` | facts kept for every conversation |
 | `/notes` | this project's notes |
-| `/stage [on\|off\|drop]` | the stage, below |
+| `/stage [drop]` | the stage's copy: what it holds, or drop it |
+| `/safety [auto\|safe]` | `auto` works on a copy, `safe` asks each change |
 | `/quit` | leave (so does C-d) |
 
 Attach a file with `@src/Arno.raz`, a line range with
@@ -155,16 +156,17 @@ grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows, and `ls wc head file stat`, which
 only read. `check` runs the test command you set.
 
-**The stage.** With `stage = on` in the config, the model's edits go to a
-copy of the project, and a turn's changes reach you as one diff and one
-question, not one yes per edit. Nothing is applied to your tree
-without your yes.
+**The stage.** By default (`safety = auto`) the model works on a copy of
+the project, and a turn's changes reach you as one diff and one question,
+not one yes per edit. Nothing is applied to your tree without your yes.
+`/safety safe` (or `safety = safe` in the config) asks each change
+instead, and has no shell. With no git repository or no commit there is
+no copy, and the session is safe.
 
 **The shell.** `shell` runs a command inside a jail made of Linux's
-unprivileged namespaces (no root, no helper), with no network. Without
-the stage the project is read-only to it, so it can look and try but
-not change; with the stage it writes in the copy. It is off if the
-config says `shell = no`.
+unprivileged namespaces (no root, no helper), with no network.
+In the stage it writes in the copy, never in your tree. It is offered only
+staged, so not in safe mode, and is off if the config says `shell = no`.
 
 **MCP servers.** A server of the Model Context Protocol, a program that
 offers tools over standard input and output, is added to the config, a

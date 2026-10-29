@@ -102,6 +102,7 @@ var line;
 begin
   echo "url = http://127.0.0.1:$(port)/v1" > "$dir/config/arno/config"
   echo 'context_files = no' >> "$dir/config/arno/config"
+  echo 'safety = safe' >> "$dir/config/arno/config"
   for line in more do echo $line >> "$dir/config/arno/config"
 end;
 
@@ -319,7 +320,7 @@ git -C $proj init -q
 echo one > "$proj/a.txt"
 git -C $proj add a.txt
 git -C $proj -c user.name=t -c user.email=t@t commit -q -m first
-configure(['stage = on'])
+configure(['safety = auto'])
 edit := '{"path":"a.txt","old":"one","new":"two"}'
 
 // arno run in the project with the arguments in the list a, the text
@@ -363,23 +364,33 @@ holds('a staged note', 'out', 'notes kept this turn')
 lacks('a staged note', 'out', 'working on a copy.*notes kept')
 
 // a conversation taken up again brings its pending diff back into the
-// new copy; /stage off is refused while the copy holds it, and the
-// answer, kept in stage.json, outranks config's stage = on
+// new copy; /safety safe is refused while the copy holds it, and the
+// answer, kept in stage.json, outranks config's safety = auto
 edit := '{"path":"a.txt","old":"two","new":"three"}'
 staged('n')
 saved := split(`ls -t "$dir"/data/arno/*.json | head -1`)
 id := basename(saved[0], '.json')
-stagedRun([], '/load ' + id + #10 + '/stage off' + #10 + '/stage drop' + #10 + '/stage off')
+stagedRun([], '/load ' + id + #10 + '/safety safe' + #10 + '/stage drop' + #10 + '/safety safe')
 holds('a carried diff', 'out', 'is back in the copy')
-holds('/stage off', 'err', 'the copy holds changes')
+holds('/safety safe', 'err', 'the copy holds changes')
 holds('/stage drop', 'out', 'the copy is back as it was')
-holds('/stage off', 'out', 'not staged: back in ' + proj)
+holds('/safety safe', 'out', 'safety: safe, back in ' + proj)
 if `cat "$proj/a.txt"` <> 'two' then fail('the human tree changed: ' + `cat "$proj/a.txt"`)
 stagedRun([], '/stage')
-holds('stage.json over config', 'out', 'not staged; /stage on')
-stagedRun([], '/stage on')
-holds('/stage on', 'out', 'staged: working on a copy')
+holds('stage.json over config', 'out', 'not staged: safety is safe')
+stagedRun([], '/safety auto')
+holds('/safety auto', 'out', 'safety: auto, working on a copy')
 if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('the copy was not removed at the end')
+
+// with no repository of its own there is no stage: auto falls back to
+// safe, and says why
+kept := proj
+proj := `realpath $dir` + '/plain'
+mkdir -p $proj
+stagedRun([], '/safety')
+holds('no stage outside git', 'out', 'safety: safe, each change asked, since there is no stage')
+holds('no stage outside git', 'out', 'safety: safe, each change asked; /safety auto')
+proj := kept
 
 // shell works in the stage's copy, and what it makes is in the diff
 stagedRun(['call', 'shell', '{"command":"echo made > b.txt"}'], 'y')

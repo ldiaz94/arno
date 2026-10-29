@@ -100,7 +100,8 @@ const
         {name: "/my-memory", args: "[TAG]", desc: "list remembered facts"},
         {name: "/notes", args: "[forget N|WORD]", desc: "list the model's notes on this project, or forget some"},
         {name: "/test", args: "[COMMAND]", desc: "run the project's test command, or set it; ask about failures"},
-        {name: "/stage", args: "[on|off|drop]", desc: "work on a copy, each turn's changes one diff to apply"},
+        {name: "/safety", args: "[auto|safe]", desc: "auto: work on a copy, one diff a turn; safe: each change asked"},
+        {name: "/stage", args: "[drop]", desc: "the copy's changes offered, or dropped"},
         {name: "/quit", args: "", desc: "leave (also ^D)"}];
 
     MaxDepth = 5;   (* files a context file brings, and they bring, and so on *)
