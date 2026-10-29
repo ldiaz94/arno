@@ -6,10 +6,11 @@
 // record) and, for every worktree of that repository, writes arno's own
 // directory for the project, ~/.local/share/arno/projects/ROOT: each memory
 // entry a file of memory/, Claude Code's agents (the home's and the
-// project's) as roles in roles/, and AGENTS.md, the context file arno reads,
-// which names each entry and where each of the worktree's .claude/rules/*.md
-// applies. Only this script writes them, whole, to temporaries put in their
-// place. arno itself knows nothing of Claude Code's files.
+// project's) as roles in roles/, its skills (the same) in skills/, and
+// AGENTS.md, the context file arno reads, which names each entry and where
+// each of the worktree's .claude/rules/*.md applies. Only this script writes
+// them, whole, to temporaries put in their place. arno itself knows nothing
+// of Claude Code's files.
 //
 // Run by hand, or hourly by arno-claude.timer; arno-claude(1) says more.
 
@@ -66,12 +67,15 @@ begin
 end;
 
 // A Markdown file with front matter, f, as [its name, its description,
-// its text]: the name from the front matter, else the file's.
+// its text, whether it is only for the human to invoke (a skill's
+// disable-model-invocation)]: the name from the front matter, else the
+// file's.
 function front(f);
-var l, name, desc, body, inFront, seen;
+var l, name, desc, body, inFront, seen, manual;
 begin
   name := basename(f, '.md')
   desc := ''
+  manual := false
   body := []
   inFront := false
   seen := false
@@ -82,10 +86,11 @@ begin
     end else if inFront then begin
       if copy(l, 1, 5) = 'name:' then name := value(l)
       else if copy(l, 1, 12) = 'description:' then desc := value(l)
+      else if copy(l, 1, 25) = 'disable-model-invocation:' then manual := value(l) = 'true'
     end else
       body := body + [l]
   end;
-  result := [name, desc, trim(join(body, chr(10)))]
+  result := [name, desc, trim(join(body, chr(10))), manual]
 end;
 
 // The file f written to out as arno keeps it: its description, the
@@ -99,6 +104,25 @@ begin
     writeln()
     writeln(e[2])
   end > $out
+end;
+
+// A skill, the file f (a SKILL.md, named by its folder unless its front
+// matter names it), written into dir as arno keeps it. One that is only
+// for the human to invoke says so first, as arno has no command for it;
+// $ARGUMENTS, the words it was invoked with, becomes the human's request.
+procedure skill(f, dir);
+var e, name, desc;
+begin
+  e := front(f)
+  name := e[0]
+  if name = 'SKILL' then name := basename(dirname(f))
+  desc := e[1]
+  if e[3] then desc := 'Only when the human asks for it: ' + desc
+  begin
+    writeln(desc)
+    writeln()
+    writeln(replace(e[2], '$ARGUMENTS', 'the human''s request'))
+  end > $(dir + '/' + name + '.md')
 end;
 
 // The directory tmp put in dir's place, whole.
@@ -123,14 +147,15 @@ end;
 
 // root's own directory written from the memory directory mem: each
 // entry a file of memory/, the roles in roles/ (Claude Code's agents,
-// the home's then the project's), and AGENTS.md, the context file,
+// the home's then the project's), the skills in skills/ (its skills, the
+// same way round, so the project's wins a name), and AGENTS.md, the context file,
 // naming each entry and rule.
 procedure save(root, mem);
 var dir, f, e, index, rules;
 begin
   dir := projects + root
-  rm -rf $(dir + '/memory.tmp') $(dir + '/roles.tmp')
-  mkdir -p $(dir + '/memory.tmp') $(dir + '/roles.tmp')
+  rm -rf $(dir + '/memory.tmp') $(dir + '/roles.tmp') $(dir + '/skills.tmp')
+  mkdir -p $(dir + '/memory.tmp') $(dir + '/roles.tmp') $(dir + '/skills.tmp')
   index := []
   for f in sort(glob(mem + '/*.md')) do
     if basename(f) <> 'MEMORY.md' then begin
@@ -142,6 +167,9 @@ begin
   for f in sort(glob(home + '/.claude/agents/*.md')) + sort(glob(root + '/.claude/agents/*.md')) do
     keep(f, dir + '/roles.tmp/' + front(f)[0] + '.md')
   swap(dir + '/roles.tmp', dir + '/roles')
+  for f in sort(glob(home + '/.claude/skills/*/SKILL.md')) + sort(glob(root + '/.claude/skills/*/SKILL.md')) do
+    skill(f, dir + '/skills.tmp')
+  swap(dir + '/skills.tmp', dir + '/skills')
   begin
     writeln('# What Claude Code learned of this project')
     writeln()

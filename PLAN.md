@@ -487,8 +487,18 @@ one or more commits that build with `-Werror`.
      a role's; `skill` lists them in its description, `name` an enum, and
      gives one's text when the work calls for it. Roles and skills share
      the reading of such a directory (`shelf`). Offered to workers too.
-     Left out: a project's own skills, and Claude Code's
-     (`SKILL.md` in a directory, with front matter), until wanted.
+   - [x] Claude Code's skills, made arno's. Tangent's Linear and release
+     how-tos are its Claude Code skills, in the repository's
+     `.claude/skills`. arno-claude writes the home's and the project's
+     `SKILL.md`s, as it does agents, into `projects/ROOT/skills/`, named by
+     the front matter or else the folder; `skill` reads that shelf after
+     the human's, which wins a name. One only the human was to invoke
+     (`disable-model-invocation`) says so first, as arno has no command for
+     it, and `$ARGUMENTS` becomes the human's request. Left out: the
+     allowed tools (arno asks of each call anyway), a skill's other files,
+     the tool names in its text (Claude Code's `mcp__linear-server__...`
+     for arno's `linear_...`), and claude.ai's synced skills, built on its
+     own tools.
    - [ ] The human's words in every brief. An audit's lead turned "can a
      user reach data that isn't theirs" into briefs about "procedures
      that take an ID", and its workers, given the profile and sign-up

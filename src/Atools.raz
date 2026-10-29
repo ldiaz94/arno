@@ -63,8 +63,8 @@
    what the editor lacks. A file the editor has open is neither moved nor
    removed.
 
-   skill gives one of the human's skills, their how-to for a kind of
-   work kept for every project (Asession says where), listed in its
+   skill gives one of the skills, the human's how-to for a kind of work,
+   their own or the project's (Asession says where), listed in its
    description and read only when the work calls for it, so a long one
    costs nothing until then. Leaves out the images read shows as
    pictures, which come with the screen. *)
@@ -247,7 +247,7 @@ const
             `{"path":{"type":"string","description":"the file to delete, relative to the working directory"}},` +
             `"required":["path"]}`},
         {name: "skill",
-         description: "Read a skill: the human's own instructions for a kind of work, kept for every project. " +
+         description: "Read a skill: the human's own instructions for a kind of work. " +
             "Before you do work a skill below is for, read it, and follow it over your own habits.",
          params: `{"type":"object","properties":{"name":{"type":"string","description":"the skill to read"}},` +
             `"required":["name"]}`},
@@ -1650,9 +1650,11 @@ var
     allowed: []U8;       (* the builtins the host allows, a blank at each end of each; "" for all *)
     limited: BOOL;       (* the host named the builtins it allows *)
 
-var   (* the human's skills, a shelf (skills, below) *)
-    skillDir: []U8;    (* where the skills are, each NAME.md; "" for none *)
-    skillList: []U8;   (* the skills skill may read, blank-separated; "" for none, when it isn't offered *)
+var   (* the skills, two shelves (skills, below) *)
+    skillDir: []U8;    (* where the human's own are, each NAME.md; "" for none *)
+    skillMine: []U8;   (* their names, blank-separated *)
+    skillProject: []U8;   (* where the project's are, arno-claude's; "" for none *)
+    skillList: []U8;   (* the skills skill may read, both shelves', blank-separated; "" for none, when it isn't offered *)
     skillTool: Awire.Tool;  (* skill as offered, its description listing the skills and its schema limiting name to them *)
     skillBufs: [2]Buf.Buf;  (* what skillTool's description and params are slices of *)
 
@@ -1858,9 +1860,22 @@ begin
     return true;
 end;
 
+(* Whether name is one of names, blank-separated. *)
+proc among(names, name: []const U8): BOOL;
+var w, rest: []const U8;
+begin
+    w, rest := Str.field(names);
+    while LEN(w) > 0 do
+        if w = name then return true; end;
+        w, rest := Str.field(rest);
+    end;
+    return false;
+end;
+
 (* The NAME.md files of dir, added to names (blank-separated), enum (the
    names as a JSON enum's strings, comma-separated) and listed (a line
-   "- NAME: what it is for" each). A directory that can't be opened has
+   "- NAME: what it is for" each); a name already in names, from a shelf
+   read before, is passed over. A directory that can't be opened has
    none. *)
 proc shelf(dir: []const U8; var names, enum, listed: Buf.Buf);
 var d: Sys.Dir; name, first: []const U8; more: BOOL; path, text: Buf.Buf;
@@ -1875,7 +1890,8 @@ begin
         Buf.reset(path);
         Fmt.write(path, "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
         Buf.reset(text);
-        if Str.hasSuffix(name, ".md") and plainName(name[0..LEN(name) - 3]) and (Files.load(Buf.bytes(path), text) = 0) then
+        if Str.hasSuffix(name, ".md") and plainName(name[0..LEN(name) - 3]) and
+            not among(Buf.bytes(names), name[0..LEN(name) - 3]) and (Files.load(Buf.bytes(path), text) = 0) then
             name := name[0..LEN(name) - 3];
             first, _, _ := Str.cut(Buf.bytes(text), "\n");
             if enum.len > 0 then Buf.add(enum, ','); Buf.add(names, ' '); end;
@@ -1892,15 +1908,9 @@ end;
    but the first line, added to b; false if it is none of names or can't
    be read. *)
 proc shelved(dir, names, name: []const U8; var b: Buf.Buf): BOOL;
-var w, rest: []const U8; path, text: Buf.Buf; listed: BOOL;
+var rest: []const U8; path, text: Buf.Buf;
 begin
-    listed := false;
-    w, rest := Str.field(names);
-    while LEN(w) > 0 do
-        if w = name then listed := true; end;
-        w, rest := Str.field(rest);
-    end;
-    if not listed then return false; end;
+    if not among(names, name) then return false; end;
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     Buf.init(text, Heap.heap);
@@ -1957,24 +1967,30 @@ begin
     return shelved(roleDir, roleList, role, b);
 end;
 
-(* The skills in dir, a shelf: the human's how-to for a kind of work,
-   kept for every project. skill is offered with them listed, each with
-   when to read it, and gives one's text when the model asks: a long
-   how-to then costs nothing until the work needs it. With none in dir,
-   skill isn't offered. *)
-proc skills*(dir: []const U8);
+(* The skills, how-tos for a kind of work, on two shelves: mine, the
+   human's own, kept for every project, and project, the project's (its
+   Claude Code skills, which arno-claude writes); the human's wins a
+   name. skill is offered with them listed, each with when to read it,
+   and gives one's text when the model asks: a long how-to then costs
+   nothing until the work needs it. With none, skill isn't offered. *)
+proc skills*(mine, project: []const U8);
 var enum, names, listed: Buf.Buf; t: Awire.Tool; i: INT;
 begin
     Str.free(Heap.heap, skillDir);
+    Str.free(Heap.heap, skillMine);
+    Str.free(Heap.heap, skillProject);
     Str.free(Heap.heap, skillList);
-    skillDir := keep(dir);
+    skillDir := keep(mine);
+    skillProject := keep(project);
     Buf.init(enum, Heap.heap);
     defer Buf.done(enum);
     Buf.init(listed, Heap.heap);
     defer Buf.done(listed);
     Buf.init(names, Heap.heap);
     defer Buf.done(names);
-    shelf(dir, names, enum, listed);
+    shelf(mine, names, enum, listed);
+    skillMine := keep(Buf.bytes(names));
+    shelf(project, names, enum, listed);
     skillList := keep(Buf.bytes(names));
     for i := 0 to LEN(Offered) - 1 do
         if Offered[i].name = "skill" then t := Offered[i]; end;
@@ -1992,10 +2008,17 @@ begin
     skillTool := {name: t.name, description: Buf.bytes(skillBufs[0]), params: Buf.bytes(skillBufs[1])};
 end;
 
-(* skill's call: the text of the skill a names, or what the skills are. *)
+(* skill's call: the text of the skill a names, from the human's shelf
+   if it is there, else the project's; or what the skills are. *)
 proc skill(const a: Args; var out: Buf.Buf);
+var found: BOOL;
 begin
-    if not shelved(skillDir, skillList, str(a, "name"), out) then
+    if among(skillMine, str(a, "name")) then
+        found := shelved(skillDir, skillMine, str(a, "name"), out);
+    else
+        found := shelved(skillProject, skillList, str(a, "name"), out);
+    end;
+    if not found then
         Fmt.write(out, "error: {} is not a skill; the skills are: {}", [Fmt.str(str(a, "name")), Fmt.str(skillList)]);
     end;
 end;
@@ -2638,14 +2661,18 @@ end;
 
 (* Skills: listed in skill's offer, name limited to them, one's text
    without its first line, a file whose name won't fit a schema left
-   out, and skill not offered with none. *)
+   out, the project's shelf read after the human's, which wins a name,
+   and skill not offered with none. *)
 proc testSkills();
 var t: []Awire.Tool; i: INT; d, schema: []const U8;
 begin
     _ := Sys.makeDir("skills");
     _ := Files.write("skills/linear.md", "When writing a Linear comment.\n\nTerse, findings first.\n");
     _ := Files.write("skills/a \"b\".md", "not one: a quote in its name\n");
-    skills("skills");
+    _ := Sys.makeDir("theirs");
+    _ := Files.write("theirs/linear.md", "The project's.\n\nNot this one.\n");
+    _ := Files.write("theirs/release.md", "Before a release.\n\nCompare with the last tag.\n");
+    skills("skills", "theirs");
     t := offered(false, true, false);
     d := "";
     schema := "";
@@ -2654,12 +2681,13 @@ begin
     end;
     if Str.find(d, "- linear: When writing a Linear comment.") < 0 then expect("a skill listed", d, "- linear: ..."); end;
     if Str.find(d, "quote") >= 0 then expect("a name that won't fit left out", d, "no quote"); end;
-    expect("skill's schema", schema, `{"type":"object","properties":{"name":{"type":"string","enum":["linear"],` +
+    expect("skill's schema", schema, `{"type":"object","properties":{"name":{"type":"string","enum":["linear","release"],` +
         `"description":"the skill to read"}},"required":["name"]}`);
     expect("a skill", run("skill", `{"name":"linear"}`, nil), "Terse, findings first.");
+    expect("the project's skill", run("skill", `{"name":"release"}`, nil), "Compare with the last tag.");
     expect("no skill", run("skill", `{"name":"../skills/linear"}`, nil),
-        "error: ../skills/linear is not a skill; the skills are: linear");
-    skills("none");
+        "error: ../skills/linear is not a skill; the skills are: linear release");
+    skills("none", "");
     t := offered(false, true, false);
     for i := 0 to LEN(t) - 1 do
         if t[i].name = "skill" then expect("skill offered with none", "offered", "not"); end;

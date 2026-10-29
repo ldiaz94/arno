@@ -52,11 +52,27 @@ become arno's roles in
 .Pa roles/ ,
 each its description then its text, the front matter's tools and model
 left out.
+Its skills, each
+.Pa SKILL.md
+of
+.Pa ~/.claude/skills
+then of the project's
+.Pa .claude/skills ,
+become arno's skills in
+.Pa skills/ ,
+named by the front matter or else the folder, the project's winning a
+name; each is its description then its text, the allowed tools left out.
+A skill only you were to invoke
+.Pq Ql disable-model-invocation
+says so before its description, and
+.Ql $ARGUMENTS
+becomes the human's request.
+A skill's other files are not copied.
 .Pp
 What it writes is
 .Nm Ns 's
 alone: written whole on every run, to a temporary put in its place, so
-change the memory, the rules or the agents, not the copies.
+change the memory, the rules, the agents or the skills, not the copies.
 Nothing is written into a repository, and arno knows nothing of Claude
 Code's files.
 .Pp
@@ -70,7 +86,7 @@ Claude Code's memory entries, each with front matter giving its name and
 description;
 .Pa MEMORY.md ,
 the index, is left out.
-.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md , memory/ , roles/
+.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md , memory/ , roles/ , skills/
 What it writes, under
 .Ev XDG_DATA_HOME
 if that is set.

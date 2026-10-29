@@ -823,13 +823,18 @@ Offered only staged (safety
 where the jail can run.
 .It Ic skill
 One of your skills, by name: the text of
-.Pa ~/.config/arno/skills/ Ns Ar name Ns Pa .md
+.Pa ~/.config/arno/skills/ Ns Ar name Ns Pa .md ,
+or else of the project's,
+.Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /skills/ Ns Ar name Ns Pa .md ,
 but its first line, which says what kind of work it is for.
 The skills are listed in the tool's description, each with that line,
 so the model reads one when the work calls for it, and a long one costs
 nothing until then.
-They are yours, kept for every project: how you write a review's
-comments, a ticket, a commit.
+Your own are kept for every project: how you write a review's comments,
+a ticket, a commit.
+The project's are Claude Code's, which
+.Xr arno-claude 1
+writes there.
 A name holds only letters, digits and
 .Ql -_. ;
 another file is passed over.

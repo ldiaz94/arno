@@ -217,16 +217,22 @@ begin
     end;
 end;
 
-(* The human's skills, kept for every project in arno's configuration
-   directory, skills/NAME.md. *)
+(* The skills: the human's own, kept for every project in arno's
+   configuration directory, skills/NAME.md, and the project's, in arno's
+   own directory for it (arno-claude writes Claude Code's there). *)
 proc useSkills;
-var dir: Buf.Buf;
+var mine, project: Buf.Buf;
 begin
-    Buf.init(dir, Heap.heap);
-    defer Buf.done(dir);
-    Aconf.dir(dir);
-    Buf.str(dir, "/skills");
-    Atools.skills(Buf.bytes(dir));
+    Buf.init(mine, Heap.heap);
+    defer Buf.done(mine);
+    Buf.init(project, Heap.heap);
+    defer Buf.done(project);
+    Aconf.dir(mine);
+    Buf.str(mine, "/skills");
+    if Afence.rooted then
+        Fmt.write(project, "{}projects{}/skills", [Fmt.str(Astore.dir()), Fmt.str(Afence.root)]);
+    end;
+    Atools.skills(Buf.bytes(mine), Buf.bytes(project));
 end;
 
 (* s made the session the config sets up, telling front of turns and

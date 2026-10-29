@@ -2,11 +2,13 @@
 //
 //     concha test/claude.cn tools/arno-claude.cn
 //
-// In a home of its own: a repository with a second worktree, a rule and an
-// agent, and a Claude Code memory directory whose session ran in it. Each
-// worktree gets arno's directory: the context file naming the entry and the
-// rule, the entry in full in memory/, the agent as a role in roles/; a
-// second run leaves them whole, and nothing is written into the repository.
+// In a home of its own: a repository with a second worktree, a rule, an
+// agent and a skill, two skills of the home's, and a Claude Code memory
+// directory whose session ran in it. Each worktree gets arno's directory:
+// the context file naming the entry and the rule, the entry in full in
+// memory/, the agent as a role in roles/, the skills in skills/, the
+// project's winning a name; a second run leaves them whole, and nothing is
+// written into the repository.
 if length(args) <> 1 then begin
   echo 'usage: concha test/claude.cn arno-claude' >&2
   halt(2)
@@ -46,6 +48,23 @@ begin
   writeln()
   writeln('Follow the data from its entry point.')
 end > $dir/repo/.claude/agents/security.md
+mkdir -p $dir/home/.claude/skills/tiza $dir/home/.claude/skills/comment $dir/repo/.claude/skills/comment
+begin
+  writeln('---')
+  writeln('name: tiza')
+  writeln('description: Draw a diagram.')
+  writeln('---')
+  writeln('Write the text, then render it.')
+end > $dir/home/.claude/skills/tiza/SKILL.md
+writeln('---', chr(10), 'description: The home''s.', chr(10), '---', chr(10), 'Not this one.') > $dir/home/.claude/skills/comment/SKILL.md
+begin
+  writeln('---')
+  writeln('disable-model-invocation: true')
+  writeln('description: Comment on an issue.')
+  writeln('allowed-tools: [Read]')
+  writeln('---')
+  writeln('Summarise $ARGUMENTS for users.')
+end > $dir/repo/.claude/skills/comment/SKILL.md
 git -C $dir/repo add -A
 git -C $dir/repo -c user.name=t -c user.email=t@t commit -q -m first
 git -C $dir/repo worktree add -q $dir/other
@@ -78,6 +97,12 @@ for root in [dir + '/repo', dir + '/other'] do begin
   holds('the role text', own + '/roles/security.md', 'Follow the data from its entry point.')
   grep -qF -- 'tools:' $(own + '/roles/security.md')
   if status = 0 then fail('front matter in the role')
+  if `head -n 1 $(own + '/skills/tiza.md')` <> 'Draw a diagram.' then fail('the home''s skill')
+  if `head -n 1 $(own + '/skills/comment.md')` <> 'Only when the human asks for it: Comment on an issue.' then
+    fail('the project''s skill, asked for')
+  holds('the skill text', own + '/skills/comment.md', 'Summarise the human''s request for users.')
+  grep -qF -- 'allowed-tools' $(own + '/skills/comment.md')
+  if status = 0 then fail('front matter in the skill')
 end
 if length(lines(`git -C $dir/repo status --porcelain`)) <> 0 then fail('the repository was written to')
 if failed then halt(1)

@@ -61,7 +61,8 @@ installed into `~/.raz/lib` first, with `make install` in each checkout.
 
 `make install` also puts in `arno-claude`, which writes what Claude Code
 learned of each project (its memory and `.claude/rules`) into arno's own
-context file for the project, and the systemd user timer that runs it
+context file for the project, its agents as roles and its skills as
+arno's, and the systemd user timer that runs it
 hourly; `systemctl --user enable --now arno-claude.timer` turns that on.
 
 `make install` puts `arno` in `~/.local/bin` and its manual pages in
@@ -182,8 +183,8 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `skill` (your how-to for a kind of work, from
-`~/.config/arno/skills/NAME.md`, its first line what it is for, read
-when the work calls for it), `search`, `fetch`,
+`~/.config/arno/skills/NAME.md` or the project's Claude Code skills, its
+first line what it is for, read when the work calls for it), `search`, `fetch`,
 `delegate` (when the config names `workers`; each step picks its model, the first by default), `merge` (a staged worker's diff, into the copy or
 dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
