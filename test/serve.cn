@@ -1,6 +1,6 @@
 // serve.cn stub arno host: arno --serve driven by a host, test/Ahost.raz
 // (build/host), against the model's server of test/Astub.raz (build/stub),
-// as a program like arnold drives it through ~/lib/arnoc. The host's
+// as a program in a window would drive it. The host's
 // dialogue is in Ahost.raz, which says what arno must do; this sets the
 // scene: the stub, a configuration that points at it, a project with one
 // file, and directories of their own for arno's conversations and the

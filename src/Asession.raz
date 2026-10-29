@@ -1109,7 +1109,7 @@ end;
    provider, the context in use, what the session cost, a pointer to
    /compact once the conversation is large, and its title. The numbers
    come before the title, which a narrow terminal cuts first; the
-   safety and the plan share the mode's field, which arnold reads as
+   safety and the plan share the mode's field, which a host reads as
    the second of the fields that " \u{B7} " parts. *)
 proc text*(const f: Facts; var b: Buf.Buf);
 begin

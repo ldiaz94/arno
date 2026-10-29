@@ -48,10 +48,6 @@ stage 8 takes workers up again, behind a plan agreed first.
   is by a directory of sockets and `$ARNO_EDITOR`, not by `te-*.sock`.
   te is one editor that speaks it. The viewer protocol of `--attach`
   gets its own socket, apart from the editor's.
-- **`--serve` keeps its protocol.** arnold (`~/lib/arnold`, arno in a
-  window) drives `arno --serve` through arnoc(3), so `wire.pas`'s
-  messages stay as they are; arnold works against the raz arno
-  unchanged, or changes with it in the same piece of work.
 - **The eval drives the binary.** `eval/stub` (canned replies) and the
   jailed runs grade the raz arno and the Pascal one alike, so a stage
   can be compared with the reference by its transcripts and files.
@@ -326,7 +322,7 @@ one or more commits that build with `-Werror`.
      provider or the conversation, and are answered then (the Pascal
      arno answered mid-turn), and so does every request that comes
      while one waits, so that replies keep the order of requests, which
-     arnold pairs by; a viewer is told of a waiting
+     a host pairs them by; a viewer is told of a waiting
      question only as `status · a question waits in WHO`, not with
      the question (`waiting for approval in OWNER: QUESTION`); `--attach -l`
      removes the socket of a process that has ended, not one that is
@@ -540,7 +536,6 @@ one or more commits that build with `-Werror`.
      under its `delegate`, kept up to date: `w2 glm-5.3-flash · step 23
      · $0.04 · read enterprise/cv.ts`. Opening it shows its view. The
      shape parallel workers need, and may wait for them.
-   - [ ] arnold filters by the speaker as the screen does.
    - [ ] Workers in parallel.
    - [ ] Queued prompts. Enter while a turn runs does nothing now, so the
      human waits to say the next thing. It is queued instead: shown above

@@ -42,7 +42,7 @@
    models, and rename, system and setsystem of the current
    conversation, which the job running may be changing, wait for the
    job's end, and are answered then. So that the replies come in the
-   order of the requests, as arnold counts on, every request that comes
+   order of the requests, as a host counts on, every request that comes
    while another waits waits too.
 
    Depends on Aframe, Aview, Asession, Agent, Aprompt, Atools, Aattach,
