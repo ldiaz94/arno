@@ -454,6 +454,24 @@ one or more commits that build with `-Werror`.
      `build_steps` is only a backstop. Its report line says what it
      cost. `/budget` shows or sets the turn's budget for the session,
      build mode's in build mode.
+   - [ ] The human's words in every brief. An audit's lead turned "can a
+     user reach data that isn't theirs" into briefs about "procedures
+     that take an ID", and its workers, given the profile and sign-up
+     routers, missed a user making themselves admin: the question had
+     been narrowed before it reached them. `brief` adds, after the
+     lead's task, the human's message that began the turn, marked as
+     context: the task stays the lead's, and the worker reports on it,
+     but it sees what the work is for and can say what the task left
+     out. Cut at a few thousand bytes.
+   - [ ] An all-clear is a finding. The same lead re-read its workers'
+     findings but passed on their "checked, clean" as given, and two
+     were wrong. Build's step 3 says a worker's "nothing found" is a
+     claim like any other, checked against the code before it is
+     passed on, where the risk is highest first. Build's prompt is also
+     a builder's; a line for read-only jobs (a survey, an audit): the
+     steps are areas, there is nothing to merge, and the end is a
+     report whose every finding and every all-clear the lead has
+     checked.
    - [ ] Who said it. A worker's text, calls and results reach the
      screen through the lead's Front, so its sixty calls read as the
      lead's own and nothing tells them apart. Front gets the speaker,
