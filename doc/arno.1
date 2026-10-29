@@ -656,7 +656,12 @@ or
 .Li static ,
 with a declaring word
 .Pq Li function , proc , procedure , class , def , fn , type , No ... ,
-or a signature followed by its body.
+a signature followed by its body, or
+.Li const ,
+.Li let
+or
+.Li var
+holding an arrow function or a function expression.
 A definition ends where the indentation comes back to its own.
 A shape outside these goes unseen, and the model is told to grep
 instead.

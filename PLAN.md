@@ -430,7 +430,9 @@ one or more commits that build with `-Werror`.
      never the project's, so a cloned repository grants itself nothing.
    - [ ] Named checks: `check(name, files?)`, a profile's `check.NAME`
      commands, `{}` standing for files inside the fence.
-   - [ ] `outline` and `def` know `const f = () =>` and `= function`.
+   - [x] `outline` and `def` know `const f = () =>` and `= function`:
+     at any indentation, with async, generics and a type after the
+     parameters; a call holding an arrow is not one.
    - [ ] rlsp, done in dwa: `LspWire`, `LspServer` and `LspText` made a
      library of their own, dwa unchanged in what it does.
    - [ ] `Alsp`: a profile's language server for a file type; an edit's
