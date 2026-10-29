@@ -155,8 +155,8 @@ Directories and images work too, if the model takes images.
 | C-z | stop arno as a shell does; `fg` brings it back |
 | S-Tab | change mode |
 | TAB, C-o | toggle a tool entry, all of them |
-| PgUp, PgDn; S-Up, S-Down | scroll by a page, by a line |
-| Up, Down; M-p, M-n | input history; by prefix |
+| PgUp, PgDn; Up, Down, the wheel | scroll by a page, by a line |
+| C-p, C-n; M-p, M-n | input history; by prefix |
 | C-r | search the history |
 | C-x C-e | edit the input in your editor |
 | C-v | paste an image from the clipboard |

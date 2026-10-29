@@ -28,9 +28,11 @@
    Esc or RET is no, and C-c stops the turn too. After a no to a change,
    the rule asks why, a line that RET gives and C-g or Esc leaves empty.
 
-   The lines sent are kept (Ahistory). <up> and C-p on the input's
-   first line recall the one before, <down> and C-n on its last the
-   one after; M-p and M-n the one before or after that begins as the
+   The lines sent are kept (Ahistory). C-p on the input's first line
+   recalls the one before, C-n on its last the one after; <up> and
+   <down> there scroll the transcript instead, as they are what rat's
+   wheel sends on the alternate screen, and a wheel that recalled
+   history would be nonsense; M-p and M-n the one before or after that begins as the
    input does up to the point. C-r searches them, newest first, case
    aside: what is typed narrows it, C-r looks further back, DEL takes a
    character off, C-g or Esc puts the input back as it was, and any
@@ -696,6 +698,26 @@ begin
     if ok then fill(s, LEN(s)); end;
 end;
 
+(* <up>: a line up in the input; on its first line, the transcript
+   scrolled back a line, as the wheel sends it. *)
+proc arrowUp(n: INT);
+var l, _lines: INT;
+begin
+    l, _lines := lineOf();
+    if l > 0 then _ := TuiMap.run("edit-previous-line", n); return; end;
+    lineUp(n);
+end;
+
+(* <down>: a line down in the input; on its last, the transcript
+   scrolled on a line. *)
+proc arrowDown(n: INT);
+var l, lines: INT;
+begin
+    l, lines := lineOf();
+    if l < lines - 1 then _ := TuiMap.run("edit-next-line", n); return; end;
+    lineDown(n);
+end;
+
 (* The line before (dir -1) or after (dir 1) that begins as the input
    does up to the point, which stays where it is. *)
 proc prefixed(dir: INT);
@@ -1234,6 +1256,8 @@ begin
     TuiMap.define("arno-line-up", "the transcript scrolled back a line", lineUp);
     TuiMap.define("arno-line-down", "the transcript scrolled on a line", lineDown);
     TuiMap.define("arno-redraw", "the screen drawn again", redraw);
+    TuiMap.define("arno-up", "a line up in the input; on its first line, the transcript scrolled back", arrowUp);
+    TuiMap.define("arno-down", "a line down in the input; on its last line, the transcript scrolled on", arrowDown);
     TuiMap.define("arno-history-back", "the line sent before, on the input's first line; else a line up",
         historyBack);
     TuiMap.define("arno-history-onward", "the line sent after, on the input's last line; else a line down",
@@ -1257,9 +1281,9 @@ begin
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "S-<up>", "arno-line-up");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "S-<down>", "arno-line-down");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "C-l", "arno-redraw");
-    _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<up>", "arno-history-back");
+    _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<up>", "arno-up");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "C-p", "arno-history-back");
-    _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<down>", "arno-history-onward");
+    _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<down>", "arno-down");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "C-n", "arno-history-onward");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "M-p", "arno-prefixed-back");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "M-n", "arno-prefixed-onward");
