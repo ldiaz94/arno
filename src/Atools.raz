@@ -32,9 +32,9 @@
    that starts no character made U+FFFD: it goes into the conversation,
    which rjson reads only as UTF-8.
 
-   run starts one of the programs config allows, asked about unless
-   trusted; check runs the project's test command, the human's, without
-   asking; shell runs a command line the model writes, asking nothing,
+   run starts one of the programs config allows, or one of Readers,
+   asked about unless trusted, as Readers are; check runs the project's
+   test command, the human's, without asking; shell runs a command line the model writes, asking nothing,
    since the sandbox is the fence: Ajail's namespaces, no network, only
    the stage's copy (Afence.stage) and $ARNO_SCRATCH writable. Its exit
    status comes first, as check's does, then the end of the output; a
@@ -186,8 +186,8 @@ const
          description: "Run a program the human allows, with arguments, and see its exit status and " +
             "output. There is no shell: no pipes, redirection, globs or variables, and the program gets " +
             "no input and no terminal, so use its non-interactive options. The human approves each " +
-            "call, so make each one count: to try a program many ways, give all the commands in one " +
-            "call, parted by \";\".",
+            "call of a program not marked as running without asking, so make each one count: to try " +
+            "a program many ways, give all the commands in one call, parted by \";\".",
          params: `{"type":"object","properties":` +
             `{"args":{"type":"array","items":{"type":"string"},"description":` +
             `"the program, then its arguments, one per item; several commands in one call, parted by a lone \";\" item, run one after another"},` +
@@ -714,6 +714,14 @@ var
     trust: Buf.Buf;    (* those run starts without asking: config's trust, and each answered always *)
     trustRun: INT;     (* trust's length from config, before the answers *)
     testCmd: []const U8;     (* config's test_cmd, for a project with none of its own *)
+    runDesc: Buf.Buf;  (* the run tool's description with the programs it names *)
+    runDescFor: INT;   (* trust's length runDesc was made for, -1 until it is made *)
+
+const
+    (* The programs always allowed, only reading and trusted, whatever
+       config says: models reach for ls first, a refusal costs a turn,
+       and these only read. A config entry for one changes nothing. *)
+    Readers = "ls wc head file stat";
 
 (* list, words parted by blanks, into b with a blank at either end. *)
 proc words(var b: Buf.Buf; list: []const U8);
@@ -724,17 +732,34 @@ begin
     Buf.add(b, ' ');
 end;
 
+(* list as words() makes it, and then Readers, those not already in it. *)
+proc programs(var b: Buf.Buf; list: []const U8);
+var rest, w: []const U8; more: BOOL;
+begin
+    words(b, list);
+    rest := Readers;
+    more := true;
+    while more do
+        w, rest, more := Str.cut(rest, " ");
+        if not Afind.listed(w, Buf.bytes(b)) then
+            Buf.str(b, w);
+            Buf.add(b, ' ');
+        end;
+    end;
+end;
+
 (* run and check as config says: run's programs, those that only read,
-   the variables it may set and the programs trusted; check's test
-   command for a project without one of its own. test is kept, the
-   others copied. *)
+   the variables it may set and the programs trusted, the first three
+   with Readers added; check's test command for a project without one
+   of its own. test is kept, the others copied. *)
 proc commands*(run, ro, env, trusted, test: []const U8);
 begin
-    words(runs, run);
-    words(runsRO, ro);
+    programs(runs, run);
+    programs(runsRO, ro);
     words(runsEnv, env);
-    words(trust, trusted);
+    programs(trust, trusted);
     trustRun := trust.len;
+    runDescFor := -1;
     testCmd := test;
 end;
 
@@ -1650,6 +1675,24 @@ begin
     Amcp.call(name, a.d, a.v, h.stopped, out);
 end;
 
+(* t, the run tool, with its description ending in the programs it may
+   start and those that start without asking, so that a model need not
+   guess: it tried ls, bash and sh. The description is kept in runDesc,
+   made again only when a program has been trusted since, and then in a
+   new buffer, not the old one reset, so that a description handed out
+   before stays whole. *)
+proc runOffer(t: Awire.Tool): Awire.Tool;
+begin
+    if runDescFor # trust.len then
+        Buf.init(runDesc, Heap.heap);
+        Fmt.write(runDesc, "{} Programs: {} (these run without asking: {}).",
+            [Fmt.str(t.description), Fmt.str(Str.trim(Buf.bytes(runs))), Fmt.str(Str.trim(Buf.bytes(trust)))]);
+        runDescFor := trust.len;
+    end;
+    t.description := Buf.bytes(runDesc);
+    return t;
+end;
+
 (* The tools a request offers: Offered, less those that change files
    unless edits, a mode's say, and those that could only fail: search
    without a SearXNG, note outside a project, delegate unless lead, a
@@ -1669,7 +1712,7 @@ begin
         | "delegate": if not lead then continue; end;
         | "editor", "open": if not Apeer.reachable() then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
-        | "run": if LEN(Str.trim(Buf.bytes(runs))) = 0 then continue; end;
+        | "run": Tools.push(offer, runOffer(Offered[i])); continue;
         | "check": if LEN(testFor(b)) = 0 then continue; end;
         | "shell": if not edits or not shellOn() then continue; end;
         | else:
@@ -1923,7 +1966,7 @@ begin
 end;
 
 proc main*: INT;
-var dir, s: []const U8; long, store: Buf.Buf; i: INT;
+var dir, s: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
     Arun.child();
     Buf.init(hostSaid, Heap.heap);
@@ -2065,8 +2108,16 @@ begin
 
     (* run: the programs allowed, asked about, trusted, and fenced *)
     commands("echo sh no-such-program-of-arno", "", "ARNO_T", "", "");
-    expect("run, not allowed", run("run", `{"args":["ls"]}`, nil),
-        "error: ls is not allowed; the programs are: echo sh no-such-program-of-arno ");
+    expect("run, not allowed", run("run", `{"args":["bash"]}`, nil),
+        "error: bash is not allowed; the programs are: echo sh no-such-program-of-arno ls wc head file stat ");
+    expect("run, a reader asks nothing", run("run", `{"args":["wc","-c","f"]}`, nil)[0..10], "exit 0: wc");
+    expect("run, a reader is fenced", run("run", `{"args":["ls","../.."]}`, nil)[0..9], "declined:");
+    tools := offered(false, true);
+    for i := 0 to LEN(tools) - 1 do
+        if tools[i].name = "run" then s := tools[i].description; end;
+    end;
+    expect("run, offered with its programs", s[LEN(s) - 112..LEN(s)],
+        "Programs: echo sh no-such-program-of-arno ls wc head file stat (these run without asking: ls wc head file stat).");
     answer := 'n';
     because := "";
     expect("run, declined", run("run", `{"args":["echo","hi"]}`, human), "declined by user. Nothing was run.");

@@ -376,6 +376,40 @@ one or more commits that build with `-Werror`.
      editor's buffers. A one-shot and a plain session take no ask.
 7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`
    for a while; `man desktop` updated.
+8. **Less asking, more context.** The transcripts of October showed
+   models refused basic programs about 14 times, sweeping the disk for
+   what `~/r/CLAUDE.md` says, and one session past 600K tokens; they
+   seldom asked permission in prose. Each step a commit of its own:
+   - [x] Run names its programs. Models called `run` with `ls`, `bash`,
+     `sh` and `wc` and, refused, guessed again, a turn each time. The
+     tool's description now ends with the programs allowed and those
+     that run without asking (`Atools.runOffer`), and `Readers` (`ls wc
+     head file stat`) are always allowed, trusted and fenced as
+     `run_ro`'s, so `run` is offered even with an empty `run`.
+   - [ ] `shell` offered whenever the jail works, not only staged: the
+     tree is read-only to it then, only scratch writable.
+   - [ ] Context files in an editor's sessions: find whether `ask`
+     goes unanswered there; remember the answer for each project root.
+   - [ ] `fetch` and `grep` give at most so much, and say where more is.
+   - [ ] Profiles: sections of the config for a directory and what is
+     under it, setting `run`, `trust`, `stage` and `context_files`, in
+     place of `tests.json` and `stage.json`. In the human's config,
+     never the project's, so a cloned repository grants itself nothing.
+   - [ ] Named checks: `check(name, files?)`, a profile's `check.NAME`
+     commands, `{}` standing for files inside the fence.
+   - [ ] `outline` and `def` know `const f = () =>` and `= function`.
+   - [ ] rlsp, done in dwa: `LspWire`, `LspServer` and `LspText` made a
+     library of their own, dwa unchanged in what it does.
+   - [ ] `Alsp`: a profile's language server for a file type; an edit's
+     result carries the server's diagnostics.
+   - [ ] `def` and `refs` by name through the server, the rule of thumb
+     kept where there is none.
+   - [ ] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as
+     concha-lsp is.
+   Left out: an index of the code (the map, notes, memory and context
+   files are there; the context files did not arrive), an auto mode
+   (the stage and profiles cover it), and raz's tools as an MCP server
+   (raz-lsp serves other harnesses better).
 
 ## Asked of others first
 

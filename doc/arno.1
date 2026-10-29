@@ -997,7 +997,11 @@ enabled, on x86_64; where it cannot run, the tool is not offered.
 .Ic run
 starts one of the programs the
 .Cm run
-key names, with the model's arguments, and gives back its exit status
+key names, and
+.Cm ls wc head file
+and
+.Cm stat
+always, with the model's arguments, and gives back its exit status
 and output.
 There is no shell: the arguments go to the program as they are, so
 there is nothing to quote and no pipe or redirection.
@@ -1008,6 +1012,8 @@ one that runs on.
 It sees
 .Ev ARNO_SCRATCH .
 It is not jailed.
+The tool's description names the programs allowed and those that run
+without asking, so a model need not guess.
 .Pp
 Each call shows the command and asks.
 .Ql a
@@ -1016,7 +1022,13 @@ runs it and allows that program without asking until
 or
 .Ic /load .
 Programs named by
-.Cm trust
+.Cm trust ,
+and
+.Cm ls wc head file
+and
+.Cm stat ,
+which only read and are always allowed as if in
+.Cm run_ro ,
 start without asking, as if answered always; their arguments are still
 held to the fence.
 Several commands may go in one call, parted by a lone
@@ -1360,7 +1372,12 @@ tool; it is offered otherwise, while the stage is up.
 .It Cm run
 Program names, separated by blanks, that
 .Ic run
-may start; none by default.
+may start, besides
+.Cm ls wc head file
+and
+.Cm stat ,
+which it may always start; see
+.Sx RUN AND TRUST .
 .It Cm run_ro
 Of those, the ones that only read; see
 .Sx RUN AND TRUST .

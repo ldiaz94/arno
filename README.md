@@ -152,7 +152,8 @@ The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `delegate` (when the config names a `worker`), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
-to programs the config allows. `check` runs the test command you set.
+to programs the config allows, and `ls wc head file stat`, which
+only read. `check` runs the test command you set.
 
 **The stage.** With `stage = on` in the config, the model's edits go to a
 copy of the project, and a turn's changes reach you as one diff and one
