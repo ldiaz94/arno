@@ -225,6 +225,13 @@ answering(['call', 'read', far], '')
 holds('no answer', 'out', 'the tool said: declined by user: ')
 rm -rf $outside
 
+// arno's own directory for the project, read without asking
+own := "$dir/data/arno/projects" + `pwd -P` + '/memory'
+mkdir -p $own
+echo 'kept for the project' > "$own/a.md"
+answering(['call', 'read', '{"path":"' + own + '/a.md"}'], '')
+holds('arno own dir', 'out', 'the tool said:     1	kept for the project')
+
 // a change to a file, its diff shown, approved or declined with a reason
 edit := '{"path":"' + dir + '/made","old":"","new":"hello"}'
 answering(['call', 'edit', edit], 'y')

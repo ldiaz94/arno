@@ -4,10 +4,12 @@
 // For each of Claude Code's memory directories, ~/.claude/projects/NAME/memory,
 // it takes the repository the sessions beside it ran in (the cwd they
 // record) and, for every worktree of that repository, writes arno's own
-// context file for the project, ~/.local/share/arno/projects/ROOT/AGENTS.md:
-// the memory's entries, then where each of the worktree's .claude/rules/*.md
-// applies. Only this script writes that file, whole, to a temporary renamed
-// over it. arno itself knows nothing of Claude Code's files.
+// directory for the project, ~/.local/share/arno/projects/ROOT: each memory
+// entry a file of memory/, Claude Code's agents (the home's and the
+// project's) as roles in roles/, and AGENTS.md, the context file arno reads,
+// which names each entry and where each of the worktree's .claude/rules/*.md
+// applies. Only this script writes them, whole, to temporaries put in their
+// place. arno itself knows nothing of Claude Code's files.
 //
 // Run by hand, or hourly by arno-claude.timer; arno-claude(1) says more.
 
@@ -63,9 +65,9 @@ begin
     result := replace(copy(result, 2, length(result) - 2), '\"', '"')
 end;
 
-// A memory entry, the file f, as a section: its name, its description,
-// then its text without the front matter.
-procedure entry(f);
+// A Markdown file with front matter, f, as [its name, its description,
+// its text]: the name from the front matter, else the file's.
+function front(f);
 var l, name, desc, body, inFront, seen;
 begin
   name := basename(f, '.md')
@@ -83,10 +85,29 @@ begin
     end else
       body := body + [l]
   end;
-  writeln('### ', name)
-  if desc <> '' then writeln(desc)
-  writeln(trim(join(body, chr(10))))
-  writeln()
+  result := [name, desc, trim(join(body, chr(10)))]
+end;
+
+// The file f written to out as arno keeps it: its description, the
+// first line, then its text.
+procedure keep(f, out);
+var e;
+begin
+  e := front(f)
+  begin
+    writeln(e[1])
+    writeln()
+    writeln(e[2])
+  end > $out
+end;
+
+// The directory tmp put in dir's place, whole.
+procedure swap(tmp, dir);
+begin
+  rm -rf $(dir + '.old')
+  if exists(dir) then mv $dir $(dir + '.old')
+  mv $tmp $dir
+  rm -rf $(dir + '.old')
 end;
 
 // A rule, the file f under root, as a line: the paths it is for, and
@@ -100,13 +121,27 @@ begin
   writeln('- ', paths, ': ', copy(f, length(root) + 2))
 end;
 
-// root's context file written from the memory directory mem.
+// root's own directory written from the memory directory mem: each
+// entry a file of memory/, the roles in roles/ (Claude Code's agents,
+// the home's then the project's), and AGENTS.md, the context file,
+// naming each entry and rule.
 procedure save(root, mem);
-var dir, out, f, rules;
+var dir, f, e, index, rules;
 begin
   dir := projects + root
-  mkdir -p $dir
-  out := dir + '/AGENTS.md'
+  rm -rf $(dir + '/memory.tmp') $(dir + '/roles.tmp')
+  mkdir -p $(dir + '/memory.tmp') $(dir + '/roles.tmp')
+  index := []
+  for f in sort(glob(mem + '/*.md')) do
+    if basename(f) <> 'MEMORY.md' then begin
+      keep(f, dir + '/memory.tmp/' + basename(f))
+      e := front(f)
+      index := index + ['- ' + basename(f) + ': ' + e[1]]
+    end
+  swap(dir + '/memory.tmp', dir + '/memory')
+  for f in sort(glob(home + '/.claude/agents/*.md')) + sort(glob(root + '/.claude/agents/*.md')) do
+    keep(f, dir + '/roles.tmp/' + front(f)[0] + '.md')
+  swap(dir + '/roles.tmp', dir + '/roles')
   begin
     writeln('# What Claude Code learned of this project')
     writeln()
@@ -115,18 +150,21 @@ begin
     writeln()
     writeln('## Memory')
     writeln()
-    for f in sort(glob(mem + '/*.md')) do
-      if basename(f) <> 'MEMORY.md' then entry(f)
+    writeln('Each entry is a file in ', dir, '/memory, named below with what it is about.')
+    writeln('Read one in full before work it bears on; reading there needs no permission.')
+    writeln()
+    for e in index do writeln(e)
     rules := sort(glob(root + '/.claude/rules/*.md'))
     if length(rules) > 0 then begin
+      writeln()
       writeln('## Rules')
       writeln()
       writeln('Read the rule for a part of the project before working in it:')
       writeln()
       for f in rules do rule(root, f)
     end
-  end > $(out + '.tmp')
-  mv $(out + '.tmp') $out
+  end > $(dir + '/AGENTS.md.tmp')
+  mv $(dir + '/AGENTS.md.tmp') $(dir + '/AGENTS.md')
 end;
 
 for mem in glob(home + '/.claude/projects/*/memory') do begin

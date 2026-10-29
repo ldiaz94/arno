@@ -2,10 +2,11 @@
 //
 //     concha test/claude.cn tools/arno-claude.cn
 //
-// In a home of its own: a repository with a second worktree and a rule, and
-// a Claude Code memory directory whose session ran in it. Each worktree gets
-// arno's context file, with the entry and the rule; a second run leaves it
-// whole, and nothing is written into the repository.
+// In a home of its own: a repository with a second worktree, a rule and an
+// agent, and a Claude Code memory directory whose session ran in it. Each
+// worktree gets arno's directory: the context file naming the entry and the
+// rule, the entry in full in memory/, the agent as a role in roles/; a
+// second run leaves them whole, and nothing is written into the repository.
 if length(args) <> 1 then begin
   echo 'usage: concha test/claude.cn arno-claude' >&2
   halt(2)
@@ -28,7 +29,7 @@ begin
 end;
 
 rm -rf $dir
-mkdir -p $dir/home/.claude/projects/-repo/memory $dir/repo/.claude/rules
+mkdir -p $dir/home/.claude/projects/-repo/memory $dir/repo/.claude/rules $dir/repo/.claude/agents
 git init -q $dir/repo
 begin
   writeln('---')
@@ -36,6 +37,15 @@ begin
   writeln('---')
   writeln('Queries go in data/.')
 end > $dir/repo/.claude/rules/backend.md
+begin
+  writeln('---')
+  writeln('name: security')
+  writeln('description: Security review of a change.')
+  writeln('tools: Read, Grep')
+  writeln('---')
+  writeln()
+  writeln('Follow the data from its entry point.')
+end > $dir/repo/.claude/agents/security.md
 git -C $dir/repo add -A
 git -C $dir/repo -c user.name=t -c user.email=t@t commit -q -m first
 git -C $dir/repo worktree add -q $dir/other
@@ -55,13 +65,19 @@ writeln('- [Stale](stale-infra.md)') > $dir/home/.claude/projects/-repo/memory/M
 for i := 1 to 2 do
   env HOME=$dir/home XDG_DATA_HOME=$dir/data concha $script
 for root in [dir + '/repo', dir + '/other'] do begin
-  f := dir + '/data/arno/projects' + root + '/AGENTS.md'
-  holds('the entry', f, '### stale-infra')
-  holds('its description, unquoted', f, 'the "infra" folder is stale')
-  holds('its text', f, 'Ignore infrastructure/.')
+  own := dir + '/data/arno/projects' + root
+  f := own + '/AGENTS.md'
+  holds('the entry named', f, '- stale-infra.md: the "infra" folder is stale')
+  holds('where entries are', f, own + '/memory')
   holds('the rule', f, '- backend/**: .claude/rules/backend.md')
-  grep -qF -- 'MEMORY.md' $f
-  if status = 0 then fail('the index is in ' + f)
+  grep -qF -- 'Ignore infrastructure/.' $f
+  if status = 0 then fail('an entry in full in ' + f)
+  holds('the entry in full', own + '/memory/stale-infra.md', 'Ignore infrastructure/.')
+  if exists(own + '/memory/MEMORY.md') then fail('the index kept as an entry')
+  if `head -n 1 $(own + '/roles/security.md')` <> 'Security review of a change.' then fail('the role description')
+  holds('the role text', own + '/roles/security.md', 'Follow the data from its entry point.')
+  grep -qF -- 'tools:' $(own + '/roles/security.md')
+  if status = 0 then fail('front matter in the role')
 end
 if length(lines(`git -C $dir/repo status --porcelain`)) <> 0 then fail('the repository was written to')
 if failed then halt(1)

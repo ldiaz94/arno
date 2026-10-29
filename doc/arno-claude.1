@@ -14,9 +14,12 @@ one file a fact, and a repository may hold rules for parts of it in
 .Xr arno 1
 reads neither.
 .Nm
-writes them into arno's own context file for each project, which arno
-reads last, after the project's own:
-.Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md .
+writes them into arno's own directory for each project,
+.Pa ~/.local/share/arno/projects/ Ns Ar root ,
+whose
+.Pa AGENTS.md
+arno reads as the project's last context file, and where the model may
+read without asking.
 .Pp
 For each memory directory,
 .Nm
@@ -30,17 +33,30 @@ and
 .Pa /tmp ,
 such as arno's own copies of a project, are left out; so is a bare
 repository.
-The file holds each memory entry, its name, its description and its text,
-then a line for each rule in the worktree's
+Each memory entry becomes a file of
+.Pa memory/ ,
+its description then its text, and
+.Pa AGENTS.md
+names each with its description, for the model to read the ones that
+bear on its work, as Claude Code reads its own; then it has a line for
+each rule in the worktree's
 .Pa .claude/rules :
 the paths it is for, from its
 .Ql paths:
 line, and where to read it.
+Claude Code's agents, those of
+.Pa ~/.claude/agents
+then the project's
+.Pa .claude/agents ,
+become arno's roles in
+.Pa roles/ ,
+each its description then its text, the front matter's tools and model
+left out.
 .Pp
-The file is
+What it writes is
 .Nm Ns 's
-alone: it is written whole on every run, to a temporary renamed over it,
-so change the memory or the rules, not the file.
+alone: written whole on every run, to a temporary put in its place, so
+change the memory, the rules or the agents, not the copies.
 Nothing is written into a repository, and arno knows nothing of Claude
 Code's files.
 .Pp
@@ -54,7 +70,7 @@ Claude Code's memory entries, each with front matter giving its name and
 description;
 .Pa MEMORY.md ,
 the index, is left out.
-.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md
+.It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md , memory/ , roles/
 What it writes, under
 .Ev XDG_DATA_HOME
 if that is set.

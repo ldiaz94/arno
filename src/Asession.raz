@@ -99,6 +99,19 @@ begin
     Afence.useScratch(Astore.scratch(s.conv.id, b));
 end;
 
+(* arno's own directory for the project granted: its context file names
+   what is kept there, memory entries and roles, for the model to read
+   when they bear on the work, without asking each time. *)
+proc grantOwn;
+var b: Buf.Buf;
+begin
+    if not Afence.rooted then return; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "{}projects{}", [Fmt.str(Astore.dir()), Fmt.str(Afence.root)]);
+    Afence.grant(Buf.bytes(b));
+end;
+
 (* The MCP servers config's mcp lines name, each a name and then the
    command that runs it, attached; what goes wrong with one is shown, and
    the rest are attached. *)
@@ -178,6 +191,7 @@ begin
     Aconf.apply(s^.conf, Afence.root);
     Alsp.use(SYSTEM.ADR(s^.conf));
     useScratch(s^);
+    grantOwn();
     n, ok := Str.toInt(Aconf.get(s^.conf, "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;
     n, ok := Str.toInt(Aconf.get(s^.conf, "prune"));
