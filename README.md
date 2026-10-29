@@ -154,6 +154,7 @@ these are the ones to start with:
 | `/test [COMMAND]` | set and run the project's test command |
 | `/remember [#tag,...] FACT`, `/forget`, `/my-memory` | facts kept for every conversation |
 | `/notes` | this project's notes |
+| `/view [lead\|all\|N]` | the transcript's view: the lead's entries, all, or worker N's |
 | `/stage [drop]` | the stage's copy: what it holds, or drop it |
 | `/safety [auto\|safe]` | `auto` works on a copy, `safe` asks each change |
 | `/quit` | leave (so does C-d) |
@@ -169,6 +170,7 @@ Directories and images work too, if the model takes images.
 | C-z | stop arno as a shell does; `fg` brings it back |
 | S-Tab | change mode |
 | TAB, C-o | toggle a tool entry, all of them |
+| M-o | the next view: all, the lead's entries, each worker's (`/view`) |
 | PgUp, PgDn; Up, Down, the wheel | scroll by a page, by a line |
 | C-p, C-n; M-p, M-n | input history; by prefix |
 | C-r | search the history |

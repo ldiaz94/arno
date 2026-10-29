@@ -121,6 +121,17 @@ A tool call is one line until opened.
 The rule says what is going on: the model working, a question waiting
 for your key, or copy mode.
 .Pp
+The transcript shows a view: all of it, the lead's entries alone, or
+one worker's; see
+.Ic /view .
+Every entry is kept whatever the view, and copy mode and the keys that
+open tool calls work on what is shown.
+In all, the lead's entries are as they are with no workers, and a
+worker's are indented behind a bar in green, under a label where the
+speaker changes: its number and its model, as
+.Ql "w2 glm-5.3-flash" ,
+so that a worker's run reads as one block.
+.Pp
 The status line starts with the mode, its name on a colour of its own:
 chat blue, review green, improve cyan, pair in the text's own colour,
 build yellow.
@@ -133,12 +144,16 @@ and in build mode the plan,
 once you approved it,
 .Ql "plan ?"
 before.
+A view other than all comes next, in yellow:
+.Ql "view lead"
+or
+.Ql "view w2" .
 Then come the model and its provider, the context as a bar of eight
 cells and a percentage, green, yellow from 60%, red from 85%, the
 tokens and cost, and the title, cut to the room left.
 On a narrow terminal the hints go first, then the title, the tokens
-and cost, the provider, the context and the model; the mode, safety
-and plan stay.
+and cost, the provider, the context and the model; the mode, safety,
+plan and view stay.
 A change of mode or safety is said on the rule for two seconds.
 .Pp
 A message is a turn, run on a thread of its own, so the screen stays
@@ -172,6 +187,8 @@ The next mode; see
 Open or close the newest tool call.
 .It C-o
 Open or close every tool call.
+.It M-o
+The next view: all, the lead's, then each worker's, then all again.
 .It PgUp , PgDn
 Scroll the transcript by a page.
 .It Up , Down , S-Up , S-Down
@@ -432,6 +449,12 @@ Show or set the provider; see
 Setting one drops the request parameters the configuration gave.
 .It Ic /tools
 List the tools on offer in this mode.
+.It Ic /view Op Cm lead | all | Ar N
+Show the lead's entries, every one, or worker
+.Ar N Ns 's
+in the transcript; with no argument, say which it shows.
+It is the screen's own: an attached screen chooses for itself, and it
+works while a turn runs.
 .It Ic /mcp Op Cm login Ar NAME
 What became of each MCP server: the tools it offers, or why it was not
 attached.

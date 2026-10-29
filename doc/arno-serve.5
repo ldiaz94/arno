@@ -198,7 +198,7 @@ is the id of the current conversation,
 the model in use,
 .Ar pid
 arno's process id.
-.It Cm push Ar n kind text Op Ar worker
+.It Cm push Ar n kind text Op Ar worker model
 A new entry of the transcript.
 .Ar n
 is its index, from 0, the same counter for every kind of entry.
@@ -220,10 +220,13 @@ It is left out for the lead's own entries, so a host that
 ignores it, or reads fields by position, is not affected.
 A worker's number is the one its changes are kept and merged by, when it
 works in a copy of its own, and counts on from there when it does not.
-It applies to
+.Ar model ,
+after it, is the model the worker runs on, which a screen labels its
+entries with.
+Both apply to
 .Cm tool
 too.
-.It Cm tool Ar n name args Op Ar worker
+.It Cm tool Ar n name args Op Ar worker model
 A new entry, number
 .Ar n ,
 for a tool call: its name and its arguments as JSON.

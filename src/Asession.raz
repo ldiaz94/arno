@@ -1375,6 +1375,7 @@ begin
     | "/mcp": mcp(s, arg);
     | "/stage": stage(s, arg);
     | "/safety": safety(s, arg);
+    | "/view": fail(s, "/view is the screen's: here every entry is shown");
     | else: fail(s, "unknown command; /help lists them");
     end;
     Arena.reset(s.mem);

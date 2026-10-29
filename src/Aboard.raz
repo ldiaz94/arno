@@ -30,6 +30,18 @@
    and git's result coloured as diffs. The newest call stays open
    while its question is asked.
 
+   The view says whose entries are drawn: every one, the lead's alone,
+   or one worker's. Every entry stays on the board; only what is shown
+   is laid out, by draw and by flatten alike, so copy mode follows the
+   view. Shown all, a worker's run of entries hangs under a label, its
+   number and its model, indented behind a bar in a colour of its own,
+   and the lead's entries are as they always were:
+
+         > delegate {"task":"..."}  running...
+         w2 glm-5.3-flash
+         |   > read {"path":"a.raz"}  40 lines
+         | | a reply of the worker's
+
    flatten lays the whole transcript out as text, for copy mode to move
    over: each row's text, without its styles or what goes before it,
    and the column it starts at; and what joins it to the row above
@@ -39,7 +51,7 @@
    Depends on rtui's TuiScreen, rterm's Term, Buf, Str and
    Heap. *)
 module Aboard;
-import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8);
+import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf);
 import SYSTEM;
 
 type
@@ -65,7 +77,7 @@ type
     end;
 
     (* How a piece of text looks: an index into Styles. *)
-    Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk);
+    Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk, worker);
 
 const
     MaxShown = 400;     (* lines of a result an open call shows *)
@@ -74,12 +86,16 @@ const
     QuoteBar = "\u{2502} ";   (* one for each level of a quote *)
     Gutter = "    \u{2502} ";
     Plan = "    ";   (* a plan's lines, under its call *)
+    WorkerBar = "  \u{2502} ";   (* before each row of a worker's entry, shown all *)
+    All* = -1;       (* the view of every entry *)
     MaxCols = 16;    (* a table's columns shown; those past are left out *)
 
 var
     speaker*: INT;      (* who the entries pushed now are said by, as Entry.speaker; set by speak *)
+    view*: INT;         (* whose entries are shown: All, 0 the lead's, N worker N's *)
     entries: Entries.Vec;
-    styles: [10]TuiScreen.Style;   (* each Look's *)
+    models: Models.Vec;   (* worker N's model at N; empty where none was named *)
+    styles: [11]TuiScreen.Style;   (* each Look's *)
     (* the line being laid out: its text, and the Look of each byte *)
     text, looks: Buf.Buf;
     (* where a draw puts the rows: the screen, the part of it, the row
@@ -87,6 +103,7 @@ var
     screen: ^TuiScreen.Screen;
     area: TuiScreen.Rect;
     top, row: INT;
+    gutter: []const U8;   (* drawn before each row, in the worker's look: WorkerBar in a worker's entry shown all *)
     (* what flatten keeps: the rows, their text, and the join of the
        next row laid out *)
     keeping: BOOL;
@@ -114,6 +131,24 @@ end;
 proc speak*(n: INT);
 begin
     speaker := n;
+end;
+
+(* Worker n runs on model, which its label says. *)
+proc name*(n: INT; model: []const U8);
+var m: ^Buf.Buf;
+begin
+    if n < 1 then return; end;
+    while models.len <= n do Buf.init(Models.add(models)^, Heap.heap); end;
+    m := SYSTEM.ADR(Models.all(models)[n]);
+    Buf.reset(m^);
+    Buf.str(m^, model);
+end;
+
+(* Worker n's model; "" if none was named. *)
+proc model*(n: INT): []const U8;
+begin
+    if (n < 1) or (n >= models.len) then return ""; end;
+    return Buf.bytes(Models.all(models)[n]);
 end;
 
 (* A new entry of kind k saying s, at the end. *)
@@ -147,15 +182,16 @@ begin
     Buf.str(push(tool, name)^.args, args);
 end;
 
-(* The first call still running, or nil: the one a result answers, as
-   calls run one after another, and a conversation shown again gives
-   an assistant's calls before their results. *)
+(* The first call still running of the speaker's, or nil: the one a
+   result answers, as a speaker's calls run one after another, and a
+   conversation shown again gives an assistant's calls before their
+   results. A worker's calls run while the lead's delegate does. *)
 proc running: ^Entry;
 var e: []Entry; i: INT;
 begin
     e := all();
     for i := 0 to LEN(e) - 1 do
-        if (e[i].kind = tool) and not e[i].done then return SYSTEM.ADR(e[i]); end;
+        if (e[i].kind = tool) and not e[i].done and (e[i].speaker = speaker) then return SYSTEM.ADR(e[i]); end;
     end;
     return nil;
 end;
@@ -195,27 +231,61 @@ begin
     Entries.reset(entries);
 end;
 
-(* The newest call opened, or closed if it is open. *)
+(* Whether the view shows e. *)
+proc shows(const e: Entry): BOOL;
+begin
+    return (view = All) or (e.speaker = view);
+end;
+
+(* The entry shown before entry i, or -1 if there is none. *)
+proc prior(i: INT): INT;
+begin
+    DEC(i);
+    while (i >= 0) and not shows(all()[i]) do DEC(i); end;
+    return i;
+end;
+
+(* The view is v from now on: All, 0 the lead's entries, N worker N's. *)
+proc choose*(v: INT);
+begin
+    view := v;
+end;
+
+(* The next view: all, then the lead's, then each worker's that said
+   something, in their order, then all again. *)
+proc cycle*;
+var e: []Entry; i, next: INT;
+begin
+    if view = All then view := 0; return; end;
+    e := all();
+    next := All;
+    for i := 0 to LEN(e) - 1 do
+        if (e[i].speaker > view) and ((next = All) or (e[i].speaker < next)) then next := e[i].speaker; end;
+    end;
+    view := next;
+end;
+
+(* The newest call shown opened, or closed if it is open. *)
 proc toggle*;
 var e: []Entry; i: INT;
 begin
     e := all();
     for i := LEN(e) - 1 to 0 by -1 do
-        if e[i].kind = tool then e[i].open := not e[i].open; return; end;
+        if (e[i].kind = tool) and shows(e[i]) then e[i].open := not e[i].open; return; end;
     end;
 end;
 
-(* Every call opened, or every one closed if any is open. *)
+(* Every call shown opened, or every one closed if any is open. *)
 proc toggleAll*;
 var e: []Entry; i: INT; open: BOOL;
 begin
     e := all();
     open := false;
     for i := 0 to LEN(e) - 1 do
-        if (e[i].kind = tool) and e[i].open then open := true; end;
+        if (e[i].kind = tool) and shows(e[i]) and e[i].open then open := true; end;
     end;
     for i := 0 to LEN(e) - 1 do
-        if e[i].kind = tool then e[i].open := not open; end;
+        if (e[i].kind = tool) and shows(e[i]) then e[i].open := not open; end;
     end;
 end;
 
@@ -224,13 +294,13 @@ end;
    only counted. *)
 
 (* The row of the transcript row is next: drawn if it is in the part
-   shown, pre in bar, then text from a to b, piece by piece in its
-   looks. *)
+   shown, the gutter in the worker's look, pre in bar, then text from a
+   to b, piece by piece in its looks. *)
 proc emit(pre: []const U8; bar: Look; a, b: INT);
 var r, col, limit, x: INT; s, l: []const U8;
 begin
     if keeping then
-        Rows.push(flatRows, {a: flatText.len, b: flatText.len + b - a, x: TuiScreen.columns(pre), join: joinNext});
+        Rows.push(flatRows, {a: flatText.len, b: flatText.len + b - a, x: TuiScreen.columns(gutter) + TuiScreen.columns(pre), join: joinNext});
         Buf.str(flatText, Buf.bytes(text)[a..b]);
     end;
     joinNext := '\n';
@@ -238,7 +308,8 @@ begin
     INC(row);
     if (screen = nil) or (r < 0) or (r >= area.rows) then return; end;
     limit := area.col + area.cols;
-    col := TuiScreen.putTo(screen, area.row + r, area.col, limit, pre, styles[INT(bar)]);
+    col := TuiScreen.putTo(screen, area.row + r, area.col, limit, gutter, styles[INT(worker)]);
+    col := TuiScreen.putTo(screen, area.row + r, col, limit, pre, styles[INT(bar)]);
     s := Buf.bytes(text);
     l := Buf.bytes(looks);
     while a < b do
@@ -717,11 +788,34 @@ begin
     return s, 0;
 end;
 
-(* Entry i laid out at w columns, its rows counted from row on. *)
+(* Worker e's label, its number and its model, as a row: e is entry i,
+   and the label comes where the speaker changes, at the head of a run
+   of the worker's entries. *)
+proc label(i: INT; const e: Entry; w: INT);
+var b: Buf.Buf; p: INT;
+begin
+    p := prior(i);
+    if (p >= 0) and (all()[p].speaker = e.speaker) then return; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "w{} {}", [Fmt.int(e.speaker), Fmt.str(model(e.speaker))]);
+    lines(Str.trimRight(Buf.bytes(b)), "  ", worker, worker, w - 2);
+end;
+
+(* Entry i laid out at w columns, its rows counted from row on; nothing
+   if the view leaves it out. Shown all, a worker's entry is labelled
+   and indented behind the gutter. *)
 proc layout(i: INT; w: INT);
 var e: ^Entry; s: []const U8; more: INT; note: Buf.Buf;
 begin
     e := SYSTEM.ADR(all()[i]);
+    gutter := "";
+    if not shows(e^) then return; end;
+    if (view = All) and (e^.speaker > 0) then
+        label(i, e^, w);
+        gutter := WorkerBar;
+        w := w - TuiScreen.columns(WorkerBar);
+    end;
     s := Buf.bytes(e^.text);
     match e^.kind of
     | user:
@@ -760,7 +854,7 @@ begin
             lines(Buf.bytes(note), Gutter, dim, dim, w - 6);
         end;
     | info:
-        if (i > 0) and (all()[i - 1].kind # info) then start(); emit("", plain, 0, 0); end;
+        if (prior(i) >= 0) and (all()[prior(i)].kind # info) then start(); emit("", plain, 0, 0); end;
         lines(s, "  ", dim, dim, w - 2);
     | error:
         lines(s, "  ", red, red, w - 2);
@@ -888,6 +982,29 @@ begin
         Out.str("Aboard: a table copied\n");
         ok := false;
     end;
+    (* views: all labels a worker's run and indents it, its result its
+       own call's, not the delegate's; one speaker's leaves the other out *)
+    clear;
+    call("delegate", "{}");
+    speak(1);
+    name(1, "glm");
+    call("read", "{}");
+    result("one line");
+    speak(0);
+    result("reported");
+    ok := expect("all", 30, 4, 0, "  \u{25B8} delegate {}  reported\n  w1 glm\n  \u{2502}   \u{25B8} read {}  one line\n\nback 0\n") and ok;
+    choose(0);
+    ok := expect("the lead's", 30, 2, 0, "  \u{25B8} delegate {}  reported\n\nback 0\n") and ok;
+    choose(1);
+    if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read {}  one line") or (rowAt(0).x # 2) then
+        Out.str("Aboard: a worker's view\n");
+        ok := false;
+    end;
+    choose(All);
+    if (flatten(30) # 3) or (rowText(1) # "w1 glm") or (rowAt(2).x # 6) then
+        Out.str("Aboard: all, flattened\n");
+        ok := false;
+    end;
     if ok then return 0; end;
     return 1;
 end;
@@ -903,10 +1020,13 @@ begin
     Buf.init(cellText, Heap.heap);
     Buf.init(cellLooks, Heap.heap);
     joinNext := '\n';
+    view := All;
+    Models.init(models, Heap.heap);
     styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.dim, {}), TuiScreen.style(Term.bad, {}), TuiScreen.style(Term.good, {}),
-        TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}), TuiScreen.style(Term.info, {})];
+        TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}), TuiScreen.style(Term.info, {}),
+        TuiScreen.style(Term.good, {})];
 end;
 
 begin

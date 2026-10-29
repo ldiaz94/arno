@@ -126,6 +126,7 @@ const
         {name: "/models", args: "", desc: "list the provider's models"},
         {name: "/provider", args: "[NAME]", desc: "show or set the provider"},
         {name: "/tools", args: "", desc: "list tools"},
+        {name: "/view", args: "[lead|all|N]", desc: "show the lead's entries, every one, or worker N's; on the screen"},
         {name: "/mcp", args: "[login NAME]", desc: "what became of each MCP server; log in to one"},
         {name: "/usage", args: "", desc: "tokens and cost of this session"},
         {name: "/remember", args: "[#tag,...] FACT", desc: "remember a fact, for every future conversation"},

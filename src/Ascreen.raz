@@ -76,10 +76,10 @@ import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, revise, status, ended);
+    Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, revise, status, named, ended);
 
     (* The parts of the status line a narrow row leaves out, in the
-       order it leaves them out; the mode, safety and plan always show. *)
+       order it leaves them out; the mode, safety, plan and view always show. *)
     Part = (hints, title, usage, provider, context, model);
     Parts = set of Part;
 
@@ -193,12 +193,14 @@ begin
     post(said, s, "", "", false);
 end;
 
-(* Who speaks from now on, the front's speaker: kept for what is posted. *)
-proc speaker(n: INT; _arg: ^U8);
+(* Who speaks from now on, the front's speaker: kept for what is posted,
+   and a worker's model told, for its label. *)
+proc speaker(n: INT; model: []const U8; _arg: ^U8);
 begin
     Thread.lock(mutex);
     speaking := n;
     Thread.unlock(mutex);
+    if n > 0 then post(named, model, "", "", false); end;
 end;
 
 proc call(name, args: []const U8; _arg: ^U8);
@@ -549,6 +551,7 @@ begin
         | Sort.status:
             if fresh then restate(posted); fresh := false; end;
             Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b));
+        | named: Aboard.name(e[i].who, Buf.bytes(e[i].a));
         | ended:
             finished := true;
             Buf.reset(flash);
@@ -607,11 +610,47 @@ begin
     if not Aframe.sendSocket(viewFd, Buf.bytes(b)) then viewEnded := true; TuiLoop.stop; end;
 end;
 
+(* The view, as a name, into b: all, lead or wN. *)
+proc viewName(var b: Buf.Buf);
+begin
+    if Aboard.view = Aboard.All then Buf.str(b, "all");
+    elsif Aboard.view = 0 then Buf.str(b, "lead");
+    else Fmt.write(b, "w{}", [Fmt.int(Aboard.view)]);
+    end;
+end;
+
+(* /view: whose entries the transcript shows, as arg says, lead, all or
+   a worker's number, from its end; with none, which it shows. The
+   screen's own, so an attached one chooses for itself, while a turn
+   runs too. *)
+proc chooseView(arg: []const U8);
+var n: I64; ok: BOOL;
+begin
+    if LEN(arg) = 0 then
+        Buf.str(flash, "view ");
+        viewName(flash);
+        return;
+    end;
+    n, ok := Str.toInt(arg);
+    if arg = "all" then Aboard.choose(Aboard.All);
+    elsif arg = "lead" then Aboard.choose(0);
+    elsif ok and (n > 0) then Aboard.choose(INT(n));
+    else Buf.str(flash, "/view lead, all or a worker's number"); return;
+    end;
+    back := 0;
+end;
+
 proc send(_n: INT);
 var s: []const U8;
 begin
-    if thread # nil then return; end;
     s := Str.trim(TuiEdit.text(SYSTEM.ADR(editor)));
+    if (s = "/view") or Str.hasPrefix(s, "/view ") then
+        Ahistory.add(s);
+        chooseView(Str.trim(s[LEN("/view")..LEN(s)]));
+        TuiEdit.setText(SYSTEM.ADR(editor), "");
+        return;
+    end;
+    if thread # nil then return; end;
     if LEN(s) = 0 then return; end;
     Ahistory.add(s);
     back := 0;
@@ -667,6 +706,13 @@ end;
 proc toggleAll(_n: INT);
 begin
     Aboard.toggleAll;
+end;
+
+(* The next view: all, the lead's, each worker's. *)
+proc nextView(_n: INT);
+begin
+    Aboard.cycle;
+    back := 0;
 end;
 
 (* The transcript scrolled back n rows, or forward if n is negative; a
@@ -1222,8 +1268,21 @@ begin
     return piece(s, col, "\u{2026}", st);
 end;
 
+(* The view from col, unless it is all, so that a filtered transcript
+   is never taken for the whole: the column after. *)
+proc viewed(s: ^TuiScreen.Screen; col: INT): INT;
+var b: Buf.Buf;
+begin
+    if Aboard.view = Aboard.All then return col; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, "view ");
+    viewName(b);
+    return piece(s, col + Near, Buf.bytes(b), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
+end;
+
 (* The status line's parts but the hints, those in shown and the mode,
-   safety and plan always, Gap apart from column 0, the title ending by
+   safety, plan and view always, Gap apart from column 0, the title ending by
    limit: the column after them. With s nil, only measured. *)
 proc parts(s: ^TuiScreen.Screen; shown: Parts; limit: INT): INT;
 var col: INT; dim: TuiScreen.Style;
@@ -1240,6 +1299,7 @@ begin
     elsif facts.mode = Aprompt.build then
         col := piece(s, col + Near, "plan ?", TuiScreen.style(Term.warn, {}));
     end;
+    col := viewed(s, col);
     if Part.model in shown then
         col := piece(s, col + Gap, Buf.bytes(facts.model), TuiScreen.style(Term.strong, {}));
         if Part.provider in shown then col := piece(s, col, " @ ", dim); col := piece(s, col, Buf.bytes(facts.provider), dim); end;
@@ -1267,6 +1327,7 @@ begin
     w := TuiScreen.columns(Hints);
     if viewing then
         col := piece(s, 0, " ATTACHED ", TuiScreen.style(Term.strong, {TuiScreen.Attr.bold, TuiScreen.Attr.reverse}));
+        col := viewed(s, col);
         col := piece(s, col + 1, Buf.bytes(viewStatus), TuiScreen.Plain);
         if col + Gap + w < s^.cols then _ := piece(s, s^.cols - w - 1, Hints, TuiScreen.style(Term.dim, {})); end;
         return;
@@ -1315,6 +1376,7 @@ begin
     TuiMap.define("arno-mode", "the next mode", nextMode);
     TuiMap.define("arno-toggle", "the newest tool call opened or closed", toggle);
     TuiMap.define("arno-toggle-all", "every tool call opened or closed", toggleAll);
+    TuiMap.define("arno-view", "the next view: all, the lead's, each worker's", nextView);
     TuiMap.define("arno-page-up", "the transcript scrolled back a page", pageUp);
     TuiMap.define("arno-page-down", "the transcript scrolled on a page", pageDown);
     TuiMap.define("arno-line-up", "the transcript scrolled back a line", lineUp);
@@ -1340,6 +1402,7 @@ begin
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<backtab>", "arno-mode");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "TAB", "arno-toggle");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "C-o", "arno-toggle-all");
+    _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "M-o", "arno-view");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<prior>", "arno-page-up");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "<next>", "arno-page-down");
     _ := TuiMap.bind(SYSTEM.ADR(map), TuiKeys.emacs, "S-<up>", "arno-line-up");

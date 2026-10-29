@@ -19,6 +19,8 @@
                           from 0 after a reset; KIND is user, asst,
                           info or err
        tool N NAME ARGS   a new entry for a tool call
+                          (a worker's push or tool adds its number
+                          and its model)
        append N TEXT      more of entry N's text
        done N TEXT        tool call N's result
        reset              the transcript was cleared
@@ -174,7 +176,7 @@ end;
 (* Entry i's message, appended to b: push, or tool, with its result's
    done if it has come. *)
 proc entry(i: INT; var b: Buf.Buf);
-var e: ^Aboard.Entry; d, w: [20]U8; m: [5][]const U8; k: INT;
+var e: ^Aboard.Entry; d, w: [20]U8; m: [6][]const U8; k: INT;
 begin
     e := SYSTEM.ADR(Aboard.all()[i]);
     m[1] := num(i, d);
@@ -184,7 +186,11 @@ begin
         m[0] := "push"; m[2] := kinds[INT(e^.kind)]; m[3] := Buf.bytes(e^.text);
     end;
     k := 4;
-    if e^.speaker > 0 then m[4] := num(e^.speaker, w); k := 5; end;   (* the lead's entries say nothing of it *)
+    if e^.speaker > 0 then   (* the lead's entries say nothing of it *)
+        m[4] := num(e^.speaker, w);
+        m[5] := Aboard.model(e^.speaker);
+        k := 6;
+    end;
     Aframe.pack(b, m[0..k]);
     if (e^.kind = Aboard.tool) and e^.done then Aframe.pack(b, ["done", m[1], Buf.bytes(e^.res)]); end;
 end;
@@ -247,13 +253,13 @@ begin
     pushed(LEN(Aboard.all()) - 1);
 end;
 
-(* res, the result of the first call still running. *)
+(* res, the result of the first call still running of the speaker's. *)
 proc answered*(res: []const U8);
 var e: []Aboard.Entry; i: INT; d: [20]U8;
 begin
     e := Aboard.all();
     for i := 0 to LEN(e) - 1 do
-        if (e[i].kind = Aboard.tool) and not e[i].done then
+        if (e[i].kind = Aboard.tool) and not e[i].done and (e[i].speaker = Aboard.speaker) then
             Aboard.result(res);
             say(["done", num(i, d), res]);
             return;
@@ -532,7 +538,8 @@ begin
 end;
 
 (* Who said the entry that message f, a push or a tool, tells of, put in
-   Aboard.speaker: the fifth field, or the lead if it has none. *)
+   Aboard.speaker: the fifth field, or the lead if it has none; and the
+   worker's model, the sixth, named. *)
 proc speaking(f: [][]const U8);
 var n: I64; ok: BOOL;
 begin
@@ -540,6 +547,7 @@ begin
     if LEN(f) >= 5 then
         n, ok := Str.toInt(f[4]);
         if ok then Aboard.speak(INT(n)); end;
+        if ok and (LEN(f) >= 6) then Aboard.name(INT(n), f[5]); end;
     end;
 end;
 

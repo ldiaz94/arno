@@ -91,7 +91,7 @@ type
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
         counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
         edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
-        speaker*: proc(n: INT; arg: ^U8);          (* who speaks from now on: 0 the lead, N worker N; nil if it is not asked *)
+        speaker*: proc(n: INT; model: []const U8; arg: ^U8);   (* who speaks from now on: 0 the lead, N worker N on model; nil if it is not asked *)
         arg*: ^U8;
     end;
 
@@ -412,9 +412,9 @@ begin
     lead := a.prov;
     a.prov := SYSTEM.ADR(prov);
     a.working := true;
-    if a.front.speaker # nil then a.front.speaker(who, a.front.arg); end;
+    if a.front.speaker # nil then a.front.speaker(who, model, a.front.arg); end;
     err := turn(a, w, why);
-    if a.front.speaker # nil then a.front.speaker(0, a.front.arg); end;
+    if a.front.speaker # nil then a.front.speaker(0, "", a.front.arg); end;
     a.working := false;
     a.prov := lead;
     forget(a);   (* what the worker saw is no call of the lead's *)

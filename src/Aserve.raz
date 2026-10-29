@@ -61,7 +61,7 @@ import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (typed, said, called, answered, told, failed, status, request, switched, ended);
+    Sort = (typed, said, called, answered, told, failed, status, request, switched, named, ended);
 
     Event = record
         sort: Sort;             (* what it tells *)
@@ -178,12 +178,14 @@ begin
     post(said, s, "", "", "", false);
 end;
 
-(* The front's speaker: who speaks from now on, kept for what is posted. *)
-proc speaker(n: INT; _arg: ^U8);
+(* The front's speaker: who speaks from now on, kept for what is posted,
+   and a worker's model told, for its label. *)
+proc speaker(n: INT; model: []const U8; _arg: ^U8);
 begin
     Thread.lock(mutex);
     speaking := n;
     Thread.unlock(mutex);
+    if n > 0 then post(named, model, "", "", "", false); end;
 end;
 
 (* The front's call: a tool about to run, told. *)
@@ -843,6 +845,7 @@ begin
         Aview.cleared();
         Buf.reset(current);
         Buf.str(current, Buf.bytes(e.a));
+    | named: Aboard.name(e.who, Buf.bytes(e.a));
     | ended: over(e.going);
     end;
 end;

@@ -523,7 +523,7 @@ one or more commits that build with `-Werror`.
      once it reports, so what it read can't be checked afterwards. It
      is kept as `worker-N.json` in the scratch, beside `worker-N.diff`,
      and the report line names it.
-   - [ ] Views. `/view [lead|all|N]` and a key that cycles them choose
+   - [x] Views. `/view [lead|all|N]` and a key that cycles them choose
      what the transcript draws; every entry stays on the board, as
      draw only lays out what is shown, and copy mode follows the view.
      The status line says the view, so a filtered one is never taken
