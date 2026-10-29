@@ -417,6 +417,24 @@ stagedRun(['call', 'shell', '{"command":"echo made > b.txt"}'], 'y')
 holds('a staged shell', 'out', 'the tool said: exit 0: echo made > b.txt')
 holds('a staged shell', 'out', 'applied to 1 file(s) in ' + proj)
 if `cat "$proj/b.txt"` <> 'made' then fail('the file shell made was not applied')
+
+// staged, a worker edits in a copy of its own and hands back a diff,
+// which reaches the lead's copy only by merge: merged, the turn's diff
+// holds it; dropped, nothing changes; and no worker's copy is left
+configure(['safety = auto', 'worker = small'])
+task := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"two\",\"new\":\"four\"}","done_when":"edited"}'
+again := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"five\"}","done_when":"edited"}'
+stagedRun([], 'call delegate ' + task + #10 + 'call merge {"worker":1,"apply":true}' + #10 + 'y' + #10 +
+  'call delegate ' + again + #10 + 'call merge {"worker":2,"apply":false}' + #10 + 'call merge {"worker":2,"apply":true}')
+holds('a worker in a copy', 'out', 'the tool said: worker 1 report (2 steps):')
+holds('a worker in a copy', 'out', 'Worker 1 changed 1 file(s), in a copy of its own:')
+holds('a worker in a copy', 'out', '+1 -1 a.txt')
+holds('a worker merged', 'out', 'the tool said: merged: worker 1')
+holds('a worker merged', 'out', 'applied to 1 file(s) in ' + proj)
+holds('a worker dropped', 'out', 'the tool said: dropped: worker 2')
+holds('a worker dropped', 'out', 'the tool said: error: no diff of worker 2 waits')
+if `cat "$proj/a.txt"` <> 'four' then fail('the merged worker: ' + `cat "$proj/a.txt"`)
+if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('a worker''s copy was left')
 configure([])
 
 if failures > 0 then halt(1)

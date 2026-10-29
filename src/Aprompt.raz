@@ -95,7 +95,8 @@ const
             "and done_when. Pass on what earlier workers found and read, so that nobody reads it again. Prefer a " +
             "few larger steps to many small ones. Tell each worker to batch its probes, several commands to a " +
             "call. A worker that ran out of steps reports where it got to: the next one's brief starts there.\n" +
-            "3. Review each worker's report and its changes, and run check.\n" +
+            "3. Review each worker's report and its changes, and run check. Staged, a worker works in a copy of " +
+            "its own and hands back a diff: read it, then merge it into your copy or drop it.\n" +
             "4. Fix only small things yourself, a few lines; anything more goes back to a worker with what is " +
             "wrong and where.\n" +
             "End with what was built, check's verdict, and what is left."}];

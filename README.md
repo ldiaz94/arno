@@ -168,7 +168,8 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
-`delegate` (when the config names a `worker`), `plan` (in `build` mode), `shell`, and, while a
+`delegate` (when the config names a `worker`), `merge` (a staged worker's diff, into the copy or
+dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows, and `ls wc head file stat`, which
@@ -179,7 +180,9 @@ the project, and a turn's changes reach you as one diff and one question,
 not one yes per edit. Nothing is applied to your tree without your yes.
 `/safety safe` (or `safety = safe` in the config) asks each change
 instead, and has no shell. With no git repository or no commit there is
-no copy, and the session is safe.
+no copy, and the session is safe. Staged, each worker gets a copy of its
+own, made from the session's, and hands back a diff the model merges or
+drops; safe, workers work in your tree, each change asked.
 
 **The shell.** `shell` runs a command inside a jail made of Linux's
 unprivileged namespaces (no root, no helper), with no network unless

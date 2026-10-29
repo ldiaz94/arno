@@ -22,7 +22,8 @@
    NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
    answers its result with "the tool said: " and the result; to
    "always NAME ARGS" it makes the same call again after each result,
-   for a test of a turn that doesn't end by itself.
+   for a test of a turn that doesn't end by itself. A worker's brief,
+   "Task: " and then the task, asks the same by its task's first line.
 
    Depends on rnet's Http and Conn and rjson's Json, with no TLS. *)
 module Astub;
@@ -63,6 +64,7 @@ end;
 proc tool(asked, role, last: []const U8): BOOL;
 var verb, rest, name, args: []const U8; ok: BOOL;
 begin
+    if Str.hasPrefix(asked, "Task: ") then asked, _, _ := Str.cut(asked[6..LEN(asked)], "\n"); end;
     verb, rest, ok := Str.cut(asked, " ");
     if not ok or (verb # "call") and (verb # "always") then return false; end;
     name, args, _ := Str.cut(rest, " ");

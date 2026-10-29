@@ -38,6 +38,16 @@
    as the reports. What earlier workers of the turn reported goes with
    each brief.
 
+   Staged, each worker works in a copy of its own (Astage.fork), made
+   from the stage's copy as it stands, numbered, and for its turn the
+   zone: its edits go unasked, its shell and check jailed there. When
+   it ends, what it changed comes back as one diff, kept in the scratch
+   directory as worker-N.diff and summed up in the call's result, even
+   when it stopped at its cap; its copy is removed. The lead reads the
+   diff and merges it into its own copy or drops it (merge). Safe,
+   with no copy to make one from, a worker works in the lead's zone,
+   each change asked, as the lead's own.
+
    In build mode the session's model leads: before it may change a
    file or delegate, it puts a plan to the human with the plan tool,
    which writes plan.md in the scratch directory and asks them. The
@@ -56,10 +66,10 @@
    decides whether its tools are offered.
 
    Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Apeer,
-   Afence, Awire, Amsg and Astore. Leaves out forking calls that only
-   read, to run them side by side. *)
+   Afence, Astage (a worker's copy), Awire, Amsg and Astore. Leaves out
+   forking calls that only read, to run them side by side. *)
 module Agent;
-import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Files, Heap, Arena, Rt, Fmt, Out,
+import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Astage, Awire, Amsg, Astore, Http, Json, Buf, Str, Sys, Files, Heap, Arena, Rt, Fmt, Out,
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 import SYSTEM;
 
@@ -91,6 +101,7 @@ type
         mode*: Aprompt.Mode;
         working: BOOL;        (* the turn under way is a worker's *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
+        forks: INT;           (* the number of the last worker given a copy of its own *)
         prompt*: Aprompt.Prompt;
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
         requests*: INT;       (* how many there were *)
@@ -137,8 +148,11 @@ const
         "and sees only your final report. Do that task completely: read what you need, make the changes, " +
         "build, and run check. Earlier workers' reports, when the brief has them, are what is known: use the " +
         "units and findings they name rather than finding or writing them again. Do not ask questions; if " +
-        "something blocks you, stop and say what. End with a short report: what you did, what you found that " +
-        "the next worker should know, the files you changed, and check's verdict.";
+        "something blocks you, stop and say what. End with a short report: what you did, what you read and " +
+        "found that the next worker should know, what is left, the files you changed, and check's verdict.";
+    (* added to it while staged *)
+    WorkerCopy = " Your copy was made for this task alone: when you end, the session that leads sees what you " +
+        "changed as one diff, and merges it or not.";
     MaxReports = 4;     (* earlier reports a brief carries, the newest *)
     MaxReport = 4000;   (* bytes of each *)
     Repeated = "not run: this exact call was already made in this turn and its result " +
@@ -190,6 +204,7 @@ begin
     Buf.str(sys, "\n\n");
     if a.working then
         Buf.str(sys, WorkerText);
+        if LEN(Afence.stage) > 0 then Buf.str(sys, WorkerCopy); end;
     else
         Buf.str(sys, "# Mode\n");
         Buf.str(sys, Aprompt.Modes[INT(a.mode)].text);
@@ -343,13 +358,142 @@ end;
 
 proc turn*(var a: Agent; var c: Astore.Conv; var why: Buf.Buf): ERROR; forward;
 
+(* The brief of a worker, from delegate's arguments p, added to b: the
+   task, the files, when it is done, and what earlier workers of the
+   turn reported. *)
+proc brief(const a: Agent; const p: Atools.Args; task: []const U8; var b: Buf.Buf);
+var files: [][]const U8; reports: [][]U8; i: INT;
+begin
+    Fmt.write(b, "Task: {}", [Fmt.str(task)]);
+    files := Atools.list(p, "files");
+    if LEN(files) > 0 then Buf.str(b, "\n\nFiles:"); end;
+    for i := 0 to LEN(files) - 1 do Fmt.write(b, "\n- {}", [Fmt.str(files[i])]); end;
+    if LEN(Str.trim(Atools.str(p, "done_when"))) > 0 then
+        Fmt.write(b, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(p, "done_when")))]);
+    end;
+    (* what earlier workers of this turn found goes along, so that the
+       next one needn't find it again: a worker blind to a survey's
+       findings wrote its own rule for what a unit already did *)
+    reports := Strs.all(a.reports);
+    if LEN(reports) > 0 then Buf.str(b, "\n\nWhat earlier workers on this task reported:"); end;
+    for i := LEN(reports) - MaxReports to LEN(reports) - 1 do
+        if i >= 0 then
+            Buf.str(b, "\n\n---\n");
+            Buf.str(b, reports[i][0..min(LEN(reports[i]), MaxReport)]);
+        end;
+    end;
+end;
+
+(* A worker's turn over w, whose one message is its brief: the same
+   loop, on the worker's model. *)
+proc work(var a: Agent; var w: Astore.Conv; var why: Buf.Buf): ERROR;
+var prov: Awire.Prov; lead: ^Awire.Prov; err: ERROR;
+begin
+    prov := a.prov^;
+    prov.model := a.worker;
+    lead := a.prov;
+    a.prov := SYSTEM.ADR(prov);
+    a.working := true;
+    err := turn(a, w, why);
+    a.working := false;
+    a.prov := lead;
+    forget(a);   (* what the worker saw is no call of the lead's *)
+    return err;
+end;
+
+(* How many steps the worker took over w: its requests answered. *)
+proc steps(const w: Astore.Conv): INT;
+var msgs: []Amsg.Msg; i, n: INT;
+begin
+    msgs := Msgs.all(w.msgs);
+    n := 0;
+    for i := 0 to LEN(msgs) - 1 do
+        if msgs[i].role = Amsg.Role.assistant then INC(n); end;
+    end;
+    return n;
+end;
+
+(* What worker n, 0 for one in the lead's zone, reported over w, added
+   to out, and kept with its task for the next workers' briefs. One
+   that stopped at its cap, its steps used, is said to have. false if
+   there was no report. *)
+proc told(var a: Agent; n: INT; task: []const U8; const w: Astore.Conv; var out: Buf.Buf): BOOL;
+var msgs: []Amsg.Msg; report: []const U8; b: Buf.Buf;
+begin
+    msgs := Msgs.all(w.msgs);
+    report := "";
+    if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
+    if LEN(report) = 0 then return false; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
+    Strs.push(a.reports, Amsg.keep(Buf.bytes(b)));
+    (* a turn at its cap hands back once more, a step past it *)
+    if steps(w) > a.maxSteps then
+        Fmt.write(out, "The worker stopped at its cap of {} steps; its report says where it got to: brief the " +
+            "next worker to go on from there.\n", [Fmt.int(a.maxSteps)]);
+    end;
+    Buf.str(out, "worker ");
+    if n > 0 then Fmt.write(out, "{} ", [Fmt.int(n)]); end;
+    Fmt.write(out, "report ({} steps):\n{}", [Fmt.int(steps(w)), Fmt.str(report)]);
+    return true;
+end;
+
+(* The path of worker n's diff, in the scratch directory, into b. *)
+proc diffPath(n: INT; var b: Buf.Buf): []const U8;
+begin
+    Buf.reset(b);
+    Fmt.write(b, "{}/worker-{}.diff", [Fmt.str(Afence.scratch), Fmt.int(n)]);
+    return Buf.bytes(b);
+end;
+
+(* The number of the next worker given a copy: one past the last, and
+   past any whose diff the scratch directory still holds, left by an
+   earlier arno on this conversation. *)
+proc nextWorker(var a: Agent): INT;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    INC(a.forks);
+    while Sys.access(diffPath(a.forks, b), {}) = 0 do INC(a.forks); end;
+    return a.forks;
+end;
+
+(* Worker n's work gathered from its copy, w, which goes: its diff kept
+   in the scratch directory as worker-n.diff, and what it changed, a
+   line a file, added to out, with how to merge it. *)
+proc handIn(n: INT; var w: Astage.Work; var out: Buf.Buf);
+var diff, stat, why, path: Buf.Buf; files: INT;
+begin
+    Buf.init(diff, Heap.heap);
+    defer Buf.done(diff);
+    Buf.init(stat, Heap.heap);
+    defer Buf.done(stat);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    files := Astage.gather(w, diff, stat, why);
+    if files < 0 then
+        Fmt.write(out, "\n\nWorker {}'s changes cannot be told: {}", [Fmt.int(n), Fmt.str(Buf.bytes(why))]);
+    elsif files = 0 then
+        Fmt.write(out, "\n\nWorker {} changed no file.", [Fmt.int(n)]);
+    elsif not Files.write(diffPath(n, path), Buf.bytes(diff)) then
+        Fmt.write(out, "\n\nWorker {}'s changes are lost: cannot write {}", [Fmt.int(n), Fmt.str(Buf.bytes(path))]);
+    else
+        Fmt.write(out, "\n\nWorker {} changed {} file(s), in a copy of its own:\n{}The diff is {}. Read it, then " +
+            "call merge with worker {} and apply true to bring it into your copy, or apply false to drop it.",
+            [Fmt.int(n), Fmt.int(files), Fmt.str(Buf.bytes(stat)), Fmt.str(Buf.bytes(path)), Fmt.int(n)]);
+    end;
+end;
+
 (* delegate, with the arguments args: the brief made from them, and a
-   worker's turn run on it; its report, or why there is none, added to
-   out. *)
+   worker's turn run on it, in a copy of its own while staged; its
+   report, or why there is none, and what it changed added to out. *)
 proc delegate(var a: Agent; args: []const U8; var out: Buf.Buf);
-var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; prov: Awire.Prov; lead: ^Awire.Prov; m: ^Amsg.Msg;
-    brief, why: Buf.Buf; files: [][]const U8; reports: [][]U8; msgs: []Amsg.Msg; task, report: []const U8; i, steps: INT;
-    err: ERROR;
+var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; copy: Astage.Work; m: ^Amsg.Msg;
+    b, why: Buf.Buf; task: []const U8; n: INT; err: ERROR;
 begin
     if a.working then
         Buf.str(out, "error: a worker cannot delegate");
@@ -361,8 +505,8 @@ begin
     end;
     if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
     defer Json.done(SYSTEM.ADR(d));
-    Buf.init(brief, Heap.heap);
-    defer Buf.done(brief);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
     (* the arguments are parsed in memory of the delegation's own, as the
@@ -378,60 +522,74 @@ begin
         Buf.str(out, "error: task is required: what the worker is to do, in full");
         return;
     end;
-    Fmt.write(brief, "Task: {}", [Fmt.str(task)]);
-    files := Atools.list(p, "files");
-    if LEN(files) > 0 then Buf.str(brief, "\n\nFiles:"); end;
-    for i := 0 to LEN(files) - 1 do Fmt.write(brief, "\n- {}", [Fmt.str(files[i])]); end;
-    if LEN(Str.trim(Atools.str(p, "done_when"))) > 0 then
-        Fmt.write(brief, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(p, "done_when")))]);
-    end;
-    (* what earlier workers of this turn found goes along, so that the
-       next one needn't find it again: a worker blind to a survey's
-       findings wrote its own rule for what a unit already did *)
-    reports := Strs.all(a.reports);
-    if LEN(reports) > 0 then Buf.str(brief, "\n\nWhat earlier workers on this task reported:"); end;
-    for i := LEN(reports) - MaxReports to LEN(reports) - 1 do
-        if i >= 0 then
-            Buf.str(brief, "\n\n---\n");
-            Buf.str(brief, reports[i][0..min(LEN(reports[i]), MaxReport)]);
-        end;
-    end;
-    Buf.reset(why);
-    Fmt.write(why, "worker {}: {}", [Fmt.str(a.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
-    note(a, Buf.bytes(why));
-
     Astore.init(w, "worker");
     defer Astore.done(w);
     m := Msgs.add(w.msgs);
     Amsg.init(m^, Amsg.Role.user);
-    Amsg.setText(m^, Buf.bytes(brief));
-    prov := a.prov^;
-    prov.model := a.worker;
-    lead := a.prov;
-    a.prov := SYSTEM.ADR(prov);
-    a.working := true;
-    Buf.reset(why);
-    err := turn(a, w, why);
-    a.working := false;
-    a.prov := lead;
-    forget(a);   (* what the worker saw is no call of the lead's *)
+    brief(a, p, task, b);
+    Amsg.setText(m^, Buf.bytes(b));
 
-    msgs := Msgs.all(w.msgs);
-    steps := 0;
-    for i := 0 to LEN(msgs) - 1 do
-        if msgs[i].role = Amsg.Role.assistant then INC(steps); end;
+    (* staged, the worker gets a copy of its own; safe, there is none to
+       make it from, and it works in the lead's zone *)
+    n := 0;
+    if (LEN(Afence.stage) > 0) and (LEN(Afence.scratch) > 0) then
+        n := nextWorker(a);
+        if not Astage.fork(n, copy, why) then
+            Fmt.write(out, "error: cannot make the worker's copy: {}", [Fmt.str(Buf.bytes(why))]);
+            return;
+        end;
     end;
-    report := "";
-    if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
-    if LEN(report) = 0 then
-        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps)]);
+    Buf.reset(b);
+    Fmt.write(b, "worker {}: {}", [Fmt.str(a.worker), Fmt.str(task[0..min(LEN(task), 120)])]);
+    note(a, Buf.bytes(b));
+    Buf.reset(why);
+    err := work(a, w, why);
+    if not told(a, n, task, w, out) then
+        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w))]);
         if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(why))]); end;
+    end;
+    if n > 0 then handIn(n, copy, out); end;
+end;
+
+(* merge, with the arguments args: worker n's diff, from the scratch
+   directory, brought into the stage's copy (Astage.carry) or dropped,
+   as apply says, and then removed; but kept when it does not apply, so
+   that it may be dropped, or done again. Its work is done in the
+   call's arena. *)
+proc merge(var a: Agent; args: []const U8; var out: Buf.Buf);
+var d: Json.Doc; p: Atools.Args; path, diff, why: Buf.Buf; n: INT;
+begin
+    if a.working then
+        Buf.str(out, "error: a worker cannot merge");
         return;
     end;
-    Buf.reset(why);
-    Fmt.write(why, "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
-    Strs.push(a.reports, Amsg.keep(Buf.bytes(why)));
-    Fmt.write(out, "worker report ({} steps):\n{}", [Fmt.int(steps), Fmt.str(report)]);
+    if not Json.init(SYSTEM.ADR(d), SYSTEM.ADR(a.mem.base)) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    if not Atools.parse(SYSTEM.ADR(d), SYSTEM.ADR(a.mem.base), args, p) then
+        Buf.str(out, "error: the arguments must be one JSON object, as the tool's schema says");
+        return;
+    end;
+    Buf.init(path, SYSTEM.ADR(a.mem.base));
+    Buf.init(diff, SYSTEM.ADR(a.mem.base));
+    Buf.init(why, SYSTEM.ADR(a.mem.base));
+    n := Atools.int(p, "worker", 0);
+    if (n <= 0) or (LEN(Afence.stage) = 0) or (Files.load(diffPath(n, path), diff) # 0) then
+        Fmt.write(out, "error: no diff of worker {} waits to be merged", [Fmt.str(Atools.str(p, "worker"))]);
+        return;
+    end;
+    if Json.member(p.d, p.v, "apply") = Json.None then   (* a worker's work is not dropped by a slip *)
+        Fmt.write(out, "error: say apply true to merge worker {}'s changes, or apply false to drop them", [Fmt.int(n)]);
+    elsif not Atools.flag(p, "apply") then
+        _ := Sys.remove(Buf.bytes(path));
+        Fmt.write(out, "dropped: worker {}'s changes, which your copy never had", [Fmt.int(n)]);
+    elsif Astage.carry(Buf.bytes(diff), why) then
+        _ := Sys.remove(Buf.bytes(path));
+        Fmt.write(out, "merged: worker {}'s changes are in your copy; run check.", [Fmt.int(n)]);
+    else
+        Fmt.write(out, "error: worker {}'s diff no longer fits your copy, which changed after it began, so nothing " +
+            "was applied: {}. Drop it, or brief a worker to do it again on your copy as it is.",
+            [Fmt.int(n), Fmt.str(Buf.bytes(why))]);
+    end;
 end;
 
 (* Whether c's plan is approved: the last result of plan in c says so. *)
@@ -451,7 +609,7 @@ end;
 proc waits(name: []const U8): BOOL;
 begin
     match name of
-    | "edit", "move", "remove", "delegate": return true;
+    | "edit", "move", "remove", "delegate", "merge": return true;
     | else: return false;
     end;
 end;
@@ -518,6 +676,9 @@ begin
             Arena.reset(a.mem);
         elsif calls[i].name = "delegate" then
             delegate(a, calls[i].args, res);
+        elsif calls[i].name = "merge" then
+            merge(a, calls[i].args, res);
+            Arena.reset(a.mem);
         else
             Atools.call(calls[i].name, calls[i].args, a.human, SYSTEM.ADR(a.mem.base), res);
             Arena.reset(a.mem);

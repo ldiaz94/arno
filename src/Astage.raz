@@ -30,6 +30,20 @@
    turned off: making and comparing a copy is arno's business, not the
    repository's.
 
+   A worker the lead delegates to works in a copy of its own (Work),
+   made the same way from the stage's copy as it stands, the lead's
+   own unapplied work and all (fork), beside it in the cache as
+   PID.wN. For the worker's turn its copy is the stage and the zone, so
+   its edits go unasked and its shell and check are jailed there; when
+   it ends, the zone is the lead's copy again, the worker's work is
+   one diff against where it began (gather), and its copy is removed.
+   The lead then brings that diff into its own copy (carry) or not.
+
+     the stage's copy               a worker's copy
+            |  fork: as it stands ---> |   its base
+            |                          |   the worker edits here
+            |  <--- carry: the diff -- |   gather: base against now
+
    Needs git and a repository with at least one commit, since a
    worktree is checked out from one. Nothing is committed: the copy's
    states are trees (write-tree), compared tree to tree, so no ref,
@@ -43,8 +57,8 @@
    The copy's own .git file, which points at its git directory, is the
    model's to write only with approval (Afence.ours refuses it): git
    reads settings from there that run programs. As a second wall, every
-   git command in the copy names the git directory up recorded, and
-   turns core.fsmonitor off, rather than trust that file.
+   git command in a copy names the git directory recorded as it was
+   made, and turns core.fsmonitor off, rather than trust that file.
 
    Depends on Afence (the zone, the stage), Astore (where the copy
    lives), Amsg (keep), Arun, Files, Str and Sys. Leaves out what lies outside a git repository
@@ -63,6 +77,17 @@ const
     Deps: []const []const U8 = ["node_modules", ".venv", "venv"];
     Excluded: []const []const U8 = [":(exclude)node_modules", ":(exclude).venv", ":(exclude)venv"];   (* Deps as pathspecs *)
 
+type
+    (* A worker's copy, made from the stage's copy by fork, and what
+       gather needs to put things back. Each string is from Heap. *)
+    Work* = record
+        dir*: []U8;   (* the copy, resolved *)
+        pin: []U8;    (* its git directory, absolute, as fork made it *)
+        base: []U8;   (* the tree it began as: the stage's copy then *)
+        lead: []U8;   (* the stage's copy, the zone to go back to *)
+        back: []U8;   (* the working directory to go back to *)
+    end;
+
 var
     base: []U8;   (* the tree the copy's changes are counted from, a hash from Heap; "" with no copy *)
     away: []U8;   (* the working directory up left, to go back to *)
@@ -70,10 +95,11 @@ var
 
 (* git -C dir args, hooks and fsmonitor off, at most max bytes of its
    output and errors added to out, and whether there was more. idx, if
-   not "", is the index to use in place of dir's own. In the copy, the
-   git directory is the one up recorded. The status is git's. *)
-proc gitMax(idx, dir: []const U8; args: [][]const U8; max: INT; var out: Buf.Buf): (INT, BOOL);
-var argv, env: Strs.Vec; index, pin: Buf.Buf; j: Arun.Job; status: INT; cut: BOOL; i: INT;
+   not "", is the index to use in place of dir's own. pin, if not "",
+   is dir's git directory, a copy's, used in place of what its .git
+   file says. The status is git's. *)
+proc gitMax(idx, dir, pin: []const U8; args: [][]const U8; max: INT; var out: Buf.Buf): (INT, BOOL);
+var argv, env: Strs.Vec; index, gd: Buf.Buf; j: Arun.Job; status: INT; cut: BOOL; i: INT;
 begin
     Strs.init(argv, Heap.heap);
     defer Strs.done(argv);
@@ -81,15 +107,15 @@ begin
     defer Strs.done(env);
     Buf.init(index, Heap.heap);
     defer Buf.done(index);
-    Buf.init(pin, Heap.heap);
-    defer Buf.done(pin);
+    Buf.init(gd, Heap.heap);
+    defer Buf.done(gd);
     Strs.push(argv, "git");
     Strs.push(argv, "-C");
     Strs.push(argv, dir);
-    if (LEN(gitDir) > 0) and (dir = Afence.stage) then
-        Buf.str(pin, "--git-dir=");
-        Buf.str(pin, gitDir);
-        Strs.push(argv, Buf.bytes(pin));
+    if LEN(pin) > 0 then
+        Buf.str(gd, "--git-dir=");
+        Buf.str(gd, pin);
+        Strs.push(argv, Buf.bytes(gd));
         Strs.push(argv, "--work-tree=.");
     end;
     Strs.push(argv, "-c");
@@ -108,19 +134,19 @@ begin
 end;
 
 (* git -C dir args, as gitMax, with room for a short answer. *)
-proc git(idx, dir: []const U8; args: [][]const U8; var out: Buf.Buf): INT;
+proc git(idx, dir, pin: []const U8; args: [][]const U8; var out: Buf.Buf): INT;
 var status: INT;
 begin
-    status, _ := gitMax(idx, dir, args, MaxShort, out);
+    status, _ := gitMax(idx, dir, pin, args, MaxShort, out);
     return status;
 end;
 
 (* The tree dir's working tree holds, every file not ignored added to
    the index idx first ("" for dir's own): its hash made what tree
-   holds. In the copy, the links to Deps are left out: git ignores a
-   directory's name, not a link's. false if git fails, why saying what
-   it said. *)
-proc snap(idx, dir: []const U8; var tree, why: Buf.Buf): BOOL;
+   holds. In a copy, pinned to pin, the links to Deps are left out:
+   git ignores a directory's name, not a link's. false if git fails,
+   why saying what it said. *)
+proc snap(idx, dir, pin: []const U8; var tree, why: Buf.Buf): BOOL;
 var args: Strs.Vec; i: INT;
 begin
     Buf.reset(tree);
@@ -129,14 +155,14 @@ begin
     defer Strs.done(args);
     Strs.push(args, "add");
     Strs.push(args, "-A");
-    if (LEN(Afence.stage) > 0) and (dir = Afence.stage) then
+    if LEN(pin) > 0 then
         Strs.push(args, "--");
         Strs.push(args, ".");
         for i := 0 to LEN(Excluded) - 1 do Strs.push(args, Excluded[i]); end;
     end;
-    if git(idx, dir, Strs.all(args), why) # 0 then return false; end;
+    if git(idx, dir, pin, Strs.all(args), why) # 0 then return false; end;
     Buf.reset(why);
-    if git(idx, dir, ["write-tree"], why) # 0 then return false; end;
+    if git(idx, dir, pin, ["write-tree"], why) # 0 then return false; end;
     Buf.str(tree, Str.trim(Buf.bytes(why)));
     Buf.reset(why);
     return true;
@@ -155,9 +181,9 @@ begin
     return Str.trim(Buf.bytes(b));
 end;
 
-(* The working directory put in the copy at dir: where it was in the
-   human's tree, if that is there, else the copy's top. *)
-proc enter(dir: []const U8);
+(* The working directory put in the copy at dir: where it was under
+   from, if that is there, else the copy's top. *)
+proc enter(from, dir: []const U8);
 var here, target: Buf.Buf;
 begin
     Buf.init(here, Heap.heap);
@@ -166,31 +192,39 @@ begin
     defer Buf.done(target);
     Afence.resolve(".", here);
     Buf.str(target, dir);
-    if Afence.within(Buf.bytes(here), Afence.root) then
-        Buf.str(target, Buf.bytes(here)[LEN(Afence.root)..here.len]);
+    if Afence.within(Buf.bytes(here), from) then
+        Buf.str(target, Buf.bytes(here)[LEN(from)..here.len]);
     end;
     if Sys.setWorkDir(Buf.bytes(target)) # 0 then _ := Sys.setWorkDir(dir); end;
+end;
+
+(* The copy at dir removed, from the disk and from the repository's
+   list of worktrees. *)
+proc uproot(dir: []const U8);
+var out: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    _ := git("", Afence.root, "", ["worktree", "remove", "--force", dir], out);
+    Astore.wipe(dir);
+    _ := git("", Afence.root, "", ["worktree", "prune"], out);
 end;
 
 (* Back to the human's tree, the copy removed; the working directory
    goes back to where up found it, or to the project's top should that
    be gone. *)
 proc down*;
-var dir, out: Buf.Buf;
+var dir: Buf.Buf;
 begin
     if LEN(Afence.stage) = 0 then return; end;
     Buf.init(dir, Heap.heap);
     defer Buf.done(dir);
-    Buf.init(out, Heap.heap);
-    defer Buf.done(out);
     Buf.str(dir, Afence.stage);
     if (LEN(away) = 0) or (Sys.setWorkDir(away) # 0) then _ := Sys.setWorkDir(Afence.root); end;
     Afence.leaveStage;
     if LEN(gitDir) > 0 then Str.free(Heap.heap, gitDir); end;
     gitDir := gitDir[0..0];
-    _ := git("", Afence.root, ["worktree", "remove", "--force", Buf.bytes(dir)], out);
-    Astore.wipe(Buf.bytes(dir));
-    _ := git("", Afence.root, ["worktree", "prune"], out);
+    uproot(Buf.bytes(dir));
 end;
 
 (* Each of Deps the human's tree holds, and the copy, at dir, doesn't,
@@ -215,11 +249,41 @@ begin
     end;
 end;
 
+(* A copy made at dir, a worktree of the human's repository holding
+   the tree tree, with the dependencies linked: its git directory,
+   absolute, added to pin. false if it can't be made, why saying why,
+   and nothing left of it. *)
+proc plant(dir, tree: []const U8; var pin, why: Buf.Buf): BOOL;
+var out: Buf.Buf;
+begin
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    if git("", Afence.root, "", ["worktree", "add", "--detach", "--no-checkout", dir, "HEAD"], out) # 0 then
+        Fmt.write(why, "cannot make the copy (does the repository have a commit?): {}", [Fmt.str(said(out))]);
+        return false;
+    end;
+    Buf.reset(out);
+    if git("", dir, "", ["read-tree", "-u", "--reset", tree], out) # 0 then
+        Fmt.write(why, "cannot fill the copy: {}", [Fmt.str(said(out))]);
+        uproot(dir);
+        return false;
+    end;
+    Buf.reset(out);
+    if git("", dir, "", ["rev-parse", "--absolute-git-dir"], out) # 0 then
+        Fmt.write(why, "cannot find the copy's git directory: {}", [Fmt.str(said(out))]);
+        uproot(dir);
+        return false;
+    end;
+    Buf.str(pin, said(out));
+    linkDeps(dir);
+    return true;
+end;
+
 (* Into a copy of the project, made the zone, and the working directory
    moved into it, at the same place in the tree. false if it can't be
    made, why saying why; true, nothing done, if it is up. *)
 proc up*(var why: Buf.Buf): BOOL;
-var dir, idx, tree, out: Buf.Buf; cwd: []const U8; e: INT; r: Buf.Buf;
+var dir, idx, tree, out, pin, r: Buf.Buf; cwd: []const U8; e: INT;
 begin
     if LEN(Afence.stage) > 0 then return true; end;
     Buf.init(dir, Heap.heap);
@@ -230,6 +294,8 @@ begin
     defer Buf.done(tree);
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
+    Buf.init(pin, Heap.heap);
+    defer Buf.done(pin);
     Buf.init(r, Heap.heap);
     defer Buf.done(r);
     Buf.str(r, Afence.root);
@@ -242,33 +308,21 @@ begin
     Buf.str(idx, Buf.bytes(dir));
     Buf.str(idx, ".index");
     Astore.wipe(Buf.bytes(dir));   (* what a run that died left *)
-    _ := git("", Afence.root, ["worktree", "prune"], out);
+    _ := git("", Afence.root, "", ["worktree", "prune"], out);
     _ := Sys.remove(Buf.bytes(idx));
     (* HEAD first, so that tracked files that .gitignore matches, added
        by force, stay in the copy; add -A then brings the human's work *)
-    if git(Buf.bytes(idx), Afence.root, ["read-tree", "HEAD"], out) # 0 then
+    if git(Buf.bytes(idx), Afence.root, "", ["read-tree", "HEAD"], out) # 0 then
         Fmt.write(why, "cannot read the tree: {}", [Fmt.str(said(out))]);
         return false;
     end;
-    if not snap(Buf.bytes(idx), Afence.root, tree, out) then
+    if not snap(Buf.bytes(idx), Afence.root, "", tree, out) then
         _ := Sys.remove(Buf.bytes(idx));
         Fmt.write(why, "cannot read the tree: {}", [Fmt.str(said(out))]);
         return false;
     end;
     _ := Sys.remove(Buf.bytes(idx));
-    Buf.reset(out);
-    if git("", Afence.root, ["worktree", "add", "--detach", "--no-checkout", Buf.bytes(dir), "HEAD"], out) # 0 then
-        Fmt.write(why, "cannot make the copy (does the repository have a commit?): {}", [Fmt.str(said(out))]);
-        return false;
-    end;
-    Buf.reset(out);
-    if git("", Buf.bytes(dir), ["read-tree", "-u", "--reset", Buf.bytes(tree)], out) # 0 then
-        Fmt.write(why, "cannot fill the copy: {}", [Fmt.str(said(out))]);
-        Buf.reset(r);
-        _ := git("", Afence.root, ["worktree", "remove", "--force", Buf.bytes(dir)], r);
-        return false;
-    end;
-    linkDeps(Buf.bytes(dir));
+    if not plant(Buf.bytes(dir), Buf.bytes(tree), pin, why) then return false; end;
     setBase(Buf.bytes(tree));
     cwd, e := Sys.workDir();
     if e = 0 then
@@ -276,14 +330,8 @@ begin
         away := Amsg.keep(cwd);
     end;
     Afence.useStage(Buf.bytes(dir));
-    Buf.reset(out);
-    if git("", Afence.stage, ["rev-parse", "--absolute-git-dir"], out) # 0 then
-        Fmt.write(why, "cannot find the copy's git directory: {}", [Fmt.str(said(out))]);
-        down;
-        return false;
-    end;
-    gitDir := Amsg.keep(said(out));
-    enter(Afence.stage);
+    gitDir := Amsg.keep(Buf.bytes(pin));
+    enter(Afence.root, Afence.stage);
     return true;
 end;
 
@@ -304,20 +352,16 @@ begin
     return n;
 end;
 
-(* What the model changed in the copy since base, as one diff, added
-   to diff, and how many files that is: 0 if none; -1 if it can't be
-   told, why saying why. *)
-proc changes*(var diff, why: Buf.Buf): INT;
-var cur, got: Buf.Buf; status: INT; cut: BOOL;
+(* The copy at dir, pinned to pin, from the tree from to the tree now,
+   as one diff added to diff, and how many files that is; -1 if it
+   can't be told, why saying why. *)
+proc compare(dir, pin, from, now: []const U8; var diff, why: Buf.Buf): INT;
+var got: Buf.Buf; status: INT; cut: BOOL;
 begin
-    Buf.init(cur, Heap.heap);
-    defer Buf.done(cur);
     Buf.init(got, Heap.heap);
     defer Buf.done(got);
-    if not snap("", Afence.stage, cur, why) then return -1; end;
-    if Buf.bytes(cur) = base then return 0; end;
-    status, cut := gitMax("", Afence.stage, ["diff-tree", "-r", "-p", "--binary", "--no-color", "--no-ext-diff",
-            "--no-textconv", base, Buf.bytes(cur)], MaxOut, got);
+    status, cut := gitMax("", dir, pin, ["diff-tree", "-r", "-p", "--binary", "--no-color", "--no-ext-diff",
+            "--no-textconv", from, now], MaxOut, got);
     if status # 0 then
         Buf.str(why, said(got));
         return -1;
@@ -330,9 +374,23 @@ begin
     return files(Buf.bytes(got));
 end;
 
-(* git apply of diff, in dir (the human's tree or the copy): all or nothing. why says what git said, if it failed. It goes by a
-   file, since a program started has no input but /dev/null. *)
-proc patch(dir, diff: []const U8; var why: Buf.Buf): BOOL;
+(* What the model changed in the copy since base, as one diff, added
+   to diff, and how many files that is: 0 if none; -1 if it can't be
+   told, why saying why. *)
+proc changes*(var diff, why: Buf.Buf): INT;
+var cur: Buf.Buf;
+begin
+    Buf.init(cur, Heap.heap);
+    defer Buf.done(cur);
+    if not snap("", Afence.stage, gitDir, cur, why) then return -1; end;
+    if Buf.bytes(cur) = base then return 0; end;
+    return compare(Afence.stage, gitDir, base, Buf.bytes(cur), diff, why);
+end;
+
+(* git apply of diff, in dir (the human's tree, or the copy pinned to
+   pin): all or nothing. why says what git said, if it failed. It goes
+   by a file, since a program started has no input but /dev/null. *)
+proc patch(dir, pin, diff: []const U8; var why: Buf.Buf): BOOL;
 var file, out: Buf.Buf; ok: BOOL;
 begin
     Buf.init(file, Heap.heap);
@@ -346,7 +404,7 @@ begin
         return false;
     end;
     defer _ := Sys.remove(Buf.bytes(file));
-    ok := git("", dir, ["apply", "--binary", Buf.bytes(file)], out) = 0;
+    ok := git("", dir, pin, ["apply", "--binary", Buf.bytes(file)], out) = 0;
     if not ok then Buf.str(why, said(out)); end;
     return ok;
 end;
@@ -363,11 +421,11 @@ begin
     defer Buf.done(cur);
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
-    if not snap("", Afence.stage, cur, out) then
+    if not snap("", Afence.stage, gitDir, cur, out) then
         Fmt.write(why, "cannot read the copy: {}", [Fmt.str(said(out))]);
         return false;
     end;
-    if not patch(Afence.root, diff, why) then return false; end;
+    if not patch(Afence.root, "", diff, why) then return false; end;
     setBase(Buf.bytes(cur));
     return true;
 end;
@@ -383,26 +441,117 @@ begin
     defer Buf.done(cur);
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
-    if not snap("", Afence.stage, cur, out) then
+    if not snap("", Afence.stage, gitDir, cur, out) then
         Buf.str(why, said(out));
         return false;
     end;
-    if git("", Afence.stage, ["read-tree", "-u", "--reset", base], out) # 0 then
+    if git("", Afence.stage, gitDir, ["read-tree", "-u", "--reset", base], out) # 0 then
         Buf.str(why, said(out));
         return false;
     end;
     return true;
 end;
 
-(* A copy lasts as long as its arno, but a conversation can be taken up
-   again by another (arno --resume, /load): the work an earlier copy
-   held, unapplied, comes back into this one from the conversation's
-   stage.diff, on top of base, so that it is offered again with
-   whatever the next turn adds. git apply passes over the "# note:"
-   lines before the first diff. *)
+(* diff brought into the copy, on top of what it holds, all or
+   nothing: a worker's work, merged, or the work an earlier copy held,
+   unapplied. A copy lasts as long as its arno, but a conversation can
+   be taken up again by another (arno --resume, /load), and its
+   stage.diff comes back this way, to be offered again with whatever
+   the next turn adds. git apply passes over the "# note:" lines before
+   the first diff. *)
 proc carry*(diff: []const U8; var why: Buf.Buf): BOOL;
 begin
-    return patch(Afence.stage, diff, why);
+    return patch(Afence.stage, gitDir, diff, why);
+end;
+
+(* Worker n's copy made in w, from the stage's copy as it stands, and
+   made the stage and the zone, the working directory moved into it at
+   the same place, until gather. false if there is no stage, or the
+   copy can't be made, why saying why. *)
+proc fork*(n: INT; var w: Work; var why: Buf.Buf): BOOL;
+var dir, tree, pin: Buf.Buf; cwd: []const U8; e: INT;
+begin
+    if LEN(Afence.stage) = 0 then
+        Buf.str(why, "there is no stage to copy");
+        return false;
+    end;
+    Buf.init(dir, Heap.heap);
+    defer Buf.done(dir);
+    Buf.init(tree, Heap.heap);
+    defer Buf.done(tree);
+    Buf.init(pin, Heap.heap);
+    defer Buf.done(pin);
+    if not snap("", Afence.stage, gitDir, tree, why) then return false; end;
+    Fmt.write(dir, "{}.w{}", [Fmt.str(Afence.stage), Fmt.int(n)]);
+    Astore.wipe(Buf.bytes(dir));   (* what a run that died left *)
+    if not plant(Buf.bytes(dir), Buf.bytes(tree), pin, why) then return false; end;
+    cwd, e := Sys.workDir();
+    if e # 0 then cwd := Afence.stage; end;
+    w := {pin: Amsg.keep(Buf.bytes(pin)), base: Amsg.keep(Buf.bytes(tree)), lead: Amsg.keep(Afence.stage),
+        back: Amsg.keep(cwd)};
+    Afence.useStage(Buf.bytes(dir));
+    w.dir := Amsg.keep(Afence.stage);
+    enter(w.lead, w.dir);
+    return true;
+end;
+
+(* What git's numstat line, "added removed path", says, added to out
+   as "+added -removed path", or "binary path" for a file git counts
+   no lines of. *)
+proc tallyLine(line: []const U8; var out: Buf.Buf);
+var plus, minus, name: []const U8;
+begin
+    plus, name, _ := Str.cut(line, "\t");
+    minus, name, _ := Str.cut(name, "\t");
+    if plus = "-" then
+        Fmt.write(out, "binary {}\n", [Fmt.str(name)]);
+    else
+        Fmt.write(out, "+{} -{} {}\n", [Fmt.str(plus), Fmt.str(minus), Fmt.str(name)]);
+    end;
+end;
+
+(* The worker's work in w, as gather finds it: its diff added to diff,
+   a line a file of lines added and removed to stat, and how many files
+   changed; -1 if it can't be told, why saying why. *)
+proc taken(const w: Work; var diff, stat, why: Buf.Buf): INT;
+var cur, out: Buf.Buf; n: INT; line, rest: []const U8;
+begin
+    Buf.init(cur, Heap.heap);
+    defer Buf.done(cur);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    if not snap("", w.dir, w.pin, cur, why) then return -1; end;
+    if Buf.bytes(cur) = w.base then return 0; end;
+    n := compare(w.dir, w.pin, w.base, Buf.bytes(cur), diff, why);
+    if n <= 0 then return n; end;
+    if git("", w.dir, w.pin, ["diff-tree", "-r", "--numstat", w.base, Buf.bytes(cur)], out) = 0 then
+        rest := said(out);
+        while LEN(rest) > 0 do
+            line, rest, _ := Str.cut(rest, "\n");
+            tallyLine(line, stat);
+        end;
+    end;
+    return n;
+end;
+
+(* The worker's turn over: the lead's copy the stage and the zone
+   again, the working directory back where fork found it, what the
+   worker changed in its copy since fork as taken gives it, and its
+   copy removed, w let go. *)
+proc gather*(var w: Work; var diff, stat, why: Buf.Buf): INT;
+var n: INT;
+begin
+    Afence.useStage(w.lead);
+    if Sys.setWorkDir(w.back) # 0 then _ := Sys.setWorkDir(w.lead); end;
+    n := taken(w, diff, stat, why);
+    uproot(w.dir);
+    Str.free(Heap.heap, w.dir);
+    Str.free(Heap.heap, w.pin);
+    Str.free(Heap.heap, w.base);
+    Str.free(Heap.heap, w.lead);
+    Str.free(Heap.heap, w.back);
+    w := {};
+    return n;
 end;
 
 (* The module's test, in build/stage, which it makes: a repository of
@@ -439,6 +588,61 @@ proc yes(b: BOOL): []const U8;
 begin
     if b then return "yes"; end;
     return "no";
+end;
+
+(* dir's src, for expect. *)
+proc src(dir: []const U8): []const U8;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    Fmt.write(b, "{}/src", [Fmt.str(dir)]);
+    return Buf.bytes(b);
+end;
+
+(* Workers, with the stage up and its copy holding work not applied,
+   the working directory in its src: a worker's copy is the copy as
+   it stands, its work comes back as a diff of its own, which carry
+   brings into the copy, all or nothing. *)
+proc testWorkers;
+var w: Work; lead, diff, stat, why: Buf.Buf; n: INT;
+begin
+    Buf.init(lead, Heap.heap);
+    Buf.init(diff, Heap.heap);
+    Buf.init(stat, Heap.heap);
+    Buf.init(why, Heap.heap);
+    Buf.str(lead, Afence.stage);
+    if not fork(1, w, why) then expect("fork", Buf.bytes(why), ""); return; end;
+    expect("the worker's copy is the zone", yes((Afence.zone = w.dir) and (Afence.stage = w.dir)), "yes");
+    expect("and ours", yes(Afence.ours("../a.txt")), "yes");
+    expect("the lead's copy is not", yes(Afence.ours(Buf.bytes(lead))), "no");
+    expect("in the same place", sh("pwd -P"), src(w.dir));
+    expect("the lead's unapplied work comes", sh("tail -n 1 ../a.txt"), "again");
+    expect("the dependencies come", sh("test -L ../node_modules && echo linked"), "linked");
+    _ := sh("printf 'worker\\n' >> ../a.txt && printf 'w\\n' > ../w.txt");
+    n := gather(w, diff, stat, why);
+    expect("two files", yes(n = 2), "yes");
+    expect("the stage is the lead's again", yes((Afence.stage = Buf.bytes(lead)) and (Afence.zone = Afence.stage)), "yes");
+    expect("back in the lead's copy", sh("pwd -P"), src(Buf.bytes(lead)));
+    expect("the stat", Buf.bytes(stat), "+1 -0 a.txt\n+1 -0 w.txt\n");
+    expect("the worker's own work only", yes(Str.find(Buf.bytes(diff), "+again") >= 0), "no");
+    expect("not yet in the lead's", sh("tail -n 1 ../a.txt"), "again");
+    expect("the worker's copy removed", sh("ls $TOP/cache/arno/stage | wc -l"), "1");
+    Buf.reset(why);
+    if not carry(Buf.bytes(diff), why) then expect("merge", Buf.bytes(why), ""); end;
+    expect("merged", sh("tail -n 1 ../a.txt && cat ../w.txt"), "worker\nw");
+
+    (* a worker's diff that fits the lead's copy no more changes nothing *)
+    Buf.reset(why);
+    if not fork(2, w, why) then expect("fork again", Buf.bytes(why), ""); return; end;
+    _ := sh("sed -i 's/^worker$/two/' ../a.txt");
+    Buf.reset(diff);
+    Buf.reset(stat);
+    n := gather(w, diff, stat, why);
+    expect("one file", yes(n = 1), "yes");
+    _ := sh("sed -i 's/^worker$/lead/' ../a.txt");
+    Buf.reset(why);
+    expect("a merge refused", yes(carry(Buf.bytes(diff), why)), "no");
+    expect("so nothing changed", sh("tail -n 1 ../a.txt"), "lead");
 end;
 
 (* The test: see above. *)
@@ -536,6 +740,8 @@ begin
     Buf.reset(why);
     if not carry(Buf.bytes(diff), why) then expect("carry", Buf.bytes(why), ""); end;
     expect("carried", sh("tail -n 1 ../a.txt"), "again");
+
+    testWorkers;
 
     (* down: the human's tree, the copy gone *)
     down;

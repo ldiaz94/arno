@@ -283,7 +283,9 @@ const
             "found, the files it changed and check's verdict. It pays for a step whose details you will not " +
             "need again, such as building one piece or surveying an area; it does not for a small task, or for " +
             "anything you would have to read again yourself. Brief it fully: the goal, the files, the " +
-            "project's rules that matter, what to test. One step at a time; read each report before the next.",
+            "project's rules that matter, what to test. One step at a time; read each report before the next. " +
+            "While staged, a worker works in a copy of its own, made from yours as it stands, and its changes " +
+            "come back as a diff for you to merge.",
          params: `{"type":"object","properties":` +
             `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
             `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
@@ -296,7 +298,15 @@ const
          params: `{"type":"object","properties":` +
             `{"plan":{"type":"string","description":"the plan in Markdown: the goal, the steps in order, each with ` +
             `the files it touches and how it is checked, and what is left out"}},` +
-            `"required":["plan"]}`}];
+            `"required":["plan"]}`},
+        {name: "merge",
+         description: "Bring a worker's changes into your copy, or drop them. A worker's diff is kept in the " +
+            "scratch directory as worker-N.diff: read it first. It is applied whole or not at all: one that no " +
+            "longer fits your copy changes nothing, and the error says where.",
+         params: `{"type":"object","properties":` +
+            `{"worker":{"type":"integer","description":"the worker's number, which delegate's result gives"},` +
+            `"apply":{"type":"boolean","description":"true to apply the diff to your copy, false to drop it"}},` +
+            `"required":["worker","apply"]}`}];
 
     (* What git may run, and what may follow git branch --list. *)
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
@@ -394,7 +404,7 @@ begin
 end;
 
 (* The argument key as a flag: true, or the string "true". *)
-proc flag(const a: Args; key: []const U8): BOOL;
+proc flag*(const a: Args; key: []const U8): BOOL;
 var v: Json.Value;
 begin
     v := Json.member(a.d, a.v, key);
@@ -1788,8 +1798,9 @@ end;
 (* The tools a request offers: Offered, less those that change files
    unless edits, a mode's say, and those that could only fail: search
    without a SearXNG, note outside a project, delegate unless lead, a
-   session with a worker model, which a worker isn't, and plan unless
-   plan, build mode's lead; and then the MCP servers' tools, in every
+   session with a worker model, which a worker isn't, merge unless
+   lead, edits and staged, as only a staged worker hands back a diff,
+   and plan unless plan, build mode's lead; and then the MCP servers' tools, in every
    mode. *)
 proc offered*(lead, edits, plan: BOOL): []Awire.Tool;
 var b: Buf.Buf; i: INT;
@@ -1804,6 +1815,7 @@ begin
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
         | "plan": if not plan then continue; end;
+        | "merge": if not lead or not edits or (LEN(Afence.stage) = 0) then continue; end;
         | "editor", "open": if not Apeer.reachable() then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": Tools.push(offer, runOffer(Offered[i])); continue;
@@ -1979,6 +1991,8 @@ begin
         Buf.str(res, "error: there are no workers here");
     elsif name = "plan" then
         Buf.str(res, "error: plan is for build mode's lead");
+    elsif name = "merge" then
+        Buf.str(res, "error: there are no workers here");
     elsif Amcp.owns(name) then
         mcp(name, a, h, res);
     else
@@ -2122,7 +2136,7 @@ begin
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
         "error: there is no tool named \"write\". The tools are: read find grep def outline git run check shell edit move remove note " +
-        "search fetch delegate plan");
+        "search fetch delegate plan merge");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");

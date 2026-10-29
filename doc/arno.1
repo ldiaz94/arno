@@ -472,14 +472,17 @@ in small steps, stopping after each.
 Lead workers through a larger job.
 The model settles the goal with you and puts a plan to you with
 .Ic plan ;
-until you approve one it edits, moves, removes and delegates nothing,
+until you approve one it edits, moves, removes, delegates and merges nothing,
 though it may look around with
 .Ic shell .
 Then it hands each step to a worker with
 .Ic delegate ,
 or does it itself when no
 .Cm worker
-is set, reviews what each did, runs
+is set, reviews what each did, merges or drops each staged worker's
+diff with
+.Ic merge ,
+runs
 .Ic check ,
 and fixes only small things itself.
 A turn here is bounded by
@@ -776,11 +779,35 @@ conversation of its own on the model
 .Cm worker
 names, with the brief, the reports of earlier workers of the turn (the
 newest four) and the tools of the session less
-.Ic delegate .
+.Ic delegate
+and
+.Ic merge .
 Only its report goes back to the model.
+Staged, each worker is numbered and works in a copy of its own, made
+from the stage's copy as it stands, beside it in the cache: its edits
+are not asked about, and its
+.Ic shell ,
+.Ic check
+and
+.Ic run
+are jailed there.
+When it ends, even at its step cap, what it changed goes back as one
+diff, kept in the scratch directory as
+.Pa worker-N.diff
+and summed up file by file in the result, and its copy is removed.
+Safe, there is no copy to make one from: a worker works in the project
+itself, each change asked, as the model's own.
 Offered only when
 .Cm worker
 is set.
+.It Ic merge
+A staged worker's diff, by its number, applied to the stage's copy or
+dropped, and then removed.
+It applies whole or not at all: one that no longer fits the copy
+changes nothing, and is kept, to be dropped.
+Offered only with
+.Ic delegate ,
+while staged.
 .It Ic plan
 The plan of
 .Cm build

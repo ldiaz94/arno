@@ -421,10 +421,24 @@ one or more commits that build with `-Werror`.
      lessons are in the mode's text: brief richly, pass findings on,
      few larger steps. `build_steps` and `build_budget` (200, $3.00)
      bound its turns; safe, `/mode build` says it works best staged.
-   - [ ] Each worker in a jailed worktree of its own, made from the
+   - [x] Each worker in a jailed worktree of its own, made from the
      supervisor's copy, giving back its diff and a report (what it did,
      read, left); one that hits its step cap hands back its copy, not
-     nothing.
+     nothing. `Astage.fork` makes worker N's copy, `PID.wN` beside the
+     stage's, from the copy's tree as it stands, by the same `plant`
+     as `up`; for its turn it is `Afence.stage` and the zone, and the
+     working directory, so edit, shell, check and run go there
+     unchanged. `gather` puts the lead's copy back, takes the diff
+     against the fork's tree and a `--numstat` line a file, and removes
+     the worker's copy at once, not at the merge: the diff is all the
+     lead can use, kept as `worker-N.diff` in the scratch. `merge
+     {worker, apply}` brings it in by `carry`, all or nothing, or drops
+     it; one that no longer fits stays. Build's gate covers `merge`.
+     Safe, workers work as before. Every git command in a copy now
+     takes its pinned git directory as an argument (`pin`), not by
+     comparing with `Afence.stage`. Left for parallel workers: the
+     zone, the stage and the working directory are the process's,
+     swapped for a worker's turn.
    - [ ] Worker models chosen per brief, from config's `workers`.
    - [ ] Workers in parallel.
    - [ ] An eval: a task with a good plan approved first, supervisor
