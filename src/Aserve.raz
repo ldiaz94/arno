@@ -185,7 +185,7 @@ begin
     Thread.lock(mutex);
     speaking := n;
     Thread.unlock(mutex);
-    if n > 0 then post(named, model, "", "", "", false); end;
+    if (n > 0) and (LEN(model) > 0) then post(named, model, "", "", "", false); end;
 end;
 
 (* The front's call: a tool about to run, told. *)

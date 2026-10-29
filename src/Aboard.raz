@@ -166,13 +166,24 @@ begin
     return e;
 end;
 
-(* A piece of the model's text, added to the reply it goes on, or the
-   start of a new one if something came between. *)
-proc reply*(s: []const U8);
-var e: ^Entry;
+(* The index of the speaker's last entry, or -1 if it has none: what
+   it says next goes on from there, whoever else spoke between. *)
+proc latest*: INT;
+var e: []Entry; i: INT;
 begin
-    e := last();
-    if (e = nil) or (e^.kind # Kind.reply) then e := push(Kind.reply, ""); end;
+    e := all();
+    i := LEN(e) - 1;
+    while (i >= 0) and (e[i].speaker # speaker) do DEC(i); end;
+    return i;
+end;
+
+(* A piece of the model's text, added to the speaker's reply it goes
+   on, or the start of a new one if something of theirs came between. *)
+proc reply*(s: []const U8);
+var e: ^Entry; i: INT;
+begin
+    i := latest();
+    if (i < 0) or (all()[i].kind # Kind.reply) then e := push(Kind.reply, ""); else e := SYSTEM.ADR(all()[i]); end;
     Buf.str(e^.text, s);
 end;
 
@@ -206,15 +217,18 @@ begin
     e^.done := true;
 end;
 
-(* The diff a question about the newest call shows, which opens it. *)
+(* The diff a question about the newest call still running shows,
+   which opens it: the call that asks, whoever spoke since. *)
 proc detail*(d: []const U8);
-var e: ^Entry;
+var e: []Entry; i: INT;
 begin
-    e := last();
-    if (e = nil) or (e^.kind # tool) then return; end;
-    Buf.reset(e^.detail);
-    Buf.str(e^.detail, d);
-    e^.open := true;
+    e := all();
+    i := LEN(e) - 1;
+    while (i >= 0) and ((e[i].kind # tool) or e[i].done) do DEC(i); end;
+    if i < 0 then return; end;
+    Buf.reset(e[i].detail);
+    Buf.str(e[i].detail, d);
+    e[i].open := true;
 end;
 
 (* Every entry dropped. *)

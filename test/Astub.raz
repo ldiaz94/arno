@@ -22,7 +22,9 @@
    NAME ARGS" the stub calls the tool NAME with the arguments ARGS, and
    answers its result with "the tool said: " and the result; to
    "always NAME ARGS" it makes the same call again after each result,
-   for a test of a turn that doesn't end by itself. A worker's brief,
+   for a test of a turn that doesn't end by itself; to "fan NAME ARGS",
+   ARGS several parted by tabs, it makes as many calls of NAME at once,
+   and answers their results with them all, a line each. A worker's brief,
    "Task: " and then the task, asks the same by its task's first line.
 
    Depends on rnet's Http and Conn and rjson's Json, with no TLS. *)
@@ -47,11 +49,13 @@ begin
     Buf.str(reply, "}}]}\n");
 end;
 
-(* A call of the tool name with args, args JSON text. *)
-proc call(name, args: []const U8);
+(* A call of the tool name with args, args JSON text, the reply's i-th,
+   from 0. *)
+proc call(i: INT; name, args: []const U8);
 begin
-    Buf.str(reply, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function",`);
-    Buf.str(reply, `"function":{"name":`);
+    Buf.str(reply, `data: {"choices":[{"delta":{"tool_calls":[{"index":`);
+    Fmt.write(reply, "{},\"id\":\"c{}\",", [Fmt.int(i), Fmt.int(i + 1)]);
+    Buf.str(reply, `"type":"function","function":{"name":`);
     Json.quote(SYSTEM.ADR(reply), name);
     Buf.str(reply, `,"arguments":`);
     Json.quote(SYSTEM.ADR(reply), args);
@@ -59,34 +63,47 @@ begin
 end;
 
 (* The reply to a request whose human's last message was asked, with
-   the last message last of the role role, as the module's comment
-   says; false if asked asks for no call. *)
+   the last message last of the role role, the results of a fan's calls
+   all of them, as the module's comment says; false if asked asks for no
+   call. *)
 proc tool(asked, role, last: []const U8): BOOL;
-var verb, rest, name, args: []const U8; ok: BOOL;
+var verb, rest, name, args, one: []const U8; ok: BOOL; i: INT;
 begin
     if Str.hasPrefix(asked, "Task: ") then asked, _, _ := Str.cut(asked[6..LEN(asked)], "\n"); end;
     verb, rest, ok := Str.cut(asked, " ");
-    if not ok or (verb # "call") and (verb # "always") then return false; end;
+    if not ok or (verb # "call") and (verb # "always") and (verb # "fan") then return false; end;
     name, args, _ := Str.cut(rest, " ");
-    if (role = "tool") and (verb = "call") then
+    if (role = "tool") and (verb # "always") then
         Buf.reset(text);
         Buf.str(text, "the tool said: ");
         Buf.str(text, last);
         said(Buf.bytes(text));
+    elsif verb = "fan" then
+        i := 0;
+        repeat
+            one, args, ok := Str.cut(args, "\t");
+            call(i, name, one);
+            INC(i);
+        until not ok;
     else
-        call(name, args);
+        call(0, name, args);
     end;
     return true;
 end;
 
 proc answer(const req: Http.Message; var res: Http.Message; _arg: ^U8);
-var text: Buf.Buf; d: Json.Doc; v, msgs, m: Json.Value; n, k, i: INT; last, role, asked: []const U8; digits: [20]U8;
+var text, results: Buf.Buf; d: Json.Doc; v, msgs, m: Json.Value; n, k, i, first: INT; last, role, asked: []const U8; digits: [20]U8;
 begin
     Buf.reset(reply);
+    (* a connection at a time is served, and arno's workers each have
+       one of their own: none is kept waiting for another to go quiet *)
+    _ := Http.add(res, "Connection", "close");
     if not Json.init(SYSTEM.ADR(d), Heap.heap) then res.status := 500; return; end;
     defer Json.done(SYSTEM.ADR(d));
     Buf.init(text, Heap.heap);   (* parsing changes its text, so the request's body is copied *)
     defer Buf.done(text);
+    Buf.init(results, Heap.heap);
+    defer Buf.done(results);
     if req.target = "/page" then
         _ := Http.add(res, "Content-Type", "text/html; charset=utf-8");
         res.body := "<html><head><title>A page</title></head><body><p>Its   text.</p></body></html>";
@@ -114,6 +131,18 @@ begin
     m := Json.item(SYSTEM.ADR(d), msgs, n - 1);
     last := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "content"));
     role := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), m, "role"));
+    (* the results of several calls, in order, a line between *)
+    first := n - 1;
+    while (first > 0) and (Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, first - 1), "role")) = "tool") do
+        DEC(first);
+    end;
+    if (role = "tool") and (first < n - 1) then
+        for i := first to n - 1 do
+            Buf.str(results, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, i), "content")));
+            if i < n - 1 then Buf.add(results, '\n'); end;
+        end;
+        last := Buf.bytes(results);
+    end;
     if last = "fail" then
         res.status := 500;
         res.body := `{"error":{"message":"the stub fails, as asked"}}`;

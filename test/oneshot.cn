@@ -478,6 +478,28 @@ holds('a worker dropped', 'out', 'the tool said: dropped: worker 2')
 holds('a worker dropped', 'out', 'the tool said: error: no diff of worker 2 waits')
 if `cat "$proj/a.txt"` <> 'four' then fail('the merged worker: ' + `cat "$proj/a.txt"`)
 if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('a worker''s copy was left')
+
+// delegations that begin a step run side by side, each worker in a
+// copy of its own: their reports come back in the calls' order, each
+// with its diff, neither brief holds the other's report, as they
+// started together, and every request is counted, the workers' too
+one := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"six\"}","done_when":"edited"}'
+two := '{"task":"call edit {\"path\":\"b.txt\",\"old\":\"made\",\"new\":\"built\"}","done_when":"edited"}'
+stagedRun([], 'fan delegate ' + one + #9 + two + #10 + '/usage')
+holds('workers side by side', 'out', 'the tool said: worker 1 (small) report (2 steps, $0.00)')
+holds('workers side by side', 'out', 'Worker 1 changed 1 file(s), in a copy of its own:')
+holds('workers side by side', 'out', '+1 -1 a.txt')
+holds('workers side by side', 'out', 'worker 2 (small) report (2 steps, $0.00)')
+holds('workers side by side', 'out', '+1 -1 b.txt')
+holds('workers side by side', 'out', 'requests  6')
+order := `grep -o -e 'worker [12] (small) report' -e '+1 -1 [ab].txt' "$dir/out" | tr '\n' ,`
+if order <> 'worker 1 (small) report,+1 -1 a.txt,worker 2 (small) report,+1 -1 b.txt,' then
+  fail('workers side by side, out of order: ' + order)
+convo := `grep -o '[^ ]*/worker-2.json' "$dir/out"`
+if convo = '' then fail('workers side by side: no conversation kept')
+grep -q 'earlier workers' $convo
+if status = 0 then fail('workers side by side: a brief holds the other''s report')
+if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('a worker''s copy was left, side by side')
 configure([])
 
 if failures > 0 then halt(1)

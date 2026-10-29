@@ -298,16 +298,17 @@ const
             "found, the files it changed and check's verdict. It pays for a step whose details you will not " +
             "need again, such as building one piece or surveying an area; it does not for a small task, or for " +
             "anything you would have to read again yourself. Brief it fully: the goal, the files, the " +
-            "project's rules that matter, what to test. One step at a time; read each report before the next. " +
-            "While staged, a worker works in a copy of its own, made from yours as it stands, and its changes " +
-            "come back as a diff for you to merge.",
+            "project's rules that matter, what to test. A step that needs an earlier one's report waits for it; " +
+            "steps that don't may go together, several delegate calls in one reply, and while staged their " +
+            "workers run side by side. While staged, a worker works in a copy of its own, made from yours as it " +
+            "stands, and its changes come back as a diff for you to merge.",
          params: `{"type":"object","properties":` +
             `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
             `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
             `"done_when":{"type":"string","description":"how the worker knows the step is done"},` +
             `"model":{"type":"string","description":"the worker's model, one of those listed; the default if left out"},` +
             `"budget":{"type":"number","description":"dollars the worker may spend, out of what your turn has left; ` +
-            `all of that if left out, so give each of several workers its share"}},` +
+            `all of that if left out, or an even share of it for each of several delegated together"}},` +
             `"required":["task","done_when"]}`},
         {name: "plan",
          description: "Put your plan to the human for approval. It is written to plan.md in the scratch " +

@@ -536,7 +536,7 @@ one or more commits that build with `-Werror`.
      under its `delegate`, kept up to date: `w2 glm-5.3-flash · step 23
      · $0.04 · read enterprise/cv.ts`. Opening it shows its view. The
      shape parallel workers need, and may wait for them.
-   - [ ] Workers in parallel.
+   - [x] Workers in parallel.
    - [ ] Queued prompts. Enter while a turn runs does nothing now, so the
      human waits to say the next thing. It is queued instead: shown above
      the input, dim, with a count on the status line, and run in order,

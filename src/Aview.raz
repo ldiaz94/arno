@@ -229,21 +229,23 @@ begin
     pushed(LEN(Aboard.all()) - 1);
 end;
 
-(* A piece of the model's text, appended to the reply it goes on. A new
-   reply is pushed empty first and its text arrives as appends, as
-   arnoc's hosts (and the Pascal arno) expect: a host that gets text in
-   the push as well as in appends would take it twice or lose it. *)
+(* A piece of the model's text, appended to the reply it goes on, the
+   speaker's: workers side by side speak in turns. A new reply is
+   pushed empty first and its text arrives as appends, as arnoc's hosts
+   (and the Pascal arno) expect: a host that gets text in the push as
+   well as in appends would take it twice or lose it. *)
 proc said*(s: []const U8);
-var e: ^Aboard.Entry; d: [20]U8;
+var i: INT; d: [20]U8;
 begin
-    e := Aboard.last();
-    if (e = nil) or (e^.kind # Aboard.Kind.reply) then
+    i := Aboard.latest();
+    if (i < 0) or (Aboard.all()[i].kind # Aboard.Kind.reply) then
         Aboard.reply("");
-        pushed(LEN(Aboard.all()) - 1);
+        i := LEN(Aboard.all()) - 1;
+        pushed(i);
     end;
     if LEN(s) = 0 then return; end;
     Aboard.reply(s);
-    say(["append", num(LEN(Aboard.all()) - 1, d), s]);
+    say(["append", num(i, d), s]);
 end;
 
 (* A tool call, about to run. *)

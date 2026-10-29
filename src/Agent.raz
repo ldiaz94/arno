@@ -36,7 +36,11 @@
    less delegate. Only the worker's last answer comes back, as the
    call's result, so that the leading session's history stays as small
    as the reports. What earlier workers of the turn reported goes with
-   each brief.
+   each brief. A worker is an Agent of its own (Worker), with its own
+   provider, arena, connection, budget and seen calls, and a front that
+   tells the lead's, saying who speaks around each thing it tells
+   (Front.speaker), one worker at a time; what its requests cost is
+   added to the lead's sums as well as its own.
 
    Staged, each worker works in a copy of its own (Astage.fork), made
    from the stage's copy as it stands, numbered, and for its turn the
@@ -48,6 +52,20 @@
    removed. The lead reads the diff and merges it into its own copy
    or drops it (merge). Safe, with no copy to make one from, a worker
    works in the lead's zone, each change asked, as the lead's own.
+
+   Staged, the delegations that begin a step's calls, up to MaxFan of
+   them, run side by side (fan), each worker on a thread of its own:
+   made ready one after another on the lead's thread, each brief
+   without the others' reports, as they start together; each paid at
+   most an even share of what the lead's turn has left, so that
+   together they can't spend more; handed in, and their results given,
+   in the calls' order. The zone and the working directory are the
+   process's, and Atools, Alsp and Arun keep state of their own, so a
+   worker holds the lead's place (Agent.place), its copy made the
+   zone, for all it does but wait for the model: their requests go on
+   side by side, and their calls one at a time. A stop stops them all,
+   as each asks the front. Safe, workers run one after another, as
+   each change is the human's to answer.
 
    In build mode the session's model leads: before it may change a
    file or delegate, it puts a plan to the human with the plan tool,
@@ -71,11 +89,13 @@
    language servers its edits started (Alsp).
 
    Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Alsp, Apeer,
-   Afence, Astage (a worker's copy), Awire, Amsg and Astore. Leaves out
-   forking calls that only read, to run them side by side. *)
+   Afence, Astage (a worker's copy), Awire, Amsg, Astore and Thread.
+   Leaves out forking calls that only read, to run them side by side,
+   and workers' calls side by side, which would need a zone and a
+   working directory for each. *)
 module Agent;
 import Aprompt, Aahead, Aprice, Atools, Alsp, Apeer, Afence, Astage, Awire, Amsg, Astore, Http, Json, Buf, Str, Sys, Files, Heap, Arena, Rt, Fmt, Out,
-    Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
+    Thread, Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
 type
@@ -91,7 +111,7 @@ type
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
         counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
         edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
-        speaker*: proc(n: INT; model: []const U8; arg: ^U8);   (* who speaks from now on: 0 the lead, N worker N on model; nil if it is not asked *)
+        speaker*: proc(n: INT; model: []const U8; arg: ^U8);   (* who speaks from now on: 0 the lead, N worker N, said around each thing a worker tells, with its model once as it starts and "" after; nil if it is not asked *)
         arg*: ^U8;
     end;
 
@@ -106,9 +126,14 @@ type
         prefetch*: BOOL;      (* definitions attached to the human's message *)
         worker*: []const U8;        (* the model a worker runs on when none is named; "" for no workers *)
         mode*: Aprompt.Mode;
-        working: BOOL;        (* the turn under way is a worker's *)
+        working: BOOL;        (* this is a worker's *)
+        lead: ^Agent;         (* a worker's lead, whose sums its requests add to and whose place it holds; nil for the lead *)
+        who: INT;             (* a worker's number, as the front is told it *)
+        copy: ^Astage.Work;   (* a staged worker's copy, made the zone each time it takes the place; nil for none *)
+        place: Thread.Mutex;  (* the lead's: held by the worker that does anything but wait for the model *)
+        talk: Thread.Mutex;   (* the lead's: held by the worker telling its front *)
         stopAt: F64;          (* spent at which the lead's turn has used its budget; 0 for no limit *)
-        allowance: F64;       (* dollars the worker under way may spend; 0 for no limit *)
+        allowance: F64;       (* dollars a worker may spend; 0 for no limit *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
         forks: INT;           (* the number of the last worker given a copy of its own *)
         kept: INT;            (* the number of the last report kept in the scratch *)
@@ -122,6 +147,22 @@ type
         client: Http.Client;
         mem: Arena.Arena;     (* a call's work *)
         seen: Buf.Buf;        (* the read-only calls of this turn, "\0" then each "name\1args\0" *)
+    end;
+
+    (* A delegation: the worker, made ready by prepare, and what the
+       lead needs of it once it has worked. *)
+    Worker = record
+        agent: Agent;         (* the worker's own; its prompt the lead's, only read *)
+        prov: Awire.Prov;     (* the lead's, on the worker's model *)
+        conv: Astore.Conv;    (* the brief, then the worker's turn *)
+        copy: Astage.Work;    (* its copy, while staged *)
+        n: INT;               (* the copy's number; 0 for a worker in the lead's zone *)
+        doc: Json.Doc;        (* delegate's arguments, parsed in the lead's arena *)
+        model: []const U8;    (* the worker's model *)
+        task: []const U8;     (* its task, as delegate gave it *)
+        why: Buf.Buf;         (* why its last request failed *)
+        err: ERROR;           (* how its turn ended *)
+        thread: ^Thread.Thread;   (* the thread it works on; nil for the lead's *)
     end;
 
 const
@@ -164,6 +205,9 @@ const
     (* added to it while staged *)
     WorkerCopy = " Your copy was made for this task alone: when you end, the session that leads sees what you " +
         "changed as one diff, and merges it or not.";
+    (* Workers run side by side at most: each holds a copy of the project
+       and a connection to the provider, whose rate limit they share. *)
+    MaxFan = 4;
     MaxReports = 4;     (* earlier reports a brief carries, the newest *)
     MaxReport = 4000;   (* bytes of each *)
     Repeated = "not run: this exact call was already made in this turn and its result " +
@@ -300,24 +344,73 @@ begin
     Arena.reset(a.mem);
 end;
 
-(* The model asked, once, with c's messages; its reply added to them,
-   unless the request failed with nothing said. What it cost is
-   counted, at the price of the model asked, a worker's or the lead's. *)
-proc ask(var a: Agent; var c: Astore.Conv; sys: []const U8; var why: Buf.Buf): ERROR;
-var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; err: ERROR;
+(* The lead's place taken by worker a, and its copy, if it has one,
+   made the zone and the working directory. *)
+proc take(var a: Agent);
 begin
-    r := {prov: a.prov, client: SYSTEM.ADR(a.client), system: sys, msgs: Msgs.all(c.msgs),
-        tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
-            not a.working and (a.mode = Aprompt.build)),
-        emit: a.front.text, arg: a.front.arg, stopped: a.front.stopped};
-    err := Awire.chat(r, reply, u, why);
+    Thread.lock(a.lead^.place);
+    if a.copy # nil then Astage.visit(a.copy^); end;
+end;
+
+(* s copied into a's arena. *)
+proc copied(var a: Agent; s: []const U8): []const U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(SYSTEM.ADR(a.mem.base), s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* tools copied into a's arena: Atools makes its list again for each
+   request, and a worker's request goes on while others make theirs. *)
+proc owned(var a: Agent; tools: []const Awire.Tool): []const Awire.Tool;
+var t: Tools.Vec; i: INT;
+begin
+    Tools.init(t, SYSTEM.ADR(a.mem.base));
+    for i := 0 to LEN(tools) - 1 do
+        Tools.push(t, {name: copied(a, tools[i].name), description: copied(a, tools[i].description),
+            params: copied(a, tools[i].params)});
+    end;
+    return Tools.all(t);
+end;
+
+(* What a request used, u, and cost, in dollars if priced, added to a's sums. *)
+proc count(var a: Agent; const u: Awire.Usage; cost: F64; priced: BOOL);
+begin
     INC(a.used.inp, u.inp);
     INC(a.used.cached, u.cached);
     INC(a.used.written, u.written);
     INC(a.used.out, u.out);
     INC(a.requests);
+    if priced then a.spent := a.spent + cost; else INC(a.unpriced); end;
+end;
+
+(* The model asked, once, with c's messages; its reply added to them,
+   unless the request failed with nothing said. What it cost is
+   counted, at the price of the model asked, a worker's or the lead's,
+   and a worker's in the lead's sums too. A worker lets the lead's
+   place go while it waits for the model. *)
+proc ask(var a: Agent; var c: Astore.Conv; sys: []const U8; var why: Buf.Buf): ERROR;
+var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; cost: F64; err: ERROR;
+begin
+    r := {prov: a.prov, client: SYSTEM.ADR(a.client), system: sys, msgs: Msgs.all(c.msgs),
+        tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
+            not a.working and (a.mode = Aprompt.build)),
+        emit: a.front.text, arg: a.front.arg, stopped: a.front.stopped};
+    if a.working then
+        r.tools := owned(a, r.tools);
+        Thread.unlock(a.lead^.place);
+    end;
+    err := Awire.chat(r, reply, u, why);
+    if a.working then
+        take(a);
+        Arena.reset(a.mem);
+    end;
     price, priced := Aprice.price(a.prov^);
-    if priced then a.spent := a.spent + Aprice.cost(price, u); else INC(a.unpriced); end;
+    cost := 0.0;
+    if priced then cost := Aprice.cost(price, u); end;
+    count(a, u, cost, priced);
+    if a.working then count(a.lead^, u, cost, priced); end;
     (* a worker's context is not the conversation's *)
     if not a.working and (u.inp + u.out > 0) then a.held := u.inp + u.out; end;
     if a.front.counted # nil then a.front.counted(a.front.arg); end;
@@ -400,25 +493,123 @@ begin
     end;
 end;
 
-(* A worker's turn over w, whose one message is its brief: the same
-   loop, on model, which prices it and sets its effort as the provider's
-   params say of it. The front is told that worker number who speaks
-   for the turn, and that the lead does again after it. *)
-proc work(var a: Agent; var w: Astore.Conv; model: []const U8; who: INT; var why: Buf.Buf): ERROR;
-var prov: Awire.Prov; lead: ^Awire.Prov; err: ERROR;
+(* A worker's front *)
+
+(* The lead's front, to be told by the worker whose Agent is at arg:
+   its talk taken, so that workers tell it one at a time, and the
+   worker said to speak. *)
+proc speak(arg: ^U8): ^Agent;
+var w, l: ^Agent;
 begin
-    prov := a.prov^;
-    prov.model := model;
-    lead := a.prov;
-    a.prov := SYSTEM.ADR(prov);
-    a.working := true;
-    if a.front.speaker # nil then a.front.speaker(who, model, a.front.arg); end;
-    err := turn(a, w, why);
-    if a.front.speaker # nil then a.front.speaker(0, "", a.front.arg); end;
-    a.working := false;
-    a.prov := lead;
-    forget(a);   (* what the worker saw is no call of the lead's *)
-    return err;
+    w := ^Agent(arg);
+    l := w^.lead;
+    Thread.lock(l^.talk);
+    if l^.front.speaker # nil then l^.front.speaker(w^.who, "", l^.front.arg); end;
+    return l;
+end;
+
+(* The lead's front l told, by speak, the lead said to speak again, and
+   its talk let go. *)
+proc spoken(l: ^Agent);
+begin
+    if l^.front.speaker # nil then l^.front.speaker(0, "", l^.front.arg); end;
+    Thread.unlock(l^.talk);
+end;
+
+(* The worker's front, each the lead's told between speak and spoken:
+   a piece of its text, *)
+proc workerText(s: []const U8; arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.text # nil then l^.front.text(s, l^.front.arg); end;
+    spoken(l);
+end;
+
+(* a call it makes, *)
+proc workerCall(name, args: []const U8; arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.call # nil then l^.front.call(name, args, l^.front.arg); end;
+    spoken(l);
+end;
+
+(* its result, *)
+proc workerResult(name, res: []const U8; arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.result # nil then l^.front.result(name, res, l^.front.arg); end;
+    spoken(l);
+end;
+
+(* what arno says of its turn, *)
+proc workerNote(s: []const U8; arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.note # nil then l^.front.note(s, l^.front.arg); end;
+    spoken(l);
+end;
+
+(* and a request of its counted. *)
+proc workerCounted(arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.counted # nil then l^.front.counted(l^.front.arg); end;
+    spoken(l);
+end;
+
+(* A worker *)
+
+(* w given what it needs to work for a: its own agent, on a copy of the
+   lead's provider, with an arena, a connection and a front of its own,
+   its conversation and the memory its arguments are parsed in. *)
+proc open(var a: Agent; var w: Worker);
+var f: Front;
+begin
+    w.prov := a.prov^;
+    f := {text: workerText, call: workerCall, result: workerResult, note: workerNote, ask: a.front.ask,
+        why: a.front.why, stopped: a.front.stopped, counted: workerCounted, arg: ^U8(SYSTEM.ADR(w.agent))};
+    w.agent := {prov: SYSTEM.ADR(w.prov), front: f, prune: a.prune, buildSteps: a.buildSteps, worker: a.worker,
+        mode: a.mode, working: true, lead: SYSTEM.ADR(a), prompt: a.prompt, human: a.human};
+    Awire.initClient(w.agent.client);
+    if not Arena.init(w.agent.mem, CallMemory) then Rt.stop("arno: out of memory"); end;
+    Buf.init(w.agent.seen, Heap.heap);
+    Astore.init(w.conv, "worker");
+    if not Json.init(SYSTEM.ADR(w.doc), SYSTEM.ADR(a.mem.base)) then Rt.stop("arno: out of memory"); end;
+    Buf.init(w.why, Heap.heap);
+end;
+
+(* What open gave w let go. *)
+proc close(var w: Worker);
+begin
+    Http.doneClient(w.agent.client);
+    Arena.done(w.agent.mem);
+    Buf.done(w.agent.seen);
+    Astore.done(w.conv);
+    Json.done(SYSTEM.ADR(w.doc));
+    Buf.done(w.why);
+end;
+
+(* Worker w's turn over its conversation, whose one message is its
+   brief: the same loop, on its model, which prices it and sets its
+   effort as the provider's params say of it. It runs on a thread of
+   its own, or on the lead's, holding the lead's place but while it
+   waits for the model (ask). *)
+proc labour(arg: ^U8);
+var w: ^Worker; l: ^Agent;
+begin
+    w := ^Worker(arg);
+    (* the front told the worker's model once, for its label *)
+    l := speak(^U8(SYSTEM.ADR(w^.agent)));
+    if l^.front.speaker # nil then l^.front.speaker(w^.agent.who, w^.model, l^.front.arg); end;
+    spoken(l);
+    take(w^.agent);
+    w^.err := turn(w^.agent, w^.conv, w^.why);
+    Thread.unlock(w^.agent.lead^.place);
 end;
 
 (* How many steps the worker took over w: its requests answered. *)
@@ -464,37 +655,39 @@ begin
     return Files.write(Buf.bytes(path), Buf.bytes(b));
 end;
 
-(* What worker n, 0 for one in the lead's zone, reported over w, added
-   to out, and kept with its task for the next workers' briefs. One
-   that stopped at its cap, its steps used, is said to have. false if
-   there was no report. The report line names the worker's model. *)
-proc told(var a: Agent; n: INT; model, task: []const U8; const w: Astore.Conv; cost: F64; var out: Buf.Buf): BOOL;
-var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf;
+(* What worker w, numbered n, 0 for one in the lead's zone, reported,
+   added to out, and kept with its task for the next workers' briefs.
+   One that stopped at its cap, its steps used, is said to have. false
+   if there was no report. The report line names the worker's model. *)
+proc told(var a: Agent; const w: Worker; var out: Buf.Buf): BOOL;
+var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf; cost, allowance: F64;
 begin
-    msgs := Msgs.all(w.msgs);
+    msgs := Msgs.all(w.conv.msgs);
     report := "";
     if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
     if LEN(report) = 0 then return false; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    Fmt.write(b, "{}\n\n{}", [Fmt.str(task), Fmt.str(report)]);
+    Fmt.write(b, "{}\n\n{}", [Fmt.str(w.task), Fmt.str(report)]);
     Strs.push(a.reports, Amsg.keep(Buf.bytes(b)));
+    cost := w.agent.spent;
+    allowance := w.agent.allowance;
     (* a turn at its cap hands back once more, a step past it *)
-    if steps(w) > a.buildSteps then
+    if steps(w.conv) > a.buildSteps then
         Fmt.write(out, "The worker stopped at its cap of {} steps; its report says where it got to: brief the " +
             "next worker to go on from there.\n", [Fmt.int(a.buildSteps)]);
-    elsif (a.allowance > 0.0) and (cost > a.allowance) then
+    elsif (allowance > 0.0) and (cost > allowance) then
         Fmt.write(out, "The worker stopped at its budget of ${}; its report says where it got to: brief the " +
-            "next worker to go on from there.\n", [Fmt.real(a.allowance, 2)]);
+            "next worker to go on from there.\n", [Fmt.real(allowance, 2)]);
     end;
     Buf.str(out, "worker ");
-    if n > 0 then Fmt.write(out, "{} ", [Fmt.int(n)]); end;
-    Fmt.write(out, "({}) report ({} steps, ${})", [Fmt.str(model), Fmt.int(steps(w)), Fmt.real(cost, 2)]);
+    if w.n > 0 then Fmt.write(out, "{} ", [Fmt.int(w.n)]); end;
+    Fmt.write(out, "({}) report ({} steps, ${})", [Fmt.str(w.model), Fmt.int(steps(w.conv)), Fmt.real(cost, 2)]);
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
     (* a worker with no number, in the lead's zone, keeps no conversation *)
-    if (n > 0) and keepWorker(n, w, path) then Fmt.write(out, ", conversation in {}", [Fmt.str(Buf.bytes(path))]); end;
+    if (w.n > 0) and keepWorker(w.n, w.conv, path) then Fmt.write(out, ", conversation in {}", [Fmt.str(Buf.bytes(path))]); end;
     Fmt.write(out, ":\n{}", [Fmt.str(report)]);
     return true;
 end;
@@ -548,96 +741,119 @@ begin
     end;
 end;
 
-(* delegate, with the arguments args: the brief made from them, and a
-   worker's turn run on it, in a copy of its own while staged; its
-   report, or why there is none, and what it changed added to out. *)
-proc delegate(var a: Agent; args: []const U8; var out: Buf.Buf);
-var d: Json.Doc; p: Atools.Args; argMem: Arena.Arena; w: Astore.Conv; copy: Astage.Work; m: ^Amsg.Msg;
-    b, why, role: Buf.Buf; task, model, named: []const U8; n, who: INT; err: ERROR; budget, before: F64;
+(* Worker w, opened, made ready for delegate's arguments args, one of
+   k that start together: its brief, its model, its budget, and its
+   copy while staged, left for the lead's until it works. false if it
+   can't be, why added to out. *)
+proc ready(var a: Agent; args: []const U8; k: INT; var w: Worker; var out: Buf.Buf): BOOL;
+var p: Atools.Args; m: ^Amsg.Msg; b, role: Buf.Buf; named: []const U8; n: INT; budget: F64;
 begin
     if a.working then
         Buf.str(out, "error: a worker cannot delegate");
-        return;
+        return false;
     end;
     if LEN(a.worker) = 0 then
         Buf.str(out, "error: there is no worker model; the human sets them with workers = MODEL ... in the config");
-        return;
+        return false;
     end;
-    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
-    defer Json.done(SYSTEM.ADR(d));
-    Buf.init(b, Heap.heap);
-    defer Buf.done(b);
-    Buf.init(why, Heap.heap);
-    defer Buf.done(why);
-    (* the arguments are parsed in memory of the delegation's own, as the
-       worker's turn resets the call's arena and task is wanted after it *)
-    if not Arena.init(argMem, CallMemory) then Rt.stop("arno: out of memory"); end;
-    defer Arena.done(argMem);
-    if not Atools.parse(SYSTEM.ADR(d), SYSTEM.ADR(argMem.base), args, p) then
+    if not Atools.parse(SYSTEM.ADR(w.doc), SYSTEM.ADR(a.mem.base), args, p) then
         Buf.str(out, "error: the arguments must be one JSON object, as the tool's schema says");
-        return;
+        return false;
     end;
-    task := Str.trim(Atools.str(p, "task"));
-    if LEN(task) = 0 then
+    w.task := Str.trim(Atools.str(p, "task"));
+    if LEN(w.task) = 0 then
         Buf.str(out, "error: task is required: what the worker is to do, in full");
-        return;
+        return false;
     end;
-    model := Str.trim(Atools.str(p, "model"));
-    if LEN(model) = 0 then model := a.worker; end;
-    if not Atools.isWorker(model) then
-        Fmt.write(out, "error: {} is not a worker model; the models are: {}", [Fmt.str(model), Fmt.str(Atools.workerModels())]);
-        return;
+    w.model := Str.trim(Atools.str(p, "model"));
+    if LEN(w.model) = 0 then w.model := a.worker; end;
+    if not Atools.isWorker(w.model) then
+        Fmt.write(out, "error: {} is not a worker model; the models are: {}", [Fmt.str(w.model), Fmt.str(Atools.workerModels())]);
+        return false;
     end;
+    w.prov.model := w.model;
     (* a worker is paid out of the lead's turn: what it asks for, at most
-       what the turn has left, and all of that when it asks for nothing *)
+       its share of what the turn has left, and all of that share when it
+       asks for nothing; so workers that start together can't overspend *)
     budget := Atools.real(p, "budget", 0.0);
     if a.stopAt > 0.0 then
         if a.spent >= a.stopAt then
             Buf.str(out, "error: your turn's budget is spent, so no worker can be paid for: say where you got to");
-            return;
+            return false;
         end;
-        if (budget <= 0.0) or (budget > a.stopAt - a.spent) then budget := a.stopAt - a.spent; end;
+        if (budget <= 0.0) or (budget > (a.stopAt - a.spent) / F64(k)) then budget := (a.stopAt - a.spent) / F64(k); end;
     end;
-    a.allowance := budget;
+    w.agent.allowance := budget;
     Buf.init(role, Heap.heap);
     defer Buf.done(role);
     named := Str.trim(Atools.str(p, "role"));
     if (LEN(named) > 0) and not Atools.roleText(named, role) then
         Fmt.write(out, "error: {} is not a role; the roles are: {}", [Fmt.str(named), Fmt.str(Atools.roleNames())]);
-        return;
+        return false;
     end;
-    Astore.init(w, "worker");
-    defer Astore.done(w);
-    m := Msgs.add(w.msgs);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    m := Msgs.add(w.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
-    brief(a, p, task, Buf.bytes(role), b);
+    brief(a, p, w.task, Buf.bytes(role), b);
     Amsg.setText(m^, Buf.bytes(b));
 
     (* staged, the worker gets a copy of its own; safe, there is none to
        make it from, and it works in the lead's zone *)
-    n := 0;
     if (LEN(Afence.stage) > 0) and (LEN(Afence.scratch) > 0) then
         n := nextWorker(a);
-        if not Astage.fork(n, copy, why) then
-            Fmt.write(out, "error: cannot make the worker's copy: {}", [Fmt.str(Buf.bytes(why))]);
-            return;
+        if not Astage.fork(n, w.copy, w.why) then
+            Fmt.write(out, "error: cannot make the worker's copy: {}", [Fmt.str(Buf.bytes(w.why))]);
+            return false;
         end;
-        who := n;
+        Astage.leave(w.copy);   (* the next is forked from the lead's copy; labour comes back *)
+        w.n := n;
+        w.agent.copy := SYSTEM.ADR(w.copy);
+        w.agent.who := n;
     else
         INC(a.forks);   (* in the lead's zone it is still a worker, and has a number *)
-        who := a.forks;
+        w.agent.who := a.forks;
     end;
     Buf.reset(b);
-    Fmt.write(b, "worker {}: {}", [Fmt.str(model), Fmt.str(task[0..min(LEN(task), 120)])]);
+    Fmt.write(b, "worker {}: {}", [Fmt.str(w.model), Fmt.str(w.task[0..min(LEN(w.task), 120)])]);
     note(a, Buf.bytes(b));
-    Buf.reset(why);
-    before := a.spent;
-    err := work(a, w, model, who, why);
-    if not told(a, n, model, task, w, a.spent - before, out) then
-        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w))]);
-        if err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(why))]); end;
+    return true;
+end;
+
+(* Worker w's work over: its report, or why there is none, added to
+   out, and what it changed in its copy handed in. *)
+proc finish(var a: Agent; var w: Worker; var out: Buf.Buf);
+begin
+    if not told(a, w, out) then
+        Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w.conv))]);
+        if w.err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(w.why))]); end;
     end;
-    if n > 0 then handIn(n, copy, out); end;
+    if w.n > 0 then handIn(w.n, w.copy, out); end;
+end;
+
+(* delegate, the calls, each result added to results: each worker made
+   ready in turn (ready), so that none sees another's report; run, side
+   by side on threads of their own when there are several, else on the
+   lead's (labour); then each finished, in the calls' order. *)
+proc fan(var a: Agent; calls: []Amsg.Call; results: []Buf.Buf);
+var ws: [MaxFan]Worker; made: [MaxFan]BOOL; i: INT;
+begin
+    for i := 0 to LEN(calls) - 1 do
+        open(a, ws[i]);
+        made[i] := ready(a, calls[i].args, LEN(calls), ws[i], results[i]);
+    end;
+    for i := 0 to LEN(calls) - 1 do
+        if made[i] and (LEN(calls) > 1) then ws[i].thread, _ := Thread.spawn(labour, ^U8(SYSTEM.ADR(ws[i]))); end;
+        (* alone, or with no thread to be had, it works on the lead's *)
+        if made[i] and (ws[i].thread = nil) then labour(^U8(SYSTEM.ADR(ws[i]))); end;
+    end;
+    for i := 0 to LEN(calls) - 1 do
+        if ws[i].thread # nil then Thread.join(ws[i].thread); end;
+    end;
+    for i := 0 to LEN(calls) - 1 do
+        if made[i] then finish(a, ws[i], results[i]); end;
+        close(ws[i]);
+    end;
 end;
 
 (* merge, with the arguments args: worker n's diff, from the scratch
@@ -769,48 +985,78 @@ begin
     end;
 end;
 
+(* How many of calls, from the first, run together: the delegations
+   that begin them, up to MaxFan, when the lead's workers would each
+   have a copy of their own and nothing holds them back; else 1. *)
+proc together(const a: Agent; const c: Astore.Conv; calls: []Amsg.Call): INT;
+var n: INT;
+begin
+    if a.working or (LEN(Afence.stage) = 0) or (LEN(Afence.scratch) = 0) or stopped(a) then return 1; end;
+    if (a.mode = Aprompt.build) and not approved(c) then return 1; end;
+    n := 0;
+    while (n < LEN(calls)) and (n < MaxFan) and (calls[n].name = "delegate") do INC(n); end;
+    if n < 2 then return 1; end;
+    return n;
+end;
+
+(* calls, which together gave, answered, each result into results:
+   several are all delegations, and run side by side (fan). *)
+proc answer(var a: Agent; const c: Astore.Conv; calls: []Amsg.Call; results: []Buf.Buf);
+var name, args: []const U8;
+begin
+    name := calls[0].name;
+    args := calls[0].args;
+    if stopped(a) then
+        Buf.str(results[0], Interrupted);
+    elsif again(a, name, args) then
+        Buf.str(results[0], Repeated);
+    elsif (a.mode = Aprompt.build) and not a.working and waits(name) and not approved(c) then
+        Buf.str(results[0], Unplanned);
+    elsif (name = "plan") and (a.mode = Aprompt.build) and not a.working then
+        plan(a, args, results[0]);
+    elsif name = "delegate" then
+        fan(a, calls, results);
+    elsif name = "merge" then
+        merge(a, args, results[0]);
+    else
+        Atools.call(name, args, a.human, SYSTEM.ADR(a.mem.base), results[0]);
+    end;
+    Arena.reset(a.mem);
+end;
+
 (* The calls of c's last message run, each result added to c as a
    tool's message: how many of them failed. Once the human says to
    stop, the calls left aren't run, but answered all the same, as a
-   request must answer every call. *)
+   request must answer every call. Delegations that run together are
+   all told before any runs, and their results after. *)
 proc run(var a: Agent; var c: Astore.Conv): INT;
-var calls: []Amsg.Call; res: Buf.Buf; m: ^Amsg.Msg; i, bad: INT;
+var calls: []Amsg.Call; res: [MaxFan]Buf.Buf; m: ^Amsg.Msg; i, j, k, bad: INT;
 begin
-    Buf.init(res, Heap.heap);
-    defer Buf.done(res);
+    for k := 0 to MaxFan - 1 do Buf.init(res[k], Heap.heap); end;
     (* the calls stay where they are as messages are added: a message
        keeps its calls in memory of their own *)
     calls := Calls.all(Msgs.all(c.msgs)[c.msgs.len - 1].calls);
     bad := 0;
-    for i := 0 to LEN(calls) - 1 do
-        Buf.reset(res);
-        if a.front.call # nil then a.front.call(calls[i].name, calls[i].args, a.front.arg); end;
-        if stopped(a) then
-            Buf.str(res, Interrupted);
-        elsif again(a, calls[i].name, calls[i].args) then
-            Buf.str(res, Repeated);
-        elsif (a.mode = Aprompt.build) and not a.working and waits(calls[i].name) and not approved(c) then
-            Buf.str(res, Unplanned);
-        elsif (calls[i].name = "plan") and (a.mode = Aprompt.build) and not a.working then
-            plan(a, calls[i].args, res);
-            Arena.reset(a.mem);
-        elsif calls[i].name = "delegate" then
-            delegate(a, calls[i].args, res);
-        elsif calls[i].name = "merge" then
-            merge(a, calls[i].args, res);
-            Arena.reset(a.mem);
-        else
-            Atools.call(calls[i].name, calls[i].args, a.human, SYSTEM.ADR(a.mem.base), res);
-            Arena.reset(a.mem);
+    i := 0;
+    while i < LEN(calls) do
+        j := i + together(a, c, calls[i..LEN(calls)]);
+        for k := i to j - 1 do
+            Buf.reset(res[k - i]);
+            if a.front.call # nil then a.front.call(calls[k].name, calls[k].args, a.front.arg); end;
         end;
-        if a.front.result # nil then a.front.result(calls[i].name, Buf.bytes(res), a.front.arg); end;
-        if failed(Buf.bytes(res)) then INC(bad); end;
-        m := Msgs.add(c.msgs);
-        Amsg.init(m^, Amsg.Role.tool);
-        m^.callId := Amsg.keep(calls[i].id);
-        m^.tool := Amsg.keep(calls[i].name);
-        Amsg.setText(m^, Buf.bytes(res));
+        answer(a, c, calls[i..j], res[0..j - i]);
+        for k := i to j - 1 do
+            if a.front.result # nil then a.front.result(calls[k].name, Buf.bytes(res[k - i]), a.front.arg); end;
+            if failed(Buf.bytes(res[k - i])) then INC(bad); end;
+            m := Msgs.add(c.msgs);
+            Amsg.init(m^, Amsg.Role.tool);
+            m^.callId := Amsg.keep(calls[k].id);
+            m^.tool := Amsg.keep(calls[k].name);
+            Amsg.setText(m^, Buf.bytes(res[k - i]));
+        end;
+        i := j;
     end;
+    for k := 0 to MaxFan - 1 do Buf.done(res[k]); end;
     return bad;
 end;
 
@@ -990,16 +1236,15 @@ end;
 
 (* delegate names its model: one of the workers, else refused with the list. *)
 proc testModel(): BOOL;
-var a: Agent; p: Awire.Prov; out: Buf.Buf;
+var a: Agent; p: Awire.Prov; c: Astore.Conv; said: []const U8;
 begin
     init(a, SYSTEM.ADR(p), {});
     a.worker := "cheap";
     Atools.workers("cheap strong", "cheap", p);
-    Buf.init(out, Heap.heap);
-    defer Buf.done(out);
-    delegate(a, `{"task":"t","done_when":"d","model":"other"}`, out);
+    Astore.init(c, "test");
+    said := called(a, c, "delegate", `{"task":"t","done_when":"d","model":"other"}`);
     Atools.workers("", "", p);
-    if Buf.bytes(out) # "error: other is not a worker model; the models are: cheap strong" then
+    if said # "error: other is not a worker model; the models are: cheap strong" then
         Out.str("Agent: a model not a worker\n");
         return false;
     end;

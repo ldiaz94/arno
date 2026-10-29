@@ -38,6 +38,9 @@
    it ends, the zone is the lead's copy again, the worker's work is
    one diff against where it began (gather), and its copy is removed.
    The lead then brings that diff into its own copy (carry) or not.
+   The zone and the working directory are the process's, one at a
+   time: workers side by side each make theirs the zone whenever they
+   work (visit), and the lead's is put back between (leave).
 
      the stage's copy               a worker's copy
             |  fork: as it stands ---> |   its base
@@ -86,6 +89,7 @@ type
         base: []U8;   (* the tree it began as: the stage's copy then *)
         lead: []U8;   (* the stage's copy, the zone to go back to *)
         back: []U8;   (* the working directory to go back to *)
+        here: []U8;   (* the working directory in the copy, as fork put it *)
     end;
 
 var
@@ -505,7 +509,26 @@ begin
     Afence.useStage(Buf.bytes(dir));
     w.dir := Amsg.keep(Afence.stage);
     enter(w.lead, w.dir);
+    cwd, e := Sys.workDir();
+    if e # 0 then cwd := w.dir; end;
+    w.here := Amsg.keep(cwd);
     return true;
+end;
+
+(* Worker w's copy made the stage, the zone and the working directory
+   again, as fork left them: workers side by side take turns at them. *)
+proc visit*(const w: Work);
+begin
+    Afence.useStage(w.dir);
+    if Sys.setWorkDir(w.here) # 0 then _ := Sys.setWorkDir(w.dir); end;
+end;
+
+(* The lead's copy made the stage and the zone again, and the working
+   directory put back where fork found it; w's copy stays. *)
+proc leave*(const w: Work);
+begin
+    Afence.useStage(w.lead);
+    if Sys.setWorkDir(w.back) # 0 then _ := Sys.setWorkDir(w.lead); end;
 end;
 
 (* What git's numstat line, "added removed path", says, added to out
@@ -554,8 +577,7 @@ end;
 proc gather*(var w: Work; var diff, stat, why: Buf.Buf): INT;
 var n: INT;
 begin
-    Afence.useStage(w.lead);
-    if Sys.setWorkDir(w.back) # 0 then _ := Sys.setWorkDir(w.lead); end;
+    leave(w);
     n := taken(w, diff, stat, why);
     uproot(w.dir);
     Str.free(Heap.heap, w.dir);
@@ -563,6 +585,7 @@ begin
     Str.free(Heap.heap, w.base);
     Str.free(Heap.heap, w.lead);
     Str.free(Heap.heap, w.back);
+    Str.free(Heap.heap, w.here);
     w := {};
     return n;
 end;
@@ -629,6 +652,12 @@ begin
     expect("and ours", yes(Afence.ours("../a.txt")), "yes");
     expect("the lead's copy is not", yes(Afence.ours(Buf.bytes(lead))), "no");
     expect("in the same place", sh("pwd -P"), src(w.dir));
+    leave(w);
+    expect("left, the lead's copy is the zone", yes(Afence.zone = Buf.bytes(lead)), "yes");
+    expect("and the place", sh("pwd -P"), src(Buf.bytes(lead)));
+    visit(w);
+    expect("visited, the worker's copy is the zone", yes(Afence.zone = w.dir), "yes");
+    expect("and the place", sh("pwd -P"), src(w.dir));
     expect("the lead's unapplied work comes", sh("tail -n 1 ../a.txt"), "again");
     expect("the dependencies come", sh("test -L ../node_modules && echo linked"), "linked");
     _ := sh("printf 'worker\\n' >> ../a.txt && printf 'w\\n' > ../w.txt");

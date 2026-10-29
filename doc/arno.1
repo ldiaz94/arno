@@ -917,7 +917,8 @@ writes Claude Code's agents there.
 A worker is paid out of the turn's budget: the step's
 .Cm budget
 if it names one, at most what the turn has left, and all of that if
-not; a turn with nothing left delegates nothing.
+not (an even share of it, for workers that start together); a turn
+with nothing left delegates nothing.
 Its budget, not
 .Cm max_steps ,
 is what bounds it, as a cheaper model takes more steps; it stops after
@@ -948,6 +949,17 @@ The report names the model.
 Offered only when
 .Cm workers
 is set.
+.Pp
+Staged, the delegations a reply begins with, up to four, run side by
+side, each worker on a thread of its own.
+Their briefs are made before any starts, so none carries another's
+report; each is paid at most an even share of what the turn has left;
+and their results come back in the order of the calls.
+Their requests to the models go on at once, but their tool calls take
+turns, one at a time, as each makes its own copy the working directory
+for them.
+A stop stops them all.
+Safe, workers run one after another.
 .It Ic merge
 A staged worker's diff, by its number, applied to the stage's copy or
 dropped, and then removed.

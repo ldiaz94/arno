@@ -96,7 +96,8 @@ const
             "yourself. A worker starts blank and sees only your brief, so brief it richly: the paths, the exact " +
             "excerpts and signatures it needs, quoted rather than left to find, the project's rules that matter, " +
             "and done_when. Pass on what earlier workers found and read, so that nobody reads it again. Prefer a " +
-            "few larger steps to many small ones. Tell each worker to batch its probes, several commands to a " +
+            "few larger steps to many small ones. Steps that don't wait on each other's reports can go out " +
+            "together, several delegate calls in one reply: staged, their workers run side by side. Tell each worker to batch its probes, several commands to a " +
             "call. A worker that ran out of steps reports where it got to: the next one's brief starts there. " +
             "When delegate lists several models, choose one per step: a stronger one for a hard or delicate step, " +
             "a cheaper one for mechanical work, and say which, and why, in a line of your reasoning.\n" +
