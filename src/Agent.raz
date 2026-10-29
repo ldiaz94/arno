@@ -109,6 +109,7 @@ type
         allowance: F64;       (* dollars the worker under way may spend; 0 for no limit *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
         forks: INT;           (* the number of the last worker given a copy of its own *)
+        kept: INT;            (* the number of the last report kept in the scratch *)
         prompt*: Aprompt.Prompt;
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
         requests*: INT;       (* how many there were *)
@@ -286,8 +287,13 @@ begin
             INC(n);
         end;
         if LEN(rest) = 0 then continue; end;
-        Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
-            [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
+        if m[k].tool = "delegate" then
+            Fmt.write(b, "{}{} more bytes, cut from the history as old; the whole report is in the file its first " +
+                "line names: read it, as calling again would run a new worker]", [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
+        else
+            Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
+                [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
+        end;
         Amsg.setText(m[k], Buf.bytes(b));
     end;
     Arena.reset(a.mem);
@@ -423,12 +429,29 @@ begin
     return n;
 end;
 
+(* report kept in the scratch directory as report-K.md, the first K
+   free, its path into path: a worker's report is the one result that
+   can't be had again by calling again, so a cut of it (prune) points
+   here. false if there is no scratch or it can't be written. *)
+proc keepReport(var a: Agent; report: []const U8; var path: Buf.Buf): BOOL;
+var e: INT;
+begin
+    if LEN(Afence.scratch) = 0 then return false; end;
+    repeat
+        INC(a.kept);
+        Buf.reset(path);
+        Fmt.write(path, "{}/report-{}.md", [Fmt.str(Afence.scratch), Fmt.int(a.kept)]);
+        _, e := Sys.info(Buf.bytes(path));
+    until e # 0;
+    return Files.write(Buf.bytes(path), report);
+end;
+
 (* What worker n, 0 for one in the lead's zone, reported over w, added
    to out, and kept with its task for the next workers' briefs. One
    that stopped at its cap, its steps used, is said to have. false if
    there was no report. The report line names the worker's model. *)
 proc told(var a: Agent; n: INT; model, task: []const U8; const w: Astore.Conv; cost: F64; var out: Buf.Buf): BOOL;
-var msgs: []Amsg.Msg; report: []const U8; b: Buf.Buf;
+var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf;
 begin
     msgs := Msgs.all(w.msgs);
     report := "";
@@ -448,7 +471,12 @@ begin
     end;
     Buf.str(out, "worker ");
     if n > 0 then Fmt.write(out, "{} ", [Fmt.int(n)]); end;
-    Fmt.write(out, "({}) report ({} steps, ${}):\n{}", [Fmt.str(model), Fmt.int(steps(w)), Fmt.real(cost, 2), Fmt.str(report)]);
+    Fmt.write(out, "({}) report ({} steps, ${})", [Fmt.str(model), Fmt.int(steps(w)), Fmt.real(cost, 2)]);
+    (* on the first line, which a cut keeps (prune) *)
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
+    Fmt.write(out, ":\n{}", [Fmt.str(report)]);
     return true;
 end;
 
@@ -980,6 +1008,23 @@ begin
     end;
     if not Str.hasPrefix(Msgs.all(c.msgs)[1].text, Buf.bytes(long)[0..1140]) then
         Out.str("Agent: prune keeps the head\n");
+        return 1;
+    end;
+    (* a worker's report, cut, points to the file it is kept in, not to a call again *)
+    Astore.init(c, "test");
+    for i := 0 to 5 do
+        m := Msgs.add(c.msgs);
+        Amsg.init(m^, Amsg.Role.assistant);
+        Amsg.addCall(m^, "c", "delegate", "{}", "");
+        m := Msgs.add(c.msgs);
+        Amsg.init(m^, Amsg.Role.tool);
+        m^.tool := Amsg.keep("delegate");
+        Amsg.setText(m^, Buf.bytes(long));
+    end;
+    prune(a, c);
+    if not Str.hasSuffix(Msgs.all(c.msgs)[1].text, "the whole report is in the file its first line names: read it, as " +
+        "calling again would run a new worker]") then
+        Out.str("Agent: prune, a report\n");
         return 1;
     end;
     if not testPlan() or not testModel() then return 1; end;
