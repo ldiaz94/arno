@@ -445,7 +445,7 @@ Leave; so does
 and C-d on an empty input.
 .El
 .Sh MODES
-A mode changes the instructions the model works under, and in two cases
+A mode changes the instructions the model works under, and in three
 what it may do.
 S-Tab steps through them, and
 .Cm mode
@@ -468,6 +468,31 @@ Offered no tool that changes files, and no
 .It Cm pair
 Build a feature with you: ask when the goal is unclear, plan, then edit
 in small steps, stopping after each.
+.It Cm build
+Lead workers through a larger job.
+The model settles the goal with you and puts a plan to you with
+.Ic plan ;
+until you approve one it edits, moves, removes and delegates nothing,
+though it may look around with
+.Ic shell .
+Then it hands each step to a worker with
+.Ic delegate ,
+or does it itself when no
+.Cm worker
+is set, reviews what each did, runs
+.Ic check ,
+and fixes only small things itself.
+A turn here is bounded by
+.Cm build_steps
+and
+.Cm build_budget
+in place of
+.Cm max_steps
+and
+.Cm turn_budget .
+It works best staged; set while safe,
+.Ic /mode build
+says so.
 .El
 .Pp
 .Nm
@@ -756,6 +781,21 @@ Only its report goes back to the model.
 Offered only when
 .Cm worker
 is set.
+.It Ic plan
+The plan of
+.Cm build
+mode, shown to you to approve or decline with a reason, and kept as
+.Pa plan.md
+in the conversation's scratch directory.
+The approval is the conversation's: the last answer to
+.Ic plan
+in it counts, so
+.Ic /new
+starts without one.
+With nobody to ask, the answer is no.
+Offered only in
+.Cm build
+mode.
 .It MCP tools
 Whatever the configured MCP servers offer, each named
 .Ar server Ns _ Ns Ar tool ;
@@ -1404,6 +1444,18 @@ Bytes of history past which old tool results are cut, 200000 by default;
 Dollars at list price one turn may spend, workers included; past it the
 model is asked to say where it got to and stop.
 Unset, or 0, is no limit.
+.It Cm build_steps
+Steps of tool calls a turn takes in
+.Cm build
+mode, in place of
+.Cm max_steps ;
+200 by default.
+.It Cm build_budget
+Dollars at list price a turn may spend in
+.Cm build
+mode, in place of
+.Cm turn_budget ;
+3.00 by default, 0 for no limit.
 .It Cm searxng
 The base URL of a SearXNG instance for
 .Ic search .

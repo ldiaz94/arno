@@ -47,8 +47,10 @@ import SYSTEM;
 type
     (* How the model is to work, which the human picks. review and
        improve only look: they aren't offered the tools that change
-       files, so that a review can't turn into changes nobody asked for. *)
-    Mode* = (chat, review, improve, pair);
+       files, so that a review can't turn into changes nobody asked for.
+       build leads workers, and changes nothing before the human
+       approves its plan (Agent). *)
+    Mode* = (chat, review, improve, pair, build);
 
     ModeInfo* = record
         name*: []const U8;
@@ -64,7 +66,7 @@ type
 
 const
     ContextKept = "context.json";   (* where the answer about the context files is kept, by project *)
-    Modes*: [4]ModeInfo = [
+    Modes*: [5]ModeInfo = [
         {name: "chat", hint: "questions, explanations, small edits",
             text: "Mode: chat. Answer what is asked: explain, compare, discuss. Do not propose patches, " +
             "sketches or lists of what could be changed unless the human asks for a change; then keep it small."},
@@ -79,7 +81,24 @@ const
         {name: "pair", hint: "build a feature together, step by step",
             text: "Mode: pairing on a feature. Make sure you understand the goal; ask when it is ambiguous. Read " +
             "the relevant code, propose a short plan, then carry it out in small edits, one step at a time, and " +
-            "stop after each step so the human can check it."}];
+            "stop after each step so the human can check it."},
+        {name: "build", hint: "plan with the human, then lead workers through it",
+            text: "Mode: build. You lead: you plan, hand the steps to workers, and review what they did.\n" +
+            "1. Plan first. Settle the goal with the human, asking what is unclear, and read enough of the code " +
+            "to plan well. Then call plan with the plan: the goal, the steps in order, each with the files it " +
+            "touches and how it is checked, and what is left out. Nothing is edited or delegated until the human " +
+            "approves a plan; when they decline, revise it as they say and call plan again. A new goal needs a " +
+            "new plan.\n" +
+            "2. Carry it out. When delegate is offered, hand each step to a worker; when it is not, do the steps " +
+            "yourself. A worker starts blank and sees only your brief, so brief it richly: the paths, the exact " +
+            "excerpts and signatures it needs, quoted rather than left to find, the project's rules that matter, " +
+            "and done_when. Pass on what earlier workers found and read, so that nobody reads it again. Prefer a " +
+            "few larger steps to many small ones. Tell each worker to batch its probes, several commands to a " +
+            "call. A worker that ran out of steps reports where it got to: the next one's brief starts there.\n" +
+            "3. Review each worker's report and its changes, and run check.\n" +
+            "4. Fix only small things yourself, a few lines; anything more goes back to a worker with what is " +
+            "wrong and where.\n" +
+            "End with what was built, check's verdict, and what is left."}];
 
     Commands*: []Command = [
         {name: "/help", args: "", desc: "keys and commands"},

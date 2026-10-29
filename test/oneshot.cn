@@ -290,6 +290,23 @@ holds('/mode', 'err', 'arno: modes: chat review improve pair')
 holds('/tools', 'out', 'read  ')
 grep -q '^edit  ' "$dir/out"
 if status = 0 then fail('review mode offers edit')
+
+// build mode: no change before a plan is approved; a plan declined
+// with a reason, then approved, and kept in the scratch directory
+plan := '{"plan":"1. make it"}'
+answering([], '/mode build' + #10 + 'call edit ' + edit + #10 + 'call plan ' + plan + #10 + 'n' + #10 +
+  'too vague' + #10 + 'call plan ' + plan + #10 + 'y')
+holds('/mode build', 'out', 'mode: build; build works best staged (/safety auto)')
+holds('build, unplanned', 'out', 'the tool said: not run: in build mode nothing is changed')
+holds('a plan', 'err', 'carry out this plan? [y/N]')
+holds('a plan declined', 'out', 'the tool said: declined by user: too vague. Revise the plan')
+holds('a plan approved', 'out', 'the tool said: approved: the human approved the plan')
+plans := glob("$dir/cache/arno/scratch/*/plan.md")
+if length(plans) <> 1 then fail('no plan.md in the scratch')
+else begin
+  kept := plans[0]
+  if `cat $kept` <> '1. make it' then fail('plan.md: ' + `cat $kept`)
+end
 answering([], '/system Be brief.' + #10 + 'system' + #10 + '/system')
 holds('/system', 'out', 'Be brief.' + #10 + #10 + '# Workspace')
 holds('/system', 'out', "this conversation's own system prompt")

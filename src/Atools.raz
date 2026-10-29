@@ -45,8 +45,8 @@
    run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
    Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
    rnet's Http (search and fetch), rjson's Json.
-   Delegate is the agent's, which runs the worker; it is described
-   here, with the rest. A call of an MCP server's tool is asked about
+   Delegate and plan are the agent's, which runs the worker and keeps
+   the plan; they are described here, with the rest. A call of an MCP server's tool is asked about
    every time, and is not fenced. A change in the conversation's scratch
    directory (Afence.ours) needs no approval, and run, check and shell
    see its path as $ARNO_SCRATCH. shell is offered only while the
@@ -287,7 +287,15 @@ const
             `{"task":{"type":"string","description":"what to do, in full: the worker knows nothing else"},` +
             `"files":{"type":"array","items":{"type":"string"},"description":"the files it will read or change"},` +
             `"done_when":{"type":"string","description":"how the worker knows the step is done"}},` +
-            `"required":["task","done_when"]}`}];
+            `"required":["task","done_when"]}`},
+        {name: "plan",
+         description: "Put your plan to the human for approval. It is written to plan.md in the scratch " +
+            "directory and shown to them; nothing is edited or delegated until they approve one. After a no, " +
+            "their reason comes back: revise the plan as they say and call plan again.",
+         params: `{"type":"object","properties":` +
+            `{"plan":{"type":"string","description":"the plan in Markdown: the goal, the steps in order, each with ` +
+            `the files it touches and how it is checked, and what is left out"}},` +
+            `"required":["plan"]}`}];
 
     (* What git may run, and what may follow git branch --list. *)
     GitVerbs = " status diff log show blame branch merge-base ls-tree rev-list ";
@@ -865,7 +873,7 @@ end;
 
 (* "declined by user" added to out, then the human's reason if they give
    one, then ending, which says what was left undone. *)
-proc declined(const h: Human; ending: []const U8; var out: Buf.Buf);
+proc declined*(const h: Human; ending: []const U8; var out: Buf.Buf);
 var why: []const U8;
 begin
     Buf.str(out, "declined by user");
@@ -1745,9 +1753,10 @@ end;
 (* The tools a request offers: Offered, less those that change files
    unless edits, a mode's say, and those that could only fail: search
    without a SearXNG, note outside a project, delegate unless lead, a
-   session with a worker model, which a worker isn't; and then the MCP
-   servers' tools, in every mode. *)
-proc offered*(lead, edits: BOOL): []Awire.Tool;
+   session with a worker model, which a worker isn't, and plan unless
+   plan, build mode's lead; and then the MCP servers' tools, in every
+   mode. *)
+proc offered*(lead, edits, plan: BOOL): []Awire.Tool;
 var b: Buf.Buf; i: INT;
 begin
     Buf.init(b, Heap.heap);
@@ -1759,6 +1768,7 @@ begin
         | "search": if LEN(searx) = 0 then continue; end;
         | "note": if not Afence.rooted then continue; end;
         | "delegate": if not lead then continue; end;
+        | "plan": if not plan then continue; end;
         | "editor", "open": if not Apeer.reachable() then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": Tools.push(offer, runOffer(Offered[i])); continue;
@@ -1932,6 +1942,8 @@ begin
         fetch(a, mem, res);
     elsif name = "delegate" then
         Buf.str(res, "error: there are no workers here");
+    elsif name = "plan" then
+        Buf.str(res, "error: plan is for build mode's lead");
     elsif Amcp.owns(name) then
         mcp(name, a, h, res);
     else
@@ -2050,7 +2062,7 @@ begin
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
         "error: there is no tool named \"write\". The tools are: read find grep def outline git run check shell edit move remove note " +
-        "search fetch delegate");
+        "search fetch delegate plan");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");
@@ -2095,8 +2107,8 @@ begin
     if asked # 0 then Out.str("Atools: a granted directory asked again\n"); failed := true; end;
 
     (* shell, in the jail; safe, with no stage, it isn't offered *)
-    for i := 0 to LEN(offered(true, true)) - 1 do
-        if offered(true, true)[i].name = "shell" then Out.str("Atools: shell offered while safe\n"); failed := true; end;
+    for i := 0 to LEN(offered(true, true, false)) - 1 do
+        if offered(true, true, false)[i].name = "shell" then Out.str("Atools: shell offered while safe\n"); failed := true; end;
     end;
     expect("shell, safe", run("shell", `{"command":"true"}`, nil),
         "error: shell is not on offer: it runs only staged (safety auto), in the jail");
@@ -2183,7 +2195,7 @@ begin
         "error: bash is not allowed; the programs are: echo sh no-such-program-of-arno ls wc head file stat ");
     expect("run, a reader asks nothing", run("run", `{"args":["wc","-c","f"]}`, nil)[0..10], "exit 0: wc");
     expect("run, a reader is fenced", run("run", `{"args":["ls","../.."]}`, nil)[0..9], "declined:");
-    tools := offered(false, true);
+    tools := offered(false, true, false);
     for i := 0 to LEN(tools) - 1 do
         if tools[i].name = "run" then s := tools[i].description; end;
     end;
@@ -2241,7 +2253,7 @@ begin
     expect("a builtin left out is gone", run("find", `{"name":"f"}`, nil),
         "error: there is no tool named \"find\". The tools are: read grep doc_read");
     expect("a builtin allowed", run("read", `{"path":"f"}`, nil), "    1\tone\n    2\ttwo\n    3\tthree\n");
-    if LEN(offered(false, true)) # 3 then Out.str("Atools: only the allowed and the host's are offered\n"); failed := true; end;
+    if LEN(offered(false, true, false)) # 3 then Out.str("Atools: only the allowed and the host's are offered\n"); failed := true; end;
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;

@@ -38,6 +38,16 @@
    as the reports. What earlier workers of the turn reported goes with
    each brief.
 
+   In build mode the session's model leads: before it may change a
+   file or delegate, it puts a plan to the human with the plan tool,
+   which writes plan.md in the scratch directory and asks them. The
+   approval is the conversation's, not the agent's: the last result
+   of plan in it says whether its plan was approved, so /new drops it,
+   /load brings it back, and a worker, over a conversation of its own,
+   is not asked for one: it was delegated to after one. A turn in
+   build mode is bounded by build_steps and build_budget in place of
+   max_steps and turn_budget, as it carries out a whole plan.
+
    Each call's work is done in an arena, reset after the call: its
    result is copied into the conversation, which keeps its own memory
    from Heap.
@@ -49,7 +59,7 @@
    Afence, Awire, Amsg and Astore. Leaves out forking calls that only
    read, to run them side by side. *)
 module Agent;
-import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Heap, Arena, Rt, Fmt, Out,
+import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Awire, Amsg, Astore, Http, Json, Buf, Str, Files, Heap, Arena, Rt, Fmt, Out,
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 import SYSTEM;
 
@@ -74,6 +84,8 @@ type
         maxSteps*: INT;
         prune*: INT;          (* bytes of history before old results are cut; 0 never *)
         budget*: F64;         (* dollars a turn may spend, at list price; 0 for no limit *)
+        buildSteps*: INT;     (* a turn's steps in build mode, in place of maxSteps *)
+        buildBudget*: F64;    (* a turn's dollars in build mode, in place of budget; 0 for no limit *)
         prefetch*: BOOL;      (* definitions attached to the human's message *)
         worker*: []const U8;        (* the model a worker runs on; "" for no workers *)
         mode*: Aprompt.Mode;
@@ -93,6 +105,8 @@ type
 
 const
     MaxSteps* = 30;     (* a turn's steps, unless config's max_steps says *)
+    BuildSteps* = 200;   (* a build turn's steps, unless config's build_steps says *)
+    BuildBudget* = 3.00;   (* a build turn's dollars, unless config's build_budget says *)
     Prune* = 200000;    (* bytes of history before old results are cut, unless config's prune says *)
     KeepSteps = 4;      (* the last steps whose results prune leaves whole *)
     KeepHead = 30;      (* lines of a cut result kept, *)
@@ -130,12 +144,17 @@ const
     Repeated = "not run: this exact call was already made in this turn and its result " +
         "is above. Use that result, or try something different.";
     Interrupted = "not run: interrupted by the human";
+    Approved = "approved:";   (* what the result of a plan the human approved starts with *)
+    (* what a change or a delegation is told before a plan is approved *)
+    Unplanned = "not run: in build mode nothing is changed or delegated before the human approves a plan. " +
+        "Settle the goal with them, then call plan with it.";
 
 (* a made ready to run turns against prov, telling front; the fence
    set from the working directory. *)
 proc init*(var a: Agent; prov: ^Awire.Prov; front: Front);
 begin
-    a := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true,
+    a := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true, buildSteps: BuildSteps,
+        buildBudget: BuildBudget,
         human: {ask: front.ask, why: front.why, stopped: front.stopped, arg: front.arg}};
     Strs.init(a.reports, Heap.heap);
     Awire.initClient(a.client);
@@ -258,7 +277,8 @@ proc ask(var a: Agent; var c: Astore.Conv; sys: []const U8; var why: Buf.Buf): E
 var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; err: ERROR;
 begin
     r := {prov: a.prov, client: SYSTEM.ADR(a.client), system: sys, msgs: Msgs.all(c.msgs),
-        tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair}),
+        tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
+            not a.working and (a.mode = Aprompt.build)),
         emit: a.front.text, arg: a.front.arg, stopped: a.front.stopped};
     err := Awire.chat(r, reply, u, why);
     INC(a.used.inp, u.inp);
@@ -414,6 +434,62 @@ begin
     Fmt.write(out, "worker report ({} steps):\n{}", [Fmt.int(steps), Fmt.str(report)]);
 end;
 
+(* Whether c's plan is approved: the last result of plan in c says so. *)
+proc approved(const c: Astore.Conv): BOOL;
+var m: []Amsg.Msg; i: INT;
+begin
+    m := Msgs.all(c.msgs);
+    i := LEN(m) - 1;
+    while (i >= 0) and ((m[i].role # Amsg.Role.tool) or (m[i].tool # "plan")) do DEC(i); end;
+    return (i >= 0) and Str.hasPrefix(m[i].text, Approved);
+end;
+
+(* Whether a call of name waits, in build mode, for an approved plan:
+   it changes files, or hands work on. shell doesn't wait: a plan is
+   written from what was found, and shell writes only the stage's
+   copy, whose diff the human sees. *)
+proc waits(name: []const U8): BOOL;
+begin
+    match name of
+    | "edit", "move", "remove", "delegate": return true;
+    | else: return false;
+    end;
+end;
+
+(* plan, with the arguments args: the plan written to plan.md in the
+   scratch directory, and put to the human, whose yes or no, and why,
+   is added to out, and where the plan is kept. With nobody to ask,
+   the answer is no. Its work is done in the call's arena. *)
+proc plan(var a: Agent; args: []const U8; var out: Buf.Buf);
+var d: Json.Doc; p: Atools.Args; path: Buf.Buf; text: []const U8;
+begin
+    if not Json.init(SYSTEM.ADR(d), SYSTEM.ADR(a.mem.base)) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    if not Atools.parse(SYSTEM.ADR(d), SYSTEM.ADR(a.mem.base), args, p) then
+        Buf.str(out, "error: the arguments must be one JSON object, as the tool's schema says");
+        return;
+    end;
+    text := Str.trim(Atools.str(p, "plan"));
+    if LEN(text) = 0 then
+        Buf.str(out, "error: plan is required: the plan, in full");
+        return;
+    end;
+    if a.human.ask = nil then
+        Buf.str(out, "not approved: there is nobody here to approve a plan, so nothing may be changed or " +
+            "delegated. Give the plan in your answer, and stop.");
+    elsif a.human.ask("carry out this plan?", text, "yn") = 'y' then
+        Fmt.write(out, "{} the human approved the plan; carry it out.", [Fmt.str(Approved)]);
+    else
+        Atools.declined(a.human, "Revise the plan as they say and call plan again; nothing may be changed or " +
+            "delegated until a plan is approved.", out);
+    end;
+    if LEN(Afence.scratch) = 0 then return; end;
+    Buf.init(path, SYSTEM.ADR(a.mem.base));
+    Fmt.write(path, "{}/plan.md", [Fmt.str(Afence.scratch)]);
+    if Files.write(Buf.bytes(path), text) then
+        Fmt.write(out, " The plan is kept in {}.", [Fmt.str(Buf.bytes(path))]);
+    end;
+end;
 
 (* The calls of c's last message run, each result added to c as a
    tool's message: how many of them failed. Once the human says to
@@ -435,6 +511,11 @@ begin
             Buf.str(res, Interrupted);
         elsif again(a, calls[i].name, calls[i].args) then
             Buf.str(res, Repeated);
+        elsif (a.mode = Aprompt.build) and not a.working and waits(calls[i].name) and not approved(c) then
+            Buf.str(res, Unplanned);
+        elsif (calls[i].name = "plan") and (a.mode = Aprompt.build) and not a.working then
+            plan(a, calls[i].args, res);
+            Arena.reset(a.mem);
         elsif calls[i].name = "delegate" then
             delegate(a, calls[i].args, res);
         else
@@ -506,7 +587,7 @@ end;
    model said is in c either way, what it said for this turn alone
    dropped (Amsg.settle). *)
 proc turn*(var a: Agent; var c: Astore.Conv; var why: Buf.Buf): ERROR;
-var sys, b: Buf.Buf; first, step, failing, calls, i, floor: INT; m: []Amsg.Msg; start: F64; err: ERROR;
+var sys, b: Buf.Buf; first, step, failing, calls, i, floor, most: INT; m: []Amsg.Msg; start, allowed: F64; err: ERROR;
 begin
     first := c.msgs.len;
     forget(a);
@@ -521,11 +602,18 @@ begin
         for i := 0 to a.reports.len - 1 do Str.free(Heap.heap, Strs.all(a.reports)[i]); end;
         Strs.reset(a.reports);
     end;
+    (* build mode's lead carries out a whole plan in a turn *)
+    most := a.maxSteps;
+    allowed := a.budget;
+    if (a.mode = Aprompt.build) and not a.working then
+        most := a.buildSteps;
+        allowed := a.buildBudget;
+    end;
     start := a.spent;
     failing := 0;
     floor := 0;
     err := nil;
-    for step := 1 to a.maxSteps do
+    for step := 1 to most do
         (* once the history is long, and then each time it has grown by
            half again: rare cuts keep the cached prefix whole between them *)
         if (a.prune > 0) and (size(c) > a.prune) and (size(c) > floor + floor div 2) then
@@ -539,15 +627,15 @@ begin
         if calls = 0 then break; end;
         if run(a, c) = calls then INC(failing); else failing := 0; end;
         if stopped(a) then err := Awire.Stopped; break; end;
-        if step = a.maxSteps then
-            Fmt.write(b, "{} steps used", [Fmt.int(a.maxSteps)]);
+        if step = most then
+            Fmt.write(b, "{} steps used", [Fmt.int(most)]);
             err := handBack(a, c, Buf.bytes(b), StepsAsk, why);
         elsif failing = FailSteps then
             Fmt.write(b, "{} steps of failed calls in a row", [Fmt.int(FailSteps)]);
             err := handBack(a, c, Buf.bytes(b), StuckAsk, why);
             break;
-        elsif (a.budget > 0.0) and (a.spent - start > a.budget) then
-            Fmt.write(b, "turn budget of ${} spent", [Fmt.real(a.budget, 2)]);
+        elsif (allowed > 0.0) and (a.spent - start > allowed) then
+            Fmt.write(b, "turn budget of ${} spent", [Fmt.real(allowed, 2)]);
             err := handBack(a, c, Buf.bytes(b), BudgetAsk, why);
             break;
         end;
@@ -557,7 +645,56 @@ begin
     return err;
 end;
 
-(* The module's test: prune. *)
+(* The module's test: prune, and build mode's plan. *)
+
+(* The human's answers to plan, in the test: yes, and no. *)
+proc yes(_question, _detail, _keys: []const U8): U8;
+begin
+    return 'y';
+end;
+
+proc no(_question, _detail, _keys: []const U8): U8;
+begin
+    return 'n';
+end;
+
+(* The result of a call of name with args made in c, as run gives it. *)
+proc called(var a: Agent; var c: Astore.Conv; name, args: []const U8): []const U8;
+var m: ^Amsg.Msg;
+begin
+    m := Msgs.add(c.msgs);
+    Amsg.init(m^, Amsg.Role.assistant);
+    Amsg.addCall(m^, "c", name, args, "");
+    _ := run(a, c);
+    return Msgs.all(c.msgs)[c.msgs.len - 1].text;
+end;
+
+(* Build mode: nothing changed before a plan is approved, nobody there
+   to approve one says no, and the last answer counts. *)
+proc testPlan(): BOOL;
+const Plan = `{"plan":"1. do it"}`;
+var a: Agent; p: Awire.Prov; c: Astore.Conv;
+begin
+    init(a, SYSTEM.ADR(p), {});
+    a.mode := Aprompt.build;
+    Astore.init(c, "test");
+    if called(a, c, "edit", "{}") # Unplanned then Out.str("Agent: an edit before a plan\n"); return false; end;
+    if not Str.hasPrefix(called(a, c, "plan", Plan), "not approved: there is nobody here") then
+        Out.str("Agent: a plan with nobody to ask\n");
+        return false;
+    end;
+    a.human.ask := yes;
+    if not Str.hasPrefix(called(a, c, "plan", Plan), Approved) or not approved(c) then
+        Out.str("Agent: a plan approved\n");
+        return false;
+    end;
+    a.human.ask := no;
+    if not Str.hasPrefix(called(a, c, "plan", Plan), "declined by user. Revise") or approved(c) then
+        Out.str("Agent: a plan declined\n");
+        return false;
+    end;
+    return true;
+end;
 
 proc main*: INT;
 var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT; t: []const U8;
@@ -586,6 +723,7 @@ begin
         Out.str("Agent: prune keeps the head\n");
         return 1;
     end;
+    if not testPlan() then return 1; end;
     return 0;
 end;
 

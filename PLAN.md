@@ -408,11 +408,19 @@ one or more commits that build with `-Werror`.
      jail, and an install's scripts are the classic way in. Out of the
      jail, where it can't be made, a link is written through, but the
      file tools ask, since it leads outside the copy.
-   - [ ] `/mode build`: a supervisor, the session's model, plans with
+   - [x] `/mode build`: a supervisor, the session's model, plans with
      the human first and has the plan approved, then hands its steps
      to workers by `delegate`, reviews and merges what they did, and
      runs `check`. It edits only small fixes itself; anything more goes
-     back to a worker.
+     back to a worker. The `plan` tool, build's alone, writes plan.md
+     in the scratch and asks; a no brings the reason back, nobody to
+     ask is a no. Until the last answer to `plan` in the conversation
+     is yes, edit, move, remove and delegate are refused (not shell,
+     to look with), so
+     `/new` drops the approval and `/load` restores it. Round 7's
+     lessons are in the mode's text: brief richly, pass findings on,
+     few larger steps. `build_steps` and `build_budget` (200, $3.00)
+     bound its turns; safe, `/mode build` says it works best staged.
    - [ ] Each worker in a jailed worktree of its own, made from the
      supervisor's copy, giving back its diff and a report (what it did,
      read, left); one that hits its step cap hands back its copy, not

@@ -120,7 +120,7 @@ end;
    show of commands, with a new conversation. What is wrong with the
    config is shown. *)
 proc init*(s: ^Session; front: Agent.Front; show: Show; arg: ^U8);
-var id: Buf.Buf; n: I64; i: INT; ok: BOOL;
+var id: Buf.Buf; n: I64; x: F64; i: INT; ok: BOOL;
 begin
     s^ := {show: show, arg: arg};
     Arun.stopWhen(front.stopped);
@@ -141,6 +141,10 @@ begin
     n, ok := Str.toInt(Aconf.get(s^.conf, "prune"));
     if ok and (n >= 0) then s^.agent.prune := INT(n); end;
     s^.agent.budget, _ := Math.toReal(Aconf.get(s^.conf, "turn_budget"));
+    n, ok := Str.toInt(Aconf.get(s^.conf, "build_steps"));
+    if ok and (n > 0) then s^.agent.buildSteps := INT(n); end;
+    x, ok := Math.toReal(Aconf.get(s^.conf, "build_budget"));
+    if ok and (x >= 0.0) then s^.agent.buildBudget := x; end;
     s^.agent.prefetch := Aconf.get(s^.conf, "prefetch") # "no";
     s^.agent.worker := Aconf.get(s^.conf, "worker");
     for i := 0 to LEN(Aprompt.Modes) - 1 do
@@ -731,6 +735,9 @@ begin
     say(s, Buf.bytes(s.out));
 end;
 
+(* /mode: the mode shown, or set to name. Build, set while safe, says
+   it works best staged: safe, every change of every worker is asked
+   about, one at a time. *)
 proc mode(var s: Session; name: []const U8);
 var i: INT;
 begin
@@ -738,10 +745,13 @@ begin
         if Aprompt.Modes[i].name = name then s.agent.mode := Aprompt.Mode(i); end;
     end;
     if (LEN(name) > 0) and (Aprompt.Modes[INT(s.agent.mode)].name # name) then
-        fail(s, "modes: chat review improve pair");
+        fail(s, "modes: chat review improve pair build");
         return;
     end;
     Fmt.write(s.out, "mode: {}", [Fmt.str(Aprompt.Modes[INT(s.agent.mode)].name)]);
+    if (name = "build") and (LEN(Afence.stage) = 0) then
+        Buf.str(s.out, "; build works best staged (/safety auto), each change asked about while safe");
+    end;
     say(s, Buf.bytes(s.out));
 end;
 
@@ -815,7 +825,8 @@ end;
 proc tools(const s: Session; var out: Buf.Buf);
 var t: []Awire.Tool; i: INT;
 begin
-    t := Atools.offered(LEN(s.agent.worker) > 0, s.agent.mode in {Aprompt.chat, Aprompt.pair});
+    t := Atools.offered(LEN(s.agent.worker) > 0, s.agent.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
+        s.agent.mode = Aprompt.build);
     for i := 0 to LEN(t) - 1 do
         if i > 0 then Buf.add(out, '\n'); end;
         Fmt.write(out, "{}  {}", [Fmt.str(t[i].name), Fmt.str(t[i].description)]);

@@ -114,7 +114,7 @@ these are the ones to start with:
 |---|---|
 | `/new`, `/clear` | start a fresh conversation, or clear this one |
 | `/list [WORD]`, `/load N\|ID\|WORD` | find and resume a saved conversation |
-| `/mode [NAME]` | `chat`, `review`, `improve` or `pair`; `review` and `improve` offer no editing tools |
+| `/mode [NAME]` | `chat`, `review`, `improve`, `pair` or `build`; `review` and `improve` offer no editing tools; `build` plans with you, then leads workers through the approved plan |
 | `/model [NAME]`, `/models`, `/provider [NAME]` | switch, or list, what answers |
 | `/compact [FOCUS]` | replace the history with a summary |
 | `/tools`, `/usage` | the tools on offer; tokens and cost |
@@ -150,7 +150,7 @@ keys, the copy-mode keys, and the config keys.
 
 The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `search`, `fetch`,
-`delegate` (when the config names a `worker`), `shell`, and, while a
+`delegate` (when the config names a `worker`), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows, and `ls wc head file stat`, which
