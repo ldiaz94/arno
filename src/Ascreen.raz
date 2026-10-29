@@ -951,7 +951,9 @@ end;
 (* A key while a question is asked: one of its keys answers, C-c, C-d,
    Esc and RET are no, C-c stopping the turn too, and the keys that
    move the transcript move it. C-d is no rather than what it is on
-   the input, as a turn runs and it would delete a character there. *)
+   the input, as a turn runs and it would delete a character there.
+   <up> and <down> scroll too, not recall history: they are what the
+   wheel sends on the alternate screen, and a plan is read by it. *)
 proc answering(ev: TuiKeys.Event);
 var k: INT;
 begin
@@ -962,6 +964,12 @@ begin
     elsif (k = TuiKeys.ctrl('c')) or (k = TuiKeys.ctrl('d')) or (k = TuiKeys.Esc) or (k = TuiKeys.Enter) then
         if k = TuiKeys.ctrl('c') then stop(1); end;
         reply(no);
+    elsif (k = TuiKeys.Up) or (k = TuiKeys.ctrl('p')) then
+        lineUp(1);
+        return;
+    elsif (k = TuiKeys.Down) or (k = TuiKeys.ctrl('n')) then
+        lineDown(1);
+        return;
     else
         if not TuiKeys.printable(k) then _ := TuiMap.feed(SYSTEM.ADR(reader), SYSTEM.ADR(map), k); end;
         return;
@@ -994,17 +1002,19 @@ begin
         end;
         return;
     end;
-    (* drawn after, as after any key: a scroll would wait for the next output *)
-    if question.len > 0 then
-        answering(ev);
-        refresh();
-        return;
-    end;
+    (* copy mode first: entered with M-v under a question, to read a
+       plan with its keys, it gives the question back when it ends *)
     if Acopy.active() then
         if not Acopy.key(ev) then
             Buf.str(flash, Acopy.saying());
             TuiEdit.focus(SYSTEM.ADR(editor));
         end;
+        return;
+    end;
+    (* drawn after, as after any key: a scroll would wait for the next output *)
+    if question.len > 0 then
+        answering(ev);
+        refresh();
         return;
     end;
     if searching and searchKey(ev) then return; end;
@@ -1042,14 +1052,14 @@ begin
     if back > 0 then Fmt.write(d, " \u{2191}{} ", [Fmt.int(back)]); end;
     right := s^.cols - TuiScreen.columns(Buf.bytes(d));
     col := 0;
-    if question.len > 0 then
-        col := said(s, r, right, Buf.bytes(question), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
-    elsif Acopy.active() then
+    if Acopy.active() then
         col := TuiScreen.putTo(s, r, 0, right, " COPY ", TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
         if LEN(Acopy.saying()) > 0 then
             col := TuiScreen.putTo(s, r, col, right, Acopy.saying(), TuiScreen.style(Term.bad, {}));
             col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
         end;
+    elsif question.len > 0 then
+        col := said(s, r, right, Buf.bytes(question), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
     elsif searching then
         col := TuiScreen.putTo(s, r, 0, right, " history", TuiScreen.style(Term.info, {}));
         if failing then col := TuiScreen.putTo(s, r, col, right, ", failing", TuiScreen.style(Term.bad, {})); end;
