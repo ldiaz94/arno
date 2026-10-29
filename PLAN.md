@@ -504,7 +504,7 @@ one or more commits that build with `-Werror`.
      context: the task stays the lead's, and the worker reports on it,
      but it sees what the work is for and can say what the task left
      out. Cut at a few thousand bytes.
-   - [ ] An all-clear is a finding. The same lead re-read its workers'
+   - [x] An all-clear is a finding. The same lead re-read its workers'
      findings but passed on their "checked, clean" as given, and two
      were wrong. Build's step 3 says a worker's "nothing found" is a
      claim like any other, checked against the code before it is
