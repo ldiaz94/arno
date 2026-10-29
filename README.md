@@ -46,14 +46,14 @@ pthreads and the TLS libraries. `make check` also needs
 [concha](https://github.com/ldiaz94/concha).
 
 arno is built over its sibling libraries. rnet (HTTP and TLS) is a
-directory beside arno's; rtui, rjson, rzone, rwalk and rterm are
+directory beside arno's; rtui, rjson, rzone, rwalk, rterm and rlsp are
 installed into `~/.raz/lib` first, with `make install` in each checkout.
 
     mkdir workspace && cd workspace
-    for r in arno rnet rtui rjson rzone rwalk rterm; do
+    for r in arno rnet rtui rjson rzone rwalk rterm rlsp; do
         git clone https://github.com/ldiaz94/$r.git
     done
-    for r in rtui rjson rzone rwalk rterm; do (cd $r && make install); done
+    for r in rtui rjson rzone rwalk rterm rlsp; do (cd $r && make install); done
     cd arno
     make              # build/arno
     make check        # the tests
@@ -234,7 +234,9 @@ without asking: the project, a directory with a mark, at most two
 levels up. `Afind` finds, searches and outlines files; `Arun` runs a
 program to its end and catches what it writes; `Ahtml` turns a page to
 text; `Aattach` makes the `@paths`. `Atools` lists the tools and runs
-a call, asking when it must.
+a call, asking when it must. `Alsp` asks the language server config
+names for a file's type (`lsp.ts = ...`, on rlsp) what it finds wrong
+with a file just edited, for the edit's result.
 
 **3. The stage and the jail.** `Astage` is the copy of the project the
 model works on, and the diff of what it did. `Ajail` is the sandbox
@@ -281,7 +283,10 @@ an MCP server (`test/Amcpstub.raz`); `test/serve.cn` drives `--serve`
 with a host (`test/Ahost.raz`); `test/peer.cn` drives a terminal's arno
 over a pseudo-terminal with an editor in miniature (`test/Apeerhost.raz`),
 which asks, is answered, is called, and tries every forged ask. It was
-also tried against the real dwa. The README's recording is
+also tried against the real dwa. `Alsp`'s test talks to a language
+server in miniature (`test/Alspstub.raz`), pushed, pulled, silent, dying
+and missing, and in the jail; it was tried by hand against raz-lsp,
+concha-lsp and typescript-language-server, in the jail and out. The README's recording is
 made by `make cast`, which is not part of the check.
 
 ## Size

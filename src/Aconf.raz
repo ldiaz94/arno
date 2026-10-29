@@ -22,7 +22,8 @@
                       model, as the param reasoning_effort@MODEL
 
    The keys the rest of arno reads (run, max_steps, mcp and the
-   others, Known below) are kept for it to ask by get. Any other is a
+   others, Known below, and those PREFIX.NAME for a prefix of Prefixed,
+   as check.unit and lsp.ts) are kept for it to ask by get. Any other is a
    param of the provider, key=value, which a request carries if it
    knows it (temperature, top_p, max_tokens, anthropic_version ...),
    so that a provider's field needs no new key here.
@@ -33,8 +34,9 @@
    ~/... for the home. Once apply is told the project's root, get gives
    a key as the deepest section holding the root sets it, else as the
    settings before the first section, the global ones, set it: a whole
-   value, never a list merged. Only the keys of one project (Sectioned)
-   may be set in a section; the provider's are for every directory.
+   value, never a list merged. Only the keys of one project (Sectioned,
+   and Prefixed's) may be set in a section; the provider's are for
+   every directory.
 
        provider = ollama-cloud     the global settings
        run = tiza man fd
@@ -86,8 +88,8 @@ const
         "max_steps", "turn_budget"];
 
     (* the prefixes of keys PREFIX.NAME, each name its own setting, that
-       a section may set too: check.unit, check.fmt *)
-    Prefixed: []const []const U8 = ["check"];
+       a section may set too: check.unit, check.fmt, lsp.ts *)
+    Prefixed: []const []const U8 = ["check", "lsp"];
 
 (* c made a configuration of nothing: the ollama preset. *)
 proc init*(var c: Conf);
@@ -447,6 +449,7 @@ begin
         [~/r/arno]
         run = raz
         workers = fast cheap:cloud
+        lsp.raz = raz-lsp
         [ /nowhere/home/r ]
         trust = robbie
         [w]
@@ -467,6 +470,7 @@ begin
     expect("the same directory twice, the later", get(c, "trust"), "robbie");
     expect("a global key no section sets", get(c, "test_cmd"), "make test");
     expect("a bad section's key", get(c, "safety"), "");
+    expect("a prefixed key in a section", get(c, "lsp.raz"), "raz-lsp");
     apply(c, "/nowhere/home/r");
     expect("the section of the root itself", get(c, "run"), "raz robbie");
     apply(c, "/nowhere/home/r2");

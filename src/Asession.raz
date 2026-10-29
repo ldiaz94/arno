@@ -22,7 +22,8 @@
    editor's message and told to the human as that; see Apeer.
 
    Depends on Agent, Apeer, Aprompt (the commands and modes), Amemory, Aahead
-   (the notes), Aattach, Astore, Aconf, Aprice, Atools, Amcp, Afence and
+   (the notes), Aattach, Astore, Aconf, Aprice, Atools, Alsp (the
+   language servers config names), Amcp, Afence and
    Arun (/test).
    The stage (Astage) is up from start-up unless config's safety or
    stage.json says safe, and on /safety auto; at the end of each turn, and on /stage, the
@@ -41,7 +42,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Amcp, Afence, Arun, Amsg, Buf, Str,
+import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Afence, Arun, Amsg, Buf, Str,
     Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
 import SYSTEM;
 
@@ -159,6 +160,7 @@ begin
     Agent.init(s^.agent, SYSTEM.ADR(s^.conf.prov), front);
     (* the project's root is known now that Agent.init has set the fence: its sections from here on *)
     Aconf.apply(s^.conf, Afence.root);
+    Alsp.use(SYSTEM.ADR(s^.conf));
     useScratch(s^);
     n, ok := Str.toInt(Aconf.get(s^.conf, "max_steps"));
     if ok and (n > 0) then s^.agent.maxSteps := INT(n); end;

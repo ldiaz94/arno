@@ -1,6 +1,6 @@
 # arno is a harness for language models in the terminal, written in raz
-# over rnet (HTTP and TLS) and rtui (the screen); rnet, rtui, rjson, rzone, rwalk
-# and rterm are installed in ~/.raz/lib (make install in each checkout); only
+# over rnet (HTTP and TLS) and rtui (the screen); rnet, rtui, rjson, rzone, rwalk,
+# rterm and rlsp are installed in ~/.raz/lib (make install in each checkout); only
 # rnet's TLS backend is reached with -I, as a sibling unless RNET says otherwise.
 # It builds with the raz on PATH, which must be the version it is
 # written for, RAZVERSION: make warns of any other. Its tarball is on
@@ -23,7 +23,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Aframe Aview Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Apeer Atools Agent Aboard Ahistory Aattach Acomplete
+MODS = Aframe Aview Amsg Awire Astore Aconf Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Apeer Atools Alsp Agent Aboard Ahistory Aattach Acomplete
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)
@@ -48,6 +48,10 @@ build/stub: test/Astub.raz $(LIBS) | build
 build/mcpstub: test/Amcpstub.raz $(LIBS) | build
 	$(RAZ) -Werror -I src -o $@ test/Amcpstub.raz
 
+# a language server in miniature, for Alsp's test
+build/lspstub: test/Alspstub.raz | build
+	$(RAZ) -Werror -o $@ test/Alspstub.raz
+
 # a host in miniature, which drives arno --serve
 build/host: test/Ahost.raz src/Aframe.raz | build
 	$(RAZ) -Werror -I src -o $@ test/Ahost.raz
@@ -58,7 +62,7 @@ build/peerhost: test/Apeerhost.raz src/Apeer.raz | build
 
 # each module's main is its test; then the program's, test/oneshot.cn,
 # test/serve.cn and test/peer.cn; then the man pages
-check: build/arno build/stub build/mcpstub build/host build/peerhost man
+check: build/arno build/stub build/mcpstub build/host build/peerhost build/lspstub man
 	@mkdir -p build/run; chmod 700 build/run
 	@for m in $(MODS); do \
 	    $(RAZ) -Werror $(INC) -o build/$$m src/$$m.raz && XDG_RUNTIME_DIR=$(CURDIR)/build/run build/$$m || exit 1; \
@@ -99,7 +103,7 @@ compat: | build
 # the sources are as raz's formatter lays them out
 fmt: | build
 	$(RAZ) -o build/Pretty $(RAZTOOLS)/Pretty.raz
-	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz test/Ahost.raz test/Apeerhost.raz test/Play.raz; do \
+	@fail=0; for f in $(SRC) test/Astub.raz test/Amcpstub.raz test/Ahost.raz test/Apeerhost.raz test/Alspstub.raz test/Play.raz; do \
 	    build/Pretty $$f | cmp -s - $$f || { echo "not formatted: $$f"; fail=1; }; \
 	done; test $$fail = 0
 

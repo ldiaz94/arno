@@ -714,6 +714,14 @@ programs, or compare files outside the repository are refused.
 .It Ic edit
 An exact, unique replacement, or a new file.
 Its diff is shown and needs your yes.
+If
+.Cm lsp. Ns Ar ext
+names a language server for the file's type, the result ends with what
+the server finds wrong with the file: its errors and warnings, at most
+ten, each as
+.Ql path:line:col: severity: message ,
+or
+.Ql no errors .
 .It Ic move , remove
 Rename or delete one file, with your yes.
 Never a directory, and never onto a file that exists, and never a file an
@@ -1587,6 +1595,31 @@ Each is absolute or starts with
 .Ql ~ ;
 one that is not a directory when a command runs is passed over.
 The jail takes at most six.
+.It Cm lsp. Ns Ar ext
+The language server, a command and its arguments, for the files whose
+name ends in
+.Pf . Ar ext ,
+as
+.Ql lsp.ts = typescript-language-server --stdio ,
+.Ql lsp.raz = raz-lsp
+or
+.Ql lsp.cn = concha-lsp .
+It is started on the first edit of such a file in a turn, rooted at
+the project (the copy while staged), and stopped when the turn ends.
+After each edit it is told the file's whole new text, and its
+diagnostics end the edit's result; it is waited for up to 10 seconds
+to start and 2 seconds for each edit's diagnostics.
+While staged it runs in the jail, with no network and nothing
+writable but the jail's own
+.Pa /tmp ,
+where
+.Ev XDG_STATE_HOME
+and
+.Ev XDG_CACHE_HOME
+point.
+One that does not start, or breaks, is said once and not started again
+in the session.
+Its standard error is thrown away.
 .It Cm run
 Program names, separated by blanks, that
 .Ic run
@@ -1687,9 +1720,10 @@ jail_rw = ~/.npm ~/.cache/ms-playwright
 A section may set only what is one project's:
 .Cm run , run_ro , run_env , trust , test_cmd , check.NAME , safety , shell ,
 .Cm jail_net , jail_rw , context_files , project_map , prefetch ,
-.Cm mode , worker , workers , max_steps , turn_budget , build_steps
+.Cm mode , worker , workers , max_steps , turn_budget , build_steps ,
+.Cm build_budget
 and
-.Cm build_budget .
+.Cm lsp. Ns Ar ext .
 The provider's keys, and
 .Cm mcp
 and the rest, are for every project, and a section that sets one is
@@ -1968,6 +2002,15 @@ and
 which are its own.
 It has no network, so installing packages fails; do that yourself before
 staging.
+.Pp
+A language server
+.Pf ( Cm lsp. Ns Ar ext )
+reads the project, and some run what its configuration says, as a
+tsconfig's plugins; while staged that is the model's copy, so it runs
+in the jail, with the limits above.
+Unlike a jailed command, it stays in the terminal's session, in a
+process group of its own, so it could write to the terminal.
+Safe, it runs outside the jail, on your own files.
 .Pp
 The stage's copy is removed when
 .Nm

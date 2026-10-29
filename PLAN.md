@@ -480,8 +480,19 @@ one or more commits that build with `-Werror`.
      parameters; a call holding an arrow is not one.
    - [ ] rlsp, done in dwa: `LspWire`, `LspServer` and `LspText` made a
      library of their own, dwa unchanged in what it does.
-   - [ ] `Alsp`: a profile's language server for a file type; an edit's
-     result carries the server's diagnostics.
+   - [x] `Alsp`: a profile's language server for a file type; an edit's
+     result carries the server's diagnostics. Config's `lsp.EXT`, also
+     in a section (`Aconf.Prefixes`). Started on a turn's first edit of
+     the type, rooted at the zone, stopped at the turn's end, not the
+     session's: between turns the copy changes untold, and a jailed
+     server dies with the turn's thread (Ajail's PDEATHSIG). Staged, it
+     runs in the jail through Arun's helper (`Arun.helped`, handed to
+     `LspServer.start` as its program), state and cache in the jail's
+     /tmp. Blocks: 10 s to start, 2 s for each edit's diagnostics,
+     pushed or pulled; at most ten errors and warnings. One that fails
+     is said once and not tried again. Left for rlsp: `start` makes the
+     server lead a process group, so the helper's setsid fails and a
+     jailed server stays in the terminal's session.
    - [ ] `def` and `refs` by name through the server, the rule of thumb
      kept where there is none.
    - [ ] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as

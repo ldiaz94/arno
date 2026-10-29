@@ -1,0 +1,172 @@
+(* Alspstub: a language server in miniature, for Alsp's test, after
+   rlsp's test/LspPeer.raz.
+
+   It finds fault with words: each line's first "bad" is an error,
+   "meh" a warning and "fyi" a note, at the word's UTF-16 column. Its
+   first argument says how it behaves:
+
+       (none)   pushes the diagnostics of each text it is told
+       pull     offers them to be pulled, by textDocument/diagnostic
+       silent   tells nothing, so that a client waits in vain
+       die      ends as soon as it is told a text
+
+   Depends on rlsp's LspWire and LspText, and rjson's Json. Leaves out
+   every other request, which it lets pass without an answer. *)
+module Alspstub;
+import LspWire, LspText, Json, Buf, Heap, Sys, Str, Files, Fmt, Rt;
+import SYSTEM;
+
+var
+    mode: []const U8;     (* the first argument *)
+    reader: LspWire.Reader; (* the bytes read, framed *)
+    doc: Json.Doc;        (* the message read *)
+    value: Json.Value;    (* in doc *)
+    output: Buf.Buf;      (* a message framed, to write *)
+    text: Buf.Buf;        (* the document's text, as last told *)
+    uri: Buf.Buf;         (* and its URI *)
+    version: I64;         (* and its version *)
+
+(* The stub ended, failed, unless ok. *)
+proc check(ok: BOOL);
+begin
+    if not ok then Rt.exit(1); end;
+end;
+
+(* body framed and written whole to standard output. *)
+proc send(body: []const U8);
+var bytes: []const U8; n: INT;
+begin
+    Buf.reset(output);
+    check(LspWire.frame(output, body));
+    bytes := Buf.bytes(output);
+    while LEN(bytes) > 0 do
+        n := Sys.write(Sys.stdout, bytes);
+        check(n > 0);
+        bytes := bytes[n..LEN(bytes)];
+    end;
+end;
+
+(* The diagnostic of word in line number n, as a JSON object, added to
+   b after a comma unless it is the first. *)
+proc fault(var b: Buf.Buf; n: INT; line, word: []const U8; severity: INT; var first: BOOL);
+var at, from: INT;
+begin
+    at := Str.find(line, word);
+    if at < 0 then return; end;
+    if not first then Buf.add(b, ','); end;
+    first := false;
+    from := LspText.units(line, at);
+    Fmt.write(b, "{{\"range\":{{\"start\":{{\"line\":{},\"character\":{}}},\"end\":{{\"line\":{},\"character\":{}}}}}," +
+        "\"severity\":{},\"message\":\"{} word\\nsecond line\"}}",
+        [Fmt.int(n), Fmt.int(from), Fmt.int(n), Fmt.int(from + 3), Fmt.int(severity), Fmt.str(word)]);
+end;
+
+(* The diagnostics of text, a JSON array, added to b. *)
+proc faults(var b: Buf.Buf);
+var line, rest: []const U8; n: INT; more, first: BOOL;
+begin
+    Buf.add(b, '[');
+    first := true;
+    rest := Buf.bytes(text);
+    more := LEN(rest) > 0;
+    n := 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        fault(b, n, line, "bad", 1, first);
+        fault(b, n, line, "meh", 2, first);
+        fault(b, n, line, "fyi", 3, first);
+        INC(n);
+    end;
+    Buf.add(b, ']');
+end;
+
+(* text told, as the path in the message says, kept with its URI and
+   version, and its diagnostics pushed unless they are pulled. *)
+proc told(textAt, versionAt: []const U8);
+var b: Buf.Buf; d: ^Json.Doc; ok: BOOL;
+begin
+    if mode = "die" then Rt.exit(0); end;
+    d := SYSTEM.ADR(doc);
+    Buf.reset(text);
+    Buf.str(text, Json.text(d, Json.get(d, value, textAt)));
+    Buf.reset(uri);
+    Buf.str(uri, Json.text(d, Json.get(d, value, "params.textDocument.uri")));
+    version, ok := Json.toInt(d, Json.get(d, value, versionAt));
+    check(ok);
+    if (mode = "pull") or (mode = "silent") then return; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
+    Json.quote(SYSTEM.ADR(b), Buf.bytes(uri));
+    Fmt.write(b, ",\"version\":{},\"diagnostics\":", [Fmt.int(INT(version))]);
+    faults(b);
+    Buf.str(b, "}}");
+    send(Buf.bytes(b));
+end;
+
+(* A reply to the request id, its result result. *)
+proc reply(id: I64; result: []const U8);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{}}}", [Fmt.int(INT(id)), Fmt.str(result)]);
+    send(Buf.bytes(b));
+end;
+
+(* The message in value answered: whether to go on. *)
+proc handle: BOOL;
+var d: ^Json.Doc; method: []const U8; id: I64; b: Buf.Buf;
+begin
+    d := SYSTEM.ADR(doc);
+    method := Json.text(d, Json.member(d, value, "method"));
+    id, _ := Json.toInt(d, Json.member(d, value, "id"));
+    match method of
+    | "initialize":
+        if mode = "pull" then
+            reply(id, "{\"capabilities\":{\"textDocumentSync\":1,\"diagnosticProvider\":{\"interFileDependencies\":false}}}");
+        else
+            reply(id, "{\"capabilities\":{\"textDocumentSync\":1}}");
+        end;
+    | "textDocument/didOpen": told("params.textDocument.text", "params.textDocument.version");
+    | "textDocument/didChange": told("params.contentChanges[0].text", "params.textDocument.version");
+    | "textDocument/diagnostic":
+        Buf.init(b, Heap.heap);
+        defer Buf.done(b);
+        Buf.str(b, "{\"kind\":\"full\",\"items\":");
+        faults(b);
+        Buf.add(b, '}');
+        reply(id, Buf.bytes(b));
+    | "shutdown": reply(id, "null");
+    | "exit": return false;
+    | else:
+    end;
+    return true;
+end;
+
+proc main*;
+var input: [4096]U8; n: INT; result: LspWire.Result; body: []U8;
+begin
+    mode := Files.arg(1);
+    LspWire.init(reader);
+    check(Json.init(SYSTEM.ADR(doc), Heap.heap));
+    Buf.init(output, Heap.heap);
+    Buf.init(text, Heap.heap);
+    Buf.init(uri, Heap.heap);
+    while true do
+        result, body := LspWire.take(reader);
+        check(result # LspWire.Result.broken);
+        if result = LspWire.Result.message then
+            Json.reset(SYSTEM.ADR(doc));
+            value := Json.parse(SYSTEM.ADR(doc), body);
+            check(doc.err = nil);
+            if not handle() then return; end;
+        else
+            n := Sys.read(Sys.stdin, input);
+            if n <= 0 then return; end;
+            check(LspWire.feed(reader, input[0..n]));
+        end;
+    end;
+end;
+
+end Alspstub.

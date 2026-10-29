@@ -63,13 +63,14 @@
    from Heap.
 
    Each turn begins by asking Apeer whether an editor is reachable, which
-   decides whether its tools are offered.
+   decides whether its tools are offered, and ends by stopping the
+   language servers its edits started (Alsp).
 
-   Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Apeer,
+   Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Alsp, Apeer,
    Afence, Astage (a worker's copy), Awire, Amsg and Astore. Leaves out
    forking calls that only read, to run them side by side. *)
 module Agent;
-import Aprompt, Aahead, Aprice, Atools, Apeer, Afence, Astage, Awire, Amsg, Astore, Http, Json, Buf, Str, Sys, Files, Heap, Arena, Rt, Fmt, Out,
+import Aprompt, Aahead, Aprice, Atools, Alsp, Apeer, Afence, Astage, Awire, Amsg, Astore, Http, Json, Buf, Str, Sys, Files, Heap, Arena, Rt, Fmt, Out,
     Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Strs := Vec([]U8);
 import SYSTEM;
 
@@ -810,6 +811,8 @@ begin
     end;
     m := Msgs.all(c.msgs);
     for i := first to LEN(m) - 1 do Amsg.settle(m[i]); end;
+    (* a worker's ends with its copy, and a jailed server with the turn's thread *)
+    Alsp.stop;
     return err;
 end;
 

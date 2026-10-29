@@ -266,6 +266,18 @@ begin
     for i := 0 to LEN(j.env) - 1 do Strs.push(env, j.env[i]); end;
 end;
 
+(* The program that runs j through the helper, detached and, if j
+   says, jailed, in j's directory: arno itself, its arguments and
+   environment made in args, env, secs and dirs, initialized by the
+   caller and kept until it is spawned. Its standard files are the
+   caller's to set. For a program that start can't run, one that
+   lasts and talks over pipes, as a language server (Alsp). *)
+proc helped*(const j: Job; var args, env: Strs.Vec; var secs, dirs: Buf.Buf): Sys.Program;
+begin
+    helper(j, args, env, secs, dirs);
+    return {path: "/proc/self/exe", args: Strs.all(args), env: Strs.all(env), onlyEnv: true, dir: j.dir};
+end;
+
 (* The program j says run: its status, 128 and the signal if one ended
    it; or minus an errno if it couldn't be started, as 127 is if there
    is no such program. At most max bytes of what it wrote are added to
@@ -282,18 +294,15 @@ begin
     rd, wr := Sys.pipe();
     if rd < 0 then return rd, false, false; end;
     own := j.detach or j.jail or (j.flood > 0);
-    p := {path: j.args[0], args: j.args, env: j.env, dir: j.dir, fds: [nul, wr, wr]};
+    p := {path: j.args[0], args: j.args, env: j.env, dir: j.dir};
     if own then
         Strs.init(args, Heap.heap);
         Strs.init(env, Heap.heap);
         Buf.init(secs, Heap.heap);
         Buf.init(dirs, Heap.heap);
-        helper(j, args, env, secs, dirs);
-        p.path := "/proc/self/exe";
-        p.args := Strs.all(args);
-        p.env := Strs.all(env);
-        p.onlyEnv := true;
+        p := helped(j, args, env, secs, dirs);
     end;
+    p.fds := [nul, wr, wr];
     pid := Sys.spawn(p);
     if own then
         Strs.done(args);

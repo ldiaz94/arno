@@ -1,0 +1,507 @@
+(* Alsp: a language server for a type of file, asked what it finds
+   wrong with a file the model has just edited.
+
+   Config's lsp.EXT = COMMAND ARGS... names the server for the files
+   whose name ends in .EXT, as lsp.ts = typescript-language-server
+   --stdio; a [DIR] section may set it. After an edit, or a file made,
+   of such a type in the zone (diagnose), its server is told the
+   file's whole new text, didOpen the first time and didChange after,
+   the version counting up, and its diagnostics are waited for: pushed
+   (publishDiagnostics, for that file and version) or pulled
+   (textDocument/diagnostic), as the server said it wants them. Its
+   errors and warnings, at most Shown, end the edit's result:
+
+       ok: 1 replaced
+
+       diagnostics:
+       src/a.ts:3:7: error: Type 'string' is not assignable to type 'number'.
+
+   or "diagnostics: no errors", or that none came within Wait. A
+   column is a byte's, made from the server's UTF-16 one (LspText).
+
+   A server is started on the first edit of its type in a turn, rooted
+   at the zone, the stage's copy while staged, and stopped when the
+   turn ends (stop, which Agent.turn calls); a zone changed under it,
+   a worker's copy, has it started again there. A turn's, not the
+   session's: between turns the copy changes in ways the server is not
+   told (a diff applied, a worker's merged), and a jailed one cannot
+   outlive the thread that started it, since the jail's supervisor
+   dies with it (Ajail's PDEATHSIG), and the screen runs each turn on
+   a thread of its own.
+
+   While staged, and where the kernel allows the jail, the server runs
+   in it, through Arun's helper: the whole tree read-only, no network,
+   and arno's environment cut to what a program needs, keys left out;
+   its log and cache go to the jail's own /tmp (JailHomes). It stays
+   in the terminal's session, as LspServer.start makes it lead a
+   process group, which the helper's setsid then refuses. The command
+   is the human's, from their config; but a server reads the project, some run what its configuration says (a tsconfig's
+   plugins), and the copy is the model's work, made unasked. Safe, it
+   runs as the human would run it: the files are theirs, each change
+   asked. Its standard error goes to /dev/null, not over the screen.
+
+   The turn waits: at most Start for a server to start and initialize,
+   then at most Wait for each edit's diagnostics, and Stop for each to
+   shut down at the turn's end, after which it is killed. A server
+   that won't start, or breaks, is said once, in that edit's result,
+   and its type is not tried again in the session.
+
+   Depends on rlsp (LspServer, LspText), rjson's Json, Aconf (the
+   commands), Afence (the zone) and Arun (the jail). Leaves out every
+   other request (hover, definition), didClose, files changed by other
+   means than edit (no didChangeWatchedFiles), an edit an editor makes
+   (it has servers of its own), info and hints, and a file longer than
+   MaxText. *)
+module Alsp;
+import LspServer, LspText, Json, Aconf, Afence, Arun, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Strs := Vec([]const U8),
+    Docs := Vec(Doc);
+import SYSTEM;
+
+type
+    (* A file told to a server. *)
+    Doc = record
+        uri: []U8;      (* its URI, from Heap *)
+        version: INT;   (* the text's last told, from 1 *)
+    end;
+
+    (* A language server running for a type of file; a free slot if its
+       ext is "". *)
+    Server = record
+        ext: []U8;               (* the type, from Heap *)
+        root: []U8;              (* the zone it was started in, from Heap *)
+        lsp: LspServer.Server;   (* the process and its session *)
+        docs: Docs.Vec;          (* the files it has been told *)
+        next: INT;               (* the id of its next request, from 3 *)
+    end;
+
+    (* What an edit waits for: the initialize answered, diagnostics
+       pushed, or the answer to a pull. *)
+    Awaited = (initialized, published, answered);
+
+    (* How a wait ended: it came, time ran out, or the server broke. *)
+    Outcome = (came, late, died);
+
+const
+    Client = "arno";                  (* the name the server is told *)
+    MaxServers = 8;                   (* servers at once, a type each *)
+    Shown = 10;                       (* errors and warnings an edit's result shows *)
+    Start = 10000;                    (* ms a server may take to start and initialize *)
+    Wait = 2000;                      (* ms an edit waits for its diagnostics *)
+    Stop = 500;                       (* ms a server has to shut down, before it is killed *)
+    MaxText = 4 * 1024 * 1024;        (* bytes of a file past which it is not told *)
+    FirstId = 3;                      (* LspServer keeps 1 and 2 for itself *)
+    (* where a jailed server keeps its state and cache, in the jail's /tmp *)
+    JailHomes: []const []const U8 = ["XDG_STATE_HOME=/tmp/state", "XDG_CACHE_HOME=/tmp/cache"];
+
+var
+    conf: ^Aconf.Conf;                (* where the commands are; nil before use *)
+    servers: [MaxServers]Server;      (* those running *)
+    failed: Strs.Vec;                 (* the types whose server failed, each from Heap *)
+    ready: BOOL;                      (* failed made *)
+
+(* c the configuration the servers' commands are read from, kept. *)
+proc use*(c: ^Aconf.Conf);
+begin
+    conf := c;
+    if not ready then Strs.init(failed, Heap.heap); ready := true; end;
+end;
+
+proc keep(s: []const U8): []U8;
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    return c;
+end;
+
+(* The type of path: what follows the last dot of its last part, if
+   the dot doesn't begin it; "" for none. *)
+proc extension(path: []const U8): []const U8;
+var base: []const U8; at: INT;
+begin
+    base := path[Str.findLast(path, "/") + 1..LEN(path)];
+    at := Str.findLast(base, ".");
+    if at <= 0 then return ""; end;
+    return base[at + 1..LEN(base)];
+end;
+
+(* Whether ext's server failed in this session. *)
+proc given(ext: []const U8): BOOL;
+var f: [][]const U8; i: INT;
+begin
+    f := Strs.all(failed);
+    for i := 0 to LEN(f) - 1 do
+        if f[i] = ext then return true; end;
+    end;
+    return false;
+end;
+
+(* servers[i] shut down, killed if it doesn't within Stop, and its
+   slot freed. *)
+proc drop(i: INT);
+var s: ^Server; d: []Doc; k: INT; deadline: I64; e: LspServer.Event;
+begin
+    s := SYSTEM.ADR(servers[i]);
+    if LspServer.shutdown(s^.lsp) then
+        deadline := Sys.clock() + I64(Stop) * 1000000;
+        repeat
+            e := LspServer.next(s^.lsp, 20);
+        until (e = LspServer.Event.ended) or (e = LspServer.Event.broken) or (Sys.clock() >= deadline);
+    end;
+    LspServer.done(s^.lsp);
+    d := Docs.all(s^.docs);
+    for k := 0 to LEN(d) - 1 do Str.free(Heap.heap, d[k].uri); end;
+    Docs.done(s^.docs);
+    Str.free(Heap.heap, s^.ext);
+    Str.free(Heap.heap, s^.root);
+    s^ := {};
+end;
+
+(* Every server shut down: the turn is over. *)
+proc stop*;
+var i: INT;
+begin
+    for i := 0 to MaxServers - 1 do
+        if LEN(servers[i].ext) > 0 then drop(i); end;
+    end;
+end;
+
+(* The JSON of a document's identifier, uri's, its record left open. *)
+proc document(var b: Buf.Buf; uri: []const U8);
+begin
+    Buf.str(b, "{\"textDocument\":{\"uri\":");
+    Json.quote(SYSTEM.ADR(b), uri);
+end;
+
+(* Whether s's message in value is what is awaited: the diagnostics of
+   uri at version, or the answer to the request id. *)
+proc wanted(var s: Server; what: Awaited; uri: []const U8; version, id: INT): BOOL;
+var d: ^Json.Doc; v: Json.Value; n: I64; ok: BOOL;
+begin
+    d := SYSTEM.ADR(s.lsp.doc);
+    if what = Awaited.answered then
+        n, ok := Json.toInt(d, Json.member(d, s.lsp.value, "id"));
+        return ok and (n = id) and (Json.member(d, s.lsp.value, "method") = Json.None);
+    end;
+    if (Json.text(d, Json.member(d, s.lsp.value, "method")) # "textDocument/publishDiagnostics") or
+            (Json.text(d, Json.get(d, s.lsp.value, "params.uri")) # uri) then
+        return false;
+    end;
+    (* an older text's, still on its way, is not this one's *)
+    v := Json.get(d, s.lsp.value, "params.version");
+    n, ok := Json.toInt(d, v);
+    return (v = Json.None) or ok and (n = version);
+end;
+
+(* s's messages read till what is awaited comes, at most ms from now;
+   then the message is s.lsp.value, till the next read. *)
+proc await(var s: Server; what: Awaited; uri: []const U8; version, id, ms: INT): Outcome;
+var deadline: I64; e: LspServer.Event;
+begin
+    deadline := Sys.clock() + I64(ms) * 1000000;
+    while Sys.clock() < deadline do
+        e := LspServer.next(s.lsp, 20);
+        if (e = LspServer.Event.broken) or (e = LspServer.Event.ended) then return Outcome.died; end;
+        if (e = LspServer.Event.initialized) and (what = Awaited.initialized) then return Outcome.came; end;
+        if (e = LspServer.Event.message) and (what # Awaited.initialized) and wanted(s, what, uri, version, id) then
+            return Outcome.came;
+        end;
+    end;
+    return Outcome.late;
+end;
+
+(* The program that runs command, words split by blanks: in the jail,
+   through Arun's helper, while staged and the kernel allows it, else
+   as it is. words, args, env, secs and dirs hold what it is made of.
+   In the jail the home is read-only, so a server's log and cache go to
+   the jail's own /tmp (JailHomes). *)
+proc program(command: []const U8; var words, args, env: Strs.Vec; var secs, dirs: Buf.Buf): Sys.Program;
+var word, rest: []const U8; j: Arun.Job; homes: [LEN(JailHomes)][]const U8;
+begin
+    word, rest := Str.field(command);
+    while LEN(word) > 0 do
+        Strs.push(words, word);
+        word, rest := Str.field(rest);
+    end;
+    if (LEN(Afence.stage) = 0) or not Arun.jails() then
+        return {path: Strs.all(words)[0], args: Strs.all(words)};
+    end;
+    homes := JailHomes;
+    j := {args: Strs.all(words), env: homes, jail: true};
+    return Arun.helped(j, args, env, secs, dirs);
+end;
+
+(* servers[i], a free slot, made ext's server, its command started in
+   the zone and initialized: whether it was, and if not why. *)
+proc launch(i: INT; ext, command: []const U8; var why: Buf.Buf): BOOL;
+var s: ^Server; p: Sys.Program; words, args, env: Strs.Vec; secs, dirs: Buf.Buf; nul: INT; ok: BOOL; got: Outcome;
+begin
+    Strs.init(words, Heap.heap);
+    defer Strs.done(words);
+    Strs.init(args, Heap.heap);
+    defer Strs.done(args);
+    Strs.init(env, Heap.heap);
+    defer Strs.done(env);
+    Buf.init(secs, Heap.heap);
+    defer Buf.done(secs);
+    Buf.init(dirs, Heap.heap);
+    defer Buf.done(dirs);
+    s := SYSTEM.ADR(servers[i]);
+    s^ := {ext: keep(ext), root: keep(Afence.zone), next: FirstId};
+    Docs.init(s^.docs, Heap.heap);
+    p := program(command, words, args, env, secs, dirs);
+    nul := Sys.open("/dev/null", {Sys.Access.writing});
+    p.fds[2] := nul;
+    (* a server gone leaves its pipe closed, which must be an error, not the end of arno *)
+    _ := Sys.ignore(Sys.sigPipe, true);
+    ok := LspServer.start(s^.lsp, s^.root, p, "{}", Client);
+    if nul >= 0 then Sys.close(nul); end;
+    got := Outcome.died;
+    if ok then got := await(s^, Awaited.initialized, "", 0, 0, Start); end;
+    if got = Outcome.came then return true; end;
+    if got = Outcome.late then
+        Fmt.write(why, "it did not answer within {} s", [Fmt.int(Start div 1000)]);
+    else
+        Buf.str(why, MSG(s^.lsp.err));
+    end;
+    return false;
+end;
+
+(* The slot of ext's server, running in the zone, started with command
+   if it isn't; or -1, and why it won't start. *)
+proc running(ext, command: []const U8; var why: Buf.Buf): INT;
+var i, free: INT;
+begin
+    free := -1;
+    for i := 0 to MaxServers - 1 do
+        if (servers[i].ext = ext) and (servers[i].root # Afence.zone) then drop(i); end;
+        if servers[i].ext = ext then return i; end;
+        if (free < 0) and (LEN(servers[i].ext) = 0) then free := i; end;
+    end;
+    if free < 0 then
+        Buf.str(why, "too many servers run at once");
+        return -1;
+    end;
+    if not launch(free, ext, command, why) then drop(free); return -1; end;
+    return free;
+end;
+
+(* text, the whole of the file at uri, told s as its next version:
+   that version, or 0 if it couldn't be. *)
+proc tell(var s: Server; uri, ext, text: []const U8): INT;
+var d: ^Doc; all: []Doc; k: INT; params: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(params, Heap.heap);
+    defer Buf.done(params);
+    d := nil;
+    all := Docs.all(s.docs);
+    for k := 0 to LEN(all) - 1 do
+        if all[k].uri = uri then d := SYSTEM.ADR(all[k]); end;
+    end;
+    document(params, uri);
+    if d = nil then
+        d := Docs.add(s.docs);
+        d^ := {uri: keep(uri), version: 1};
+        Buf.str(params, ",\"languageId\":");
+        Json.quote(SYSTEM.ADR(params), ext);
+        Buf.str(params, ",\"version\":1,\"text\":");
+        Json.quote(SYSTEM.ADR(params), text);
+        Buf.str(params, "}}");
+        ok := LspServer.request(s.lsp, 0, "textDocument/didOpen", Buf.bytes(params));
+    else
+        INC(d^.version);
+        Fmt.write(params, ",\"version\":{}}},\"contentChanges\":[{{\"text\":", [Fmt.int(d^.version)]);
+        Json.quote(SYSTEM.ADR(params), text);
+        Buf.str(params, "}]}");
+        ok := LspServer.request(s.lsp, 0, "textDocument/didChange", Buf.bytes(params));
+    end;
+    if not ok then return 0; end;
+    return d^.version;
+end;
+
+(* line number n, from 0, of text, without its line end; "" past the last. *)
+proc lineAt(text: []const U8; n: INT): []const U8;
+var line, rest: []const U8; more: BOOL;
+begin
+    rest := text;
+    more := true;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if n = 0 then return Str.trimRight(line); end;
+        DEC(n);
+    end;
+    return "";
+end;
+
+(* The errors and warnings of list, a JSON array in d of diagnostics of
+   text, added to out, at most Shown, each as path:line:col: severity:
+   message's first line; or that there are none. *)
+proc report(d: ^Json.Doc; list: Json.Value; path, text: []const U8; var out: Buf.Buf);
+var item: Json.Value; i, n, line, col: INT; severity, l, c: I64; ok: BOOL; message: []const U8;
+begin
+    Buf.str(out, "\n\ndiagnostics:");
+    n := 0;
+    if Json.kind(d, list) # Json.array then Buf.str(out, " no errors"); return; end;
+    for i := 0 to Json.len(d, list) - 1 do
+        item := Json.item(d, list, i);
+        severity, ok := Json.toInt(d, Json.member(d, item, "severity"));
+        if not ok then severity := 1; end;   (* none said, the client's to choose: an error *)
+        if severity > 2 then continue; end;
+        INC(n);
+        if n > Shown then continue; end;
+        l, _ := Json.toInt(d, Json.get(d, item, "range.start.line"));
+        c, _ := Json.toInt(d, Json.get(d, item, "range.start.character"));
+        line := INT(l);
+        col := LspText.column(lineAt(text, line), INT(c));
+        message, _, _ := Str.cut(Json.text(d, Json.member(d, item, "message")), "\n");
+        Fmt.write(out, "\n{}:{}:{}: ", [Fmt.str(path), Fmt.int(line + 1), Fmt.int(col + 1)]);
+        if severity = 2 then Buf.str(out, "warning: "); else Buf.str(out, "error: "); end;
+        Buf.str(out, message);
+    end;
+    if n = 0 then Buf.str(out, " no errors"); end;
+    if n > Shown then Fmt.write(out, "\n... and {} more", [Fmt.int(n - Shown)]); end;
+end;
+
+(* s told text, the file at uri, which the model calls path, and its
+   diagnostics waited for and added to out: how the wait ended. *)
+proc ask(var s: Server; uri, ext, path, text: []const U8; var out: Buf.Buf): Outcome;
+var version, id: INT; params: Buf.Buf; got: Outcome; d: ^Json.Doc;
+begin
+    version := tell(s, uri, ext, text);
+    if version = 0 then return Outcome.died; end;
+    d := SYSTEM.ADR(s.lsp.doc);
+    if not s.lsp.pull then
+        got := await(s, Awaited.published, uri, version, 0, Wait);
+        if got = Outcome.came then report(d, Json.get(d, s.lsp.value, "params.diagnostics"), path, text, out); end;
+        return got;
+    end;
+    Buf.init(params, Heap.heap);
+    defer Buf.done(params);
+    document(params, uri);
+    Buf.str(params, "}}");
+    id := s.next;
+    INC(s.next);
+    if not LspServer.request(s.lsp, id, "textDocument/diagnostic", Buf.bytes(params)) then return Outcome.died; end;
+    got := await(s, Awaited.answered, uri, version, id, Wait);
+    if got = Outcome.came then report(d, Json.get(d, s.lsp.value, "result.items"), path, text, out); end;
+    return got;
+end;
+
+(* After an edit that left the file at path holding text: what its
+   type's language server finds wrong with it added to out, if config
+   names a server for the type and the file is in the zone. *)
+proc diagnose*(path, text: []const U8; var out: Buf.Buf);
+var ext, command: []const U8; key, abs, uri, why: Buf.Buf; i: INT; got: Outcome;
+begin
+    if conf = nil then return; end;
+    ext := extension(path);
+    if (LEN(ext) = 0) or given(ext) or (LEN(text) > MaxText) then return; end;
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.str(key, "lsp.");
+    Buf.str(key, ext);
+    command := Str.trim(Aconf.get(conf^, Buf.bytes(key)));
+    if LEN(command) = 0 then return; end;
+    Buf.init(abs, Heap.heap);
+    defer Buf.done(abs);
+    Buf.init(uri, Heap.heap);
+    defer Buf.done(uri);
+    Afence.resolve(path, abs);
+    if not Afence.within(Buf.bytes(abs), Afence.zone) or not LspText.uri(Buf.bytes(abs), uri) then return; end;
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    i := running(ext, command, why);
+    if i < 0 then
+        Strs.push(failed, keep(ext));
+        Fmt.write(out, "\n\ndiagnostics: the language server for .{} ({}) did not start: {}; it is not tried again " +
+            "this session", [Fmt.str(ext), Fmt.str(command), Fmt.str(Buf.bytes(why))]);
+        return;
+    end;
+    got := ask(servers[i], Buf.bytes(uri), ext, path, text, out);
+    if got = Outcome.late then
+        Fmt.write(out, "\n\ndiagnostics: none came within {} s", [Fmt.int(Wait div 1000)]);
+    elsif got = Outcome.died then
+        Strs.push(failed, keep(ext));
+        Fmt.write(out, "\n\ndiagnostics: the language server for .{} broke: {}; it is not tried again this session",
+            [Fmt.str(ext), Fmt.str(MSG(servers[i].lsp.err))]);
+        drop(i);
+    end;
+end;
+
+(* The test, against test/Alspstub.raz, built as build/lspstub, which
+   the configuration names for its types: x pushes, y is pulled from,
+   z never says, w is no program, v dies once told a text. *)
+
+var bad: BOOL;   (* a check failed *)
+
+proc expect(what, got, want: []const U8);
+begin
+    if got = want then return; end;
+    Out.str("Alsp: ");
+    Out.str(what);
+    Out.str("\n  got:  ");
+    Out.str(got);
+    Out.str("\n  want: ");
+    Out.str(want);
+    Out.ln;
+    bad := true;
+end;
+
+(* The file path written with text, and diagnosed: what diagnose adds. *)
+proc edited(path, text: []const U8; var out: Buf.Buf): []const U8;
+begin
+    Buf.reset(out);
+    if not Files.write(path, text) then expect("written", path, "a file"); end;
+    diagnose(path, text, out);
+    return Buf.bytes(out);
+end;
+
+(* What each type's server says of a file, and once in the jail. *)
+proc main*: INT;
+var c: Aconf.Conf; out: Buf.Buf; many: Buf.Buf; i: INT;
+begin
+    Arun.child();   (* a jailed server's helper is this program again *)
+    Afence.init();
+    Aconf.init(c);
+    Aconf.read(c, `
+        lsp.x = build/lspstub
+        lsp.y = build/lspstub pull
+        lsp.z = build/lspstub silent
+        lsp.w = build/no-such-server
+        lsp.v = build/lspstub die
+        `);
+    use(SYSTEM.ADR(c));
+    Buf.init(out, Heap.heap);
+    Buf.init(many, Heap.heap);
+    _ := Sys.makeDir("build/alsp");
+    expect("an error, its column in bytes", edited("build/alsp/a.x", "fine\n\xc3\xbc\xf0\x9f\x98\x80 bad\nmeh fyi\n", out),
+        "\n\ndiagnostics:\nbuild/alsp/a.x:2:8: error: bad word\nbuild/alsp/a.x:3:1: warning: meh word");
+    expect("the same file mended", edited("build/alsp/a.x", "fine\nfyi\n", out), "\n\ndiagnostics: no errors");
+    for i := 1 to 12 do Buf.str(many, "bad\n"); end;
+    expect("at most Shown", edited("build/alsp/b.x", Buf.bytes(many), out)[0..60], "\n\ndiagnostics:\nbuild/alsp/b.x:1:1: error: bad word\nbuild/als");
+    expect("those past Shown", Str.trim(Buf.bytes(out)[Str.findLast(Buf.bytes(out), "\n")..out.len]), "... and 2 more");
+    expect("pulled", edited("build/alsp/a.y", "a bad one\n", out), "\n\ndiagnostics:\nbuild/alsp/a.y:1:3: error: bad word");
+    expect("a type with no server", edited("build/alsp/a.q", "bad\n", out), "");
+    expect("a server that never says", edited("build/alsp/a.z", "bad\n", out), "\n\ndiagnostics: none came within 2 s");
+    expect("no such server", edited("build/alsp/a.w", "bad\n", out),
+        "\n\ndiagnostics: the language server for .w (build/no-such-server) did not start: language server pipe failed; " +
+        "it is not tried again this session");
+    expect("no such server, said once", edited("build/alsp/a.w", "bad\n", out), "");
+    expect("a server that dies", edited("build/alsp/a.v", "bad\n", out),
+        "\n\ndiagnostics: the language server for .v broke: language server pipe failed; it is not tried again this session");
+    stop();
+    if Arun.jails() then
+        Afence.useStage(Afence.zone);
+        expect("in the jail", edited("build/alsp/a.x", "bad\n", out),
+            "\n\ndiagnostics:\nbuild/alsp/a.x:1:1: error: bad word");
+        stop();
+        Afence.leaveStage();
+    end;
+    Buf.done(many);
+    Buf.done(out);
+    Aconf.done(c);
+    if bad then return 1; end;
+    return 0;
+end;
+
+end Alsp.

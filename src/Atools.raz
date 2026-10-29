@@ -43,8 +43,8 @@
    writes past 4 MB.
 
    Depends on Afence, Afind (find, grep, outline and def), Arun (git,
-   run and check), Astore (tests.json), Aahead (note), Ahtml (fetch),
-   Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
+   run and check), Alsp (an edit's diagnostics), Astore (tests.json),
+   Aahead (note), Ahtml (fetch), Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
    rnet's Http (search and fetch), rjson's Json.
    Delegate and plan are the agent's, which runs the worker and keeps
    the plan; they are described here, with the rest. A call of an MCP server's tool is asked about
@@ -63,7 +63,7 @@
    removed. Leaves out the images read shows as pictures, which come
    with the screen. *)
 module Atools;
-import Aprice, Afence, Afind, Apeer, Arun, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
+import Aprice, Afence, Afind, Apeer, Arun, Alsp, Aahead, Astore, Ahtml, Awire, Amsg, Amcp, Http, Json, Buf, Str, Sys, Files, Fmt, Heap, Mem, Arena, Rt, Out,
     Strs := Vec([]const U8), Cmds := Vec(Cmd), Refusals := Vec(Refusal), Tools := Vec(Awire.Tool);
 import SYSTEM;
 
@@ -1503,11 +1503,13 @@ begin
     end;
     if not Files.write(p, Buf.bytes(b)) then
         Fmt.write(out, "error: cannot write {}", [Fmt.str(p)]);
+        return;
     elsif LEN(old) = 0 then
         Fmt.write(out, "ok: created {}", [Fmt.str(p)]);
     else
         Fmt.write(out, "ok: {} replaced", [Fmt.int(n)]);
     end;
+    Alsp.diagnose(p, Buf.bytes(b), out);
 end;
 
 (* Whether path is a file that move and remove may take; if not, why
