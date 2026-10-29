@@ -683,9 +683,11 @@ One of the programs
 names; see
 .Sx RUN AND TRUST .
 .It Ic shell
-A command line, run in the jail, in the stage's copy of the project; see
+A command line, run in the jail, in the project; see
 .Sx THE JAIL .
-Offered only while the stage is up and the jail can run.
+The project is read-only to it unless the stage is up, when it writes
+in the stage's copy.
+Offered only where the jail can run.
 .It Ic note
 A line kept for later sessions on this project; see
 .Sx Project notes .
@@ -977,19 +979,25 @@ A sandbox that cannot be made is an error, never a command run outside
 it.
 .Pp
 .Ic shell
-is offered only while the stage is up, where the jail can run, and not in
-.Cm review
-or
-.Cm improve
-mode or with
+is offered where the jail can run, unless
 .Ql "shell = no" .
-A call of it when it is not on offer is refused:
-.Ql "error: shell is not on offer" .
-In your own tree it could rewrite
+Without the stage your tree is read-only to it, and only
+.Ev ARNO_SCRATCH
+and
+.Pa /tmp
+are writable: it can look, count and try, but not change the project.
+It never writes in your own tree, where it could rewrite
 .Pa .git
 or the Makefile, which git and
 .Ic check
 then run outside the sandbox, with no diff shown.
+While the stage is up it writes in the copy, and is not offered in
+.Cm review
+or
+.Cm improve
+mode.
+A call of it when it is not on offer is refused:
+.Ql "error: shell is not on offer" .
 .Pp
 The jail needs Linux 5.12 or later, with unprivileged user namespaces
 enabled, on x86_64; where it cannot run, the tool is not offered.
@@ -1368,7 +1376,7 @@ has been given in.
 .Ql no
 withdraws the
 .Ic shell
-tool; it is offered otherwise, while the stage is up.
+tool; it is offered otherwise, where the jail can run.
 .It Cm run
 Program names, separated by blanks, that
 .Ic run

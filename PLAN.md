@@ -386,8 +386,12 @@ one or more commits that build with `-Werror`.
      that run without asking (`Atools.runOffer`), and `Readers` (`ls wc
      head file stat`) are always allowed, trusted and fenced as
      `run_ro`'s, so `run` is offered even with an empty `run`.
-   - [ ] `shell` offered whenever the jail works, not only staged: the
-     tree is read-only to it then, only scratch writable.
+   - [x] `shell` offered wherever the jail works, not only staged.
+     Without the stage the project is read-only to it, `$ARNO_SCRATCH`
+     and `/tmp` writable, and it runs in the project (`Afence.zone`):
+     `ls | wc`, `concha -c`, `git -C` cost no refusal. As staged, it
+     reads what the human can, the secrets aside, without the fence's
+     question.
    - [ ] Context files in an editor's sessions: find whether `ask`
      goes unanswered there; remember the answer for each project root.
    - [ ] `fetch` and `grep` give at most so much, and say where more is.

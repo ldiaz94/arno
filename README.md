@@ -160,10 +160,11 @@ copy of the project, and a turn's changes reach you as one diff and one
 question, not one yes per edit. Nothing is applied to your tree
 without your yes.
 
-**The shell.** `shell` runs a command, but only in the stage's copy,
-inside a jail made of Linux's unprivileged namespaces (no root, no
-helper): the project is the only thing writable. It is off if the
-config says `shell = no`, and it needs the stage.
+**The shell.** `shell` runs a command inside a jail made of Linux's
+unprivileged namespaces (no root, no helper), with no network. Without
+the stage the project is read-only to it, so it can look and try but
+not change; with the stage it writes in the copy. It is off if the
+config says `shell = no`.
 
 **MCP servers.** A server of the Model Context Protocol, a program that
 offers tools over standard input and output, is added to the config, a
