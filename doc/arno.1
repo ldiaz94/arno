@@ -910,8 +910,11 @@ and
 are jailed there.
 When it ends, even at its step cap, what it changed goes back as one
 diff, kept in the scratch directory as
-.Pa worker-N.diff
-and summed up file by file in the result, and its copy is removed.
+.Pa worker-N.diff ,
+its conversation beside it as
+.Pa worker-N.json
+(to check what it read), and summed up file by file in the result,
+and its copy is removed.
 Safe, there is no copy to make one from: a worker works in the project
 itself, each change asked, as the model's own.
 The description lists the models with their list prices per million

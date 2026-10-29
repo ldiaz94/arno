@@ -519,7 +519,7 @@ one or more commits that build with `-Werror`.
      0 for the lead and N for worker N, set by `work`; each
      `Aboard.Entry` keeps it, and `--serve` sends it (arno-serve(5)).
      Nothing on the screen changes yet.
-   - [ ] Workers' conversations kept. A worker's conversation is gone
+   - [x] Workers' conversations kept. A worker's conversation is gone
      once it reports, so what it read can't be checked afterwards. It
      is kept as `worker-N.json` in the scratch, beside `worker-N.diff`,
      and the report line names it.

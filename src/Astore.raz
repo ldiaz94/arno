@@ -552,14 +552,11 @@ begin
     end;
 end;
 
-(* c written to its file, as the module's comment shows it. *)
-proc save*(const c: Conv): ERROR;
-var b, path: Buf.Buf; i: INT; msgs: []Amsg.Msg; turns: [][]U8;
+(* c as the module's comment shows it, JSON, added to b. *)
+proc render*(const c: Conv; var b: Buf.Buf);
+var path: Buf.Buf; i: INT; msgs: []Amsg.Msg; turns: [][]U8;
 begin
-    if not fit(c.id) then return BadId; end;
-    Buf.init(b, Heap.heap);
     Buf.init(path, Heap.heap);
-    defer Buf.done(b);
     defer Buf.done(path);
     Buf.str(b, `{"title":`);
     Buf.str(path, c.title);
@@ -592,7 +589,18 @@ begin
         Buf.add(b, ']');
     end;
     Buf.add(b, '}');
-    Buf.reset(path);
+end;
+
+(* c written to its file. *)
+proc save*(const c: Conv): ERROR;
+var b, path: Buf.Buf;
+begin
+    if not fit(c.id) then return BadId; end;
+    Buf.init(b, Heap.heap);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(b);
+    defer Buf.done(path);
+    render(c, b);
     Buf.str(path, dir());
     Buf.str(path, c.id);
     Buf.str(path, ".json");

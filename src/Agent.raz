@@ -42,11 +42,12 @@
    from the stage's copy as it stands, numbered, and for its turn the
    zone: its edits go unasked, its shell and check jailed there. When
    it ends, what it changed comes back as one diff, kept in the scratch
-   directory as worker-N.diff and summed up in the call's result, even
-   when it stopped at its cap; its copy is removed. The lead reads the
-   diff and merges it into its own copy or drops it (merge). Safe,
-   with no copy to make one from, a worker works in the lead's zone,
-   each change asked, as the lead's own.
+   directory as worker-N.diff, its conversation beside it as
+   worker-N.json (a saved conversation's format), and summed up in
+   the call's result, even when it stopped at its cap; its copy is
+   removed. The lead reads the diff and merges it into its own copy
+   or drops it (merge). Safe, with no copy to make one from, a worker
+   works in the lead's zone, each change asked, as the lead's own.
 
    In build mode the session's model leads: before it may change a
    file or delegate, it puts a plan to the human with the plan tool,
@@ -445,6 +446,20 @@ begin
     return Files.write(Buf.bytes(path), report);
 end;
 
+(* Worker n's conversation w kept in the scratch directory as
+   worker-n.json, so that what it read can be checked once it has
+   reported; its path into path. false if it can't be written. *)
+proc keepWorker(n: INT; const w: Astore.Conv; var path: Buf.Buf): BOOL;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Astore.render(w, b);
+    Buf.reset(path);
+    Fmt.write(path, "{}/worker-{}.json", [Fmt.str(Afence.scratch), Fmt.int(n)]);
+    return Files.write(Buf.bytes(path), Buf.bytes(b));
+end;
+
 (* What worker n, 0 for one in the lead's zone, reported over w, added
    to out, and kept with its task for the next workers' briefs. One
    that stopped at its cap, its steps used, is said to have. false if
@@ -474,6 +489,8 @@ begin
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
+    (* a worker with no number, in the lead's zone, keeps no conversation *)
+    if (n > 0) and keepWorker(n, w, path) then Fmt.write(out, ", conversation in {}", [Fmt.str(Buf.bytes(path))]); end;
     Fmt.write(out, ":\n{}", [Fmt.str(report)]);
     return true;
 end;
