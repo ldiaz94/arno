@@ -601,7 +601,7 @@ begin
 end;
 
 (* Whether c's plan is approved: the last result of plan in c says so. *)
-proc approved(const c: Astore.Conv): BOOL;
+proc approved*(const c: Astore.Conv): BOOL;
 var m: []Amsg.Msg; i: INT;
 begin
     m := Msgs.all(c.msgs);

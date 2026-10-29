@@ -67,6 +67,22 @@ type
         notesBefore: INT;      (* the project's notes as the turn began, which the stage shows the new ones after *)
     end;
 
+    (* What the status line says: the screen draws it in colour, text
+       writes it out. Its texts are its own, from Heap. *)
+    Facts* = record
+        mode*: Aprompt.Mode;
+        staged*: BOOL;       (* safety auto, working on the stage's copy; else safe *)
+        approved*: BOOL;     (* the conversation's plan is approved, which build waits for *)
+        model*: Buf.Buf;
+        provider*: Buf.Buf;
+        context*: Buf.Buf;   (* the context in use, as meter says it *)
+        fill*: INT;          (* the percent of the model's window in use; -1 where the window is unknown *)
+        usage*: Buf.Buf;     (* the tokens in and out, "in 12k out 3k"; "" before a request *)
+        cost*: Buf.Buf;      (* what the session cost; "" before a request, or with no price known *)
+        full*: BOOL;         (* the conversation is large: time for /compact *)
+        title*: Buf.Buf;     (* the conversation's title, 40 bytes of it at most *)
+    end;
+
 const
     Listed = 20;   (* conversations /list shows, and /load N counts in *)
     MaxTest = 50000;   (* bytes of a failed /test's output put to the model, the last *)
@@ -909,49 +925,108 @@ begin
     end;
 end;
 
-(* The status line, into b: the mode, the model and its provider, the
-   context in use, what the session cost, a pointer to /compact once
-   the conversation is large, and its title, 40 bytes of it at most.
-   The numbers come before the title, which the screen cuts first on a
-   narrow terminal. Large is 60% of the model's window where that is
-   known, else 20 messages or 50 KB of text. *)
-proc status*(const s: Session; var b: Buf.Buf);
-var pr: Aprice.Price; n: I64; title: Buf.Buf; t: []const U8; i: INT; full: BOOL;
+(* The texts of f made, empty, from Heap. *)
+proc initFacts*(var f: Facts);
 begin
-    Fmt.write(b, "arno \u{B7} {} \u{B7} {} @ {} \u{B7} ctx ", [Fmt.str(Aprompt.Modes[INT(s.agent.mode)].name),
-        Fmt.str(s.conf.prov.model), Fmt.str(s.conf.prov.name)]);
-    meter(s, b);
-    if s.agent.requests > 0 then
-        Buf.str(b, " \u{B7} in ");
-        tokens(b, s.agent.used.inp);
-        Buf.str(b, " out ");
-        tokens(b, s.agent.used.out);
-        if s.agent.unpriced < s.agent.requests then
-            Buf.str(b, " \u{B7} ");
-            money(b, s.agent.spent);
-            if s.agent.unpriced > 0 then Buf.add(b, '+'); end;
-        end;
-    end;
+    Buf.init(f.model, Heap.heap);
+    Buf.init(f.provider, Heap.heap);
+    Buf.init(f.context, Heap.heap);
+    Buf.init(f.usage, Heap.heap);
+    Buf.init(f.cost, Heap.heap);
+    Buf.init(f.title, Heap.heap);
+end;
+
+(* The texts of f let go. *)
+proc doneFacts*(var f: Facts);
+begin
+    Buf.done(f.model);
+    Buf.done(f.provider);
+    Buf.done(f.context);
+    Buf.done(f.usage);
+    Buf.done(f.cost);
+    Buf.done(f.title);
+end;
+
+(* What s's status line says, into f, made with initFacts. The
+   conversation is large, time for /compact, at 60% of the model's
+   window where that is known, else at 20 messages or 50 KB of text.
+   The title is cut to 40 bytes. *)
+proc facts*(const s: Session; var f: Facts);
+var pr: Aprice.Price; n: I64; title: Buf.Buf; t: []const U8; i: INT;
+begin
+    f.mode := s.agent.mode;
+    f.staged := LEN(Afence.stage) > 0;
+    f.approved := Agent.approved(s.conv);
+    Buf.reset(f.model);
+    Buf.str(f.model, s.conf.prov.model);
+    Buf.reset(f.provider);
+    Buf.str(f.provider, s.conf.prov.name);
+    Buf.reset(f.context);
+    meter(s, f.context);
     n, _ := context(s);
     pr, _ := Aprice.price(s.conf.prov);
+    f.fill := -1;
     if pr.window > 0 then
-        full := n * 10 >= pr.window * 6;
+        f.fill := INT(n * 100 div pr.window);
+        f.full := n * 10 >= pr.window * 6;
     else
-        full := (s.conv.msgs.len >= 20) or (n * 4 >= 50 * 1024);
+        f.full := (s.conv.msgs.len >= 20) or (n * 4 >= 50 * 1024);
     end;
-    if full then Buf.str(b, " \u{B7} /compact"); end;
+    Buf.reset(f.usage);
+    Buf.reset(f.cost);
+    if s.agent.requests > 0 then
+        Buf.str(f.usage, "in ");
+        tokens(f.usage, s.agent.used.inp);
+        Buf.str(f.usage, " out ");
+        tokens(f.usage, s.agent.used.out);
+        if s.agent.unpriced < s.agent.requests then
+            money(f.cost, s.agent.spent);
+            if s.agent.unpriced > 0 then Buf.add(f.cost, '+'); end;
+        end;
+    end;
+    Buf.reset(f.title);
     Buf.init(title, Heap.heap);
     defer Buf.done(title);
     Buf.str(title, s.conv.title);
     if title.len = 0 then Astore.autoTitle(s.conv, title); end;
     t := Buf.bytes(title);
-    if LEN(t) = 0 then return; end;
-    Buf.str(b, " \u{B7} ");
-    if LEN(t) <= 40 then Str.replace(b, t, "\n", " "); return; end;
+    if LEN(t) <= 40 then Str.replace(f.title, t, "\n", " "); return; end;
     i := 40;
     while (i > 0) and (t[i] & 0C0H = 80H) do DEC(i); end;   (* inside a character *)
-    Str.replace(b, t[0..i], "\n", " ");
-    Buf.str(b, "\u{2026}");
+    Str.replace(f.title, t[0..i], "\n", " ");
+    Buf.str(f.title, "\u{2026}");
+end;
+
+(* The status line f says, as text, into b: the mode, with the safety
+   and, in build, whether the plan is approved, then the model and its
+   provider, the context in use, what the session cost, a pointer to
+   /compact once the conversation is large, and its title. The numbers
+   come before the title, which a narrow terminal cuts first; the
+   safety and the plan share the mode's field, which arnold reads as
+   the second of the fields that " \u{B7} " parts. *)
+proc text*(const f: Facts; var b: Buf.Buf);
+begin
+    Fmt.write(b, "arno \u{B7} {} (", [Fmt.str(Aprompt.Modes[INT(f.mode)].name)]);
+    if f.staged then Buf.str(b, "auto"); else Buf.str(b, "safe"); end;
+    if f.mode = Aprompt.build then
+        if f.approved then Buf.str(b, ", plan \u{2713}"); else Buf.str(b, ", plan ?"); end;
+    end;
+    Fmt.write(b, ") \u{B7} {} @ {} \u{B7} ctx {}", [Fmt.str(Buf.bytes(f.model)), Fmt.str(Buf.bytes(f.provider)),
+        Fmt.str(Buf.bytes(f.context))]);
+    if f.usage.len > 0 then Fmt.write(b, " \u{B7} {}", [Fmt.str(Buf.bytes(f.usage))]); end;
+    if f.cost.len > 0 then Fmt.write(b, " \u{B7} {}", [Fmt.str(Buf.bytes(f.cost))]); end;
+    if f.full then Buf.str(b, " \u{B7} /compact"); end;
+    if f.title.len > 0 then Fmt.write(b, " \u{B7} {}", [Fmt.str(Buf.bytes(f.title))]); end;
+end;
+
+(* The status line of s, as text, into b. *)
+proc status*(const s: Session; var b: Buf.Buf);
+var f: Facts;
+begin
+    initFacts(f);
+    defer doneFacts(f);
+    facts(s, f);
+    text(f, b);
 end;
 
 (* /usage: what the session's requests cost, in tokens and in dollars

@@ -3,7 +3,11 @@
    The screen is, from the top: the transcript (Aboard), a rule that
    says what is going on, the input, which grows to eight rows as it
    is typed, and the status line, the session's mode, model, context
-   in use and cost, and the conversation's title (Asession.status).
+   in use and cost, and the conversation's title, drawn from the
+   session's facts (Asession.Facts) in parts of their own colours. The
+   mode is a pill, its name on a colour of its own, with the safety
+   beside it; on a narrow terminal the parts that say least go first.
+   A change of mode or safety is said on the rule for a moment.
 
    What the human types runs on a thread of its own, a job: a message
    is a turn, a command is run, and the first job prepares the session,
@@ -72,6 +76,11 @@ type
     (* What a job tells the loop. *)
     Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, status, ended);
 
+    (* The parts of the status line a narrow row leaves out, in the
+       order it leaves them out; the mode, safety and plan always show. *)
+    Part = (hints, title, usage, provider, context, model);
+    Parts = set of Part;
+
     Event = record
         sort: Sort;
         a, b, c: Buf.Buf;   (* its texts: a question's, its detail and keys *)
@@ -82,6 +91,13 @@ const
     MaxInput = 8;   (* rows the input grows to *)
     MaxMenu = 8;    (* rows of completions shown *)
     Hints = "^O tools \u{B7} M-v copy \u{B7} S-Tab mode \u{B7} /help";
+    Gap = 3;          (* columns between the status line's parts *)
+    Near = 2;         (* columns between the safety and the plan *)
+    MinTitle = 12;    (* columns the title needs, cut, to be shown at all *)
+    Bar = 8;          (* cells of the context's bar *)
+    NoticeTime = 2000;   (* milliseconds a change of mode or safety is said on the rule *)
+    (* each mode's colour, by Aprompt.Mode, for its pill: build the loudest *)
+    ModeRoles: [5]Term.Role = [Term.accent, Term.good, Term.info, Term.strong, Term.warn];
     Prompt = "\u{203A} ";
     (* git commit -v's line, byte for byte, which an editor may know *)
     Scissors = "# ------------------------ >8 ------------------------";
@@ -102,6 +118,8 @@ var
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
+    posted: Asession.Facts;   (* the facts it made last, under mutex *)
+    fresh: BOOL;        (* posted is newer than what the loop shows, under mutex *)
     because: Buf.Buf;   (* the why it was given *)
 
     (* the loop's own *)
@@ -111,8 +129,12 @@ var
     reader: TuiMap.Reader;
     back: INT;          (* rows the transcript is scrolled back *)
     view: INT;          (* rows of it the last draw showed *)
-    status: Buf.Buf;    (* the status line *)
+    facts: Asession.Facts;   (* what the status line shows *)
     flash: Buf.Buf;     (* said on the rule until the next key *)
+    notice: Buf.Buf;    (* a change of mode or safety, said on the rule for NoticeTime *)
+    noticeStyle: TuiScreen.Style;   (* its style *)
+    begun: BOOL;        (* the first job has been started *)
+    prepared: BOOL;     (* the first job, which prepares the session, has ended *)
     question: Buf.Buf;  (* the question being asked, "" for none *)
     keys: Buf.Buf;      (* the keys that answer it *)
     no: U8;             (* the one of them that is no *)
@@ -183,11 +205,16 @@ begin
 end;
 
 (* The status line made again, from the job's thread: the session is
-   the job's while it runs. *)
+   the job's while it runs. Its facts are left in posted for the loop,
+   its text goes in the event, for the viewers. *)
 proc counted(_arg: ^U8);
 begin
+    Thread.lock(mutex);
+    Asession.facts(session^, posted);
+    fresh := true;
     Buf.reset(made);
-    Asession.status(session^, made);
+    Asession.text(posted, made);
+    Thread.unlock(mutex);
     post(Sort.status, Buf.bytes(made), session^.conv.title, "", false);
 end;
 
@@ -412,6 +439,56 @@ begin
     return true;
 end;
 
+(* The notice of what changed from old to the facts shown, a mode or
+   the safety, on the rule for NoticeTime: what the mode is for, or
+   what the safety does. *)
+proc noticed(const old: Asession.Facts);
+var m: INT;
+begin
+    m := INT(facts.mode);
+    Buf.reset(notice);
+    if facts.mode # old.mode then
+        Fmt.write(notice, "{}: {}", [Fmt.str(Aprompt.Modes[m].name), Fmt.str(Aprompt.Modes[m].hint)]);
+        noticeStyle := TuiScreen.style(ModeRoles[m], {TuiScreen.Attr.bold});
+    elsif facts.staged = old.staged then
+        return;
+    elsif facts.staged then
+        Buf.str(notice, "auto: changes made on a copy, one diff a turn to apply");
+        noticeStyle := TuiScreen.style(Term.good, {TuiScreen.Attr.bold});
+    else
+        Buf.str(notice, "safe: each change asked");
+        noticeStyle := TuiScreen.style(Term.warn, {TuiScreen.Attr.bold});
+    end;
+    TuiLoop.after(NoticeTime);
+end;
+
+(* The facts f shown from now on, and f given the ones shown before,
+   swapped, not copied; what changed is noticed once the session is
+   prepared. *)
+proc restate(var f: Asession.Facts);
+var old: Asession.Facts;
+begin
+    old := facts;
+    facts := f;
+    f := old;
+    if prepared then noticed(f); end;
+end;
+
+(* The status line made again from the session, on the loop's thread,
+   with no job running, and told the viewers. *)
+proc remade;
+var f: Asession.Facts; b: Buf.Buf;
+begin
+    Asession.initFacts(f);
+    defer Asession.doneFacts(f);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Asession.facts(session^, f);
+    Asession.text(f, b);
+    Aview.stated(Buf.bytes(b), session^.conv.title);
+    restate(f);
+end;
+
 (* What a job told, taken from the queue into the board. *)
 proc woken;
 var e: []Event; i: INT; finished: BOOL;
@@ -431,8 +508,7 @@ begin
         | asked: pose(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
         | Sort.why: TuiLine.start(SYSTEM.ADR(why), " why not? ", "", nil);
         | Sort.status:
-            Buf.reset(status);
-            Buf.str(status, Buf.bytes(e[i].a));
+            if fresh then restate(posted); fresh := false; end;
             Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b));
         | ended:
             finished := true;
@@ -459,16 +535,18 @@ begin
         if mode >= 0 then
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
-            Buf.reset(status);
-            Asession.status(session^, status);
+            remade();
         end;
+        prepared := true;
     end;
 end;
 
-(* The first job, once the loop runs: before, a wake would be lost. *)
+(* The timer: first, the first job, once the loop runs (before, a wake
+   would be lost); after, the end of the notice's time. *)
 proc tick;
 begin
-    start("");
+    if not begun then begun := true; start(""); return; end;
+    Buf.reset(notice);
 end;
 
 (* the commands *)
@@ -528,8 +606,7 @@ begin
     m := (m + 1) mod LEN(Aprompt.Modes);
     if thread = nil then
         session^.agent.mode := Aprompt.Mode(m);
-        Buf.reset(status);
-        Asession.status(session^, status);
+        remade();
     else
         mode := m;
         Fmt.write(flash, "mode {} from the next turn", [Fmt.str(Aprompt.Modes[m].name)]);
@@ -937,6 +1014,16 @@ begin
     refresh();
 end;
 
+(* text said at the start of the rule, row r, in st, a blank each side,
+   short of right: the column after. *)
+proc said(s: ^TuiScreen.Screen; r, right: INT; text: []const U8; st: TuiScreen.Style): INT;
+var col: INT;
+begin
+    col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
+    col := TuiScreen.putTo(s, r, col, right, text, st);
+    return TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+end;
+
 (* The rule on row r: what is going on, then a line, then how far the
    transcript is scrolled back; or the line a reason is typed on. *)
 proc rule(s: ^TuiScreen.Screen; r: INT);
@@ -950,9 +1037,7 @@ begin
     right := s^.cols - TuiScreen.columns(Buf.bytes(d));
     col := 0;
     if question.len > 0 then
-        col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
-        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(question), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
-        col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+        col := said(s, r, right, Buf.bytes(question), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
     elsif Acopy.active() then
         col := TuiScreen.putTo(s, r, 0, right, " COPY ", TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
         if LEN(Acopy.saying()) > 0 then
@@ -966,9 +1051,9 @@ begin
         col := TuiScreen.putTo(s, r, col, right, Buf.bytes(query), TuiScreen.style(Term.strong, {}));
         col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
     elsif flash.len > 0 then
-        col := TuiScreen.putTo(s, r, 0, right, " ", TuiScreen.Plain);
-        col := TuiScreen.putTo(s, r, col, right, Buf.bytes(flash), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
-        col := TuiScreen.putTo(s, r, col, right, " ", TuiScreen.Plain);
+        col := said(s, r, right, Buf.bytes(flash), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
+    elsif notice.len > 0 then
+        col := said(s, r, right, Buf.bytes(notice), noticeStyle);
     elsif (thread # nil) or viewBusy then
         col := TuiScreen.putTo(s, r, 0, right, " \u{25CF} working \u{B7} ^C stops ", TuiScreen.style(Term.info, {}));
     end;
@@ -976,17 +1061,127 @@ begin
     _ := TuiScreen.put(s, r, right, Buf.bytes(d), TuiScreen.style(Term.dim, {}));
 end;
 
-(* The status line on the last row, reversed, the hints at its right
-   if there is room. *)
-proc bottom(s: ^TuiScreen.Screen);
-var st: TuiScreen.Style; r, col, w: INT;
+(* text in st from col on the status line, the last row of s; with s
+   nil, only measured. The column after it. *)
+proc piece(s: ^TuiScreen.Screen; col: INT; text: []const U8; st: TuiScreen.Style): INT;
 begin
-    r := s^.rows - 1;
-    st := TuiScreen.style(Term.select, {});
-    TuiScreen.fill(s, r, 0, s^.cols, st);
-    col := TuiScreen.put(s, r, 1, Buf.bytes(status), st);
+    if s = nil then return col + TuiScreen.columns(text); end;
+    return TuiScreen.put(s, s^.rows - 1, col, text, st);
+end;
+
+(* The mode as a pill from col: its name in capitals, bold, on its
+   colour. *)
+proc pill(s: ^TuiScreen.Screen; col: INT): INT;
+var b: Buf.Buf; m: INT;
+begin
+    m := INT(facts.mode);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, " {} ", [Fmt.str(Aprompt.Modes[m].name)]);
+    Str.upper(Buf.bytes(b));
+    return piece(s, col, Buf.bytes(b), TuiScreen.style(ModeRoles[m], {TuiScreen.Attr.bold, TuiScreen.Attr.reverse}));
+end;
+
+(* The context in use from col: a bar of Bar cells and the percent of
+   the model's window, green, yellow from 60%, when /compact is due,
+   red from 85%; where the window is unknown, the count alone. *)
+proc meter(s: ^TuiScreen.Screen; col: INT): INT;
+var b: Buf.Buf; role: Term.Role; i, n: INT;
+begin
+    col := piece(s, col, "ctx ", TuiScreen.style(Term.dim, {}));
+    if facts.fill < 0 then return piece(s, col, Buf.bytes(facts.context), TuiScreen.Plain); end;
+    role := Term.good;
+    if facts.fill >= 85 then role := Term.bad; elsif facts.fill >= 60 then role := Term.warn; end;
+    n := (facts.fill * Bar + 50) div 100;
+    if n > Bar then n := Bar; end;
+    for i := 1 to n do col := piece(s, col, "\u{25B0}", TuiScreen.style(role, {})); end;
+    for i := n + 1 to Bar do col := piece(s, col, "\u{25B1}", TuiScreen.style(Term.dim, {})); end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, " {}%", [Fmt.int(facts.fill)]);
+    return piece(s, col, Buf.bytes(b), TuiScreen.style(role, {}));
+end;
+
+(* The title from col, cut with an ellipsis to end by limit: the column
+   after. Measured, it takes MinTitle columns at most, as it is cut to
+   the room the other parts leave it. *)
+proc titled(s: ^TuiScreen.Screen; col, limit: INT): INT;
+var t: []const U8; w: INT; st: TuiScreen.Style;
+begin
+    t := Buf.bytes(facts.title);
+    w := TuiScreen.columns(t);
+    st := TuiScreen.style(Term.text, {TuiScreen.Attr.italic});
+    if s = nil then
+        if w > MinTitle then w := MinTitle; end;
+        return col + w;
+    end;
+    if col + w <= limit then return piece(s, col, t, st); end;
+    col := TuiScreen.putTo(s, s^.rows - 1, col, limit - 1, t, st);
+    return piece(s, col, "\u{2026}", st);
+end;
+
+(* The status line's parts but the hints, those in shown and the mode,
+   safety and plan always, Gap apart from column 0, the title ending by
+   limit: the column after them. With s nil, only measured. *)
+proc parts(s: ^TuiScreen.Screen; shown: Parts; limit: INT): INT;
+var col: INT; dim: TuiScreen.Style;
+begin
+    dim := TuiScreen.style(Term.dim, {});
+    col := pill(s, 0);
+    if facts.staged then
+        col := piece(s, col + 1, "\u{25CF} auto", TuiScreen.style(Term.good, {}));
+    else
+        col := piece(s, col + 1, "\u{25C6} safe", TuiScreen.style(Term.warn, {}));
+    end;
+    if (facts.mode = Aprompt.build) and facts.approved then
+        col := piece(s, col + Near, "plan \u{2713}", TuiScreen.style(Term.good, {}));
+    elsif facts.mode = Aprompt.build then
+        col := piece(s, col + Near, "plan ?", TuiScreen.style(Term.warn, {}));
+    end;
+    if Part.model in shown then
+        col := piece(s, col + Gap, Buf.bytes(facts.model), TuiScreen.style(Term.strong, {}));
+        if Part.provider in shown then col := piece(s, col, " @ ", dim); col := piece(s, col, Buf.bytes(facts.provider), dim); end;
+    end;
+    if Part.context in shown then
+        col := meter(s, col + Gap);
+        if facts.full then col := piece(s, col + 1, "/compact", TuiScreen.style(Term.bad, {TuiScreen.Attr.bold})); end;
+    end;
+    if (Part.usage in shown) and (facts.usage.len > 0) then
+        col := piece(s, col + Gap, Buf.bytes(facts.usage), dim);
+        if facts.cost.len > 0 then col := piece(s, col, " \u{B7} ", dim); col := piece(s, col, Buf.bytes(facts.cost), dim); end;
+    end;
+    if (Part.title in shown) and (facts.title.len > 0) then
+        col := titled(s, col + Gap, limit);
+    end;
+    return col;
+end;
+
+(* The status line on the last row: the parts that fit cols, the
+   least needed left out first, and the hints at the right if there is
+   room; the title is cut to the room between them. Attached, the session's own status line, as it sent it. *)
+proc bottom(s: ^TuiScreen.Screen);
+var shown: Parts; p: Part; col, w, limit: INT;
+begin
     w := TuiScreen.columns(Hints);
-    if col + w + 3 < s^.cols then _ := TuiScreen.put(s, r, s^.cols - w - 1, Hints, st); end;
+    if viewing then
+        col := piece(s, 0, " ATTACHED ", TuiScreen.style(Term.strong, {TuiScreen.Attr.bold, TuiScreen.Attr.reverse}));
+        col := piece(s, col + 1, Buf.bytes(viewStatus), TuiScreen.Plain);
+        if col + Gap + w < s^.cols then _ := piece(s, s^.cols - w - 1, Hints, TuiScreen.style(Term.dim, {})); end;
+        return;
+    end;
+    shown := {Part.hints, Part.title, Part.usage, Part.provider, Part.context, Part.model};
+    for p := Part.hints to Part.model do
+        col := parts(nil, shown, 0);
+        if Part.hints in shown then col := col + Gap + w + 1; end;
+        if col <= s^.cols then break; end;
+        shown := shown - {p};
+    end;
+    limit := s^.cols;
+    if Part.hints in shown then
+        limit := s^.cols - w - 1 - Gap;
+        _ := piece(s, limit + Gap, Hints, TuiScreen.style(Term.dim, {}));
+    end;
+    _ := parts(s, shown, limit);
 end;
 
 proc draw(s: ^TuiScreen.Screen);
@@ -1078,8 +1273,7 @@ begin
     Fmt.write(made, "arno \u{B7} {} via {} \u{B7} /help for commands", [Fmt.str(s^.conf.prov.model),
         Fmt.str(s^.conf.prov.name)]);
     Aview.noted(Aboard.info, Buf.bytes(made));
-    Asession.status(s^, status);
-    Aview.stated(Buf.bytes(status), s^.conv.title);
+    remade();
     Aview.owning("terminal", Afence.zone);
     Aview.watching(watching);
     if Aview.listen() then _ := TuiLoop.watch(Aview.listenFd(), viewReady); end;
@@ -1119,9 +1313,6 @@ begin
         used := Aframe.take(Buf.bytes(viewIn), f);
     end;
     if used < 0 then viewEnded := true; TuiLoop.stop; return; end;
-    Buf.reset(status);
-    Buf.str(status, "attached \u{B7} ");
-    Buf.str(status, Buf.bytes(viewStatus));
 end;
 
 (* The screen of the session on fd, a connection Aview.attach made: its
@@ -1141,7 +1332,6 @@ begin
     Fmt.write(made, "{}history", [Fmt.str(Astore.dir())]);
     Ahistory.load(Buf.bytes(made));
     Buf.reset(made);
-    Buf.str(status, "attached");
     _ := TuiLoop.watch(fd, viewRead);
     ran := TuiLoop.run({key: key, draw: draw});
     Sys.close(fd);
@@ -1156,8 +1346,10 @@ begin
     Buf.init(job, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(because, Heap.heap);
-    Buf.init(status, Heap.heap);
+    Asession.initFacts(facts);
+    Asession.initFacts(posted);
     Buf.init(flash, Heap.heap);
+    Buf.init(notice, Heap.heap);
     Buf.init(question, Heap.heap);
     Buf.init(keys, Heap.heap);
     Buf.init(query, Heap.heap);

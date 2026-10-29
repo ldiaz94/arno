@@ -31,8 +31,9 @@ With no arguments on a terminal,
 .Nm
 takes the full screen: the transcript above, a rule that shows what is
 going on or a question, then the input and a status line.
-The status line shows the mode, the model and its provider, the
-context in use, tokens and cost, and the conversation's title.
+The status line shows the mode, the safety, the model and its
+provider, the context in use, tokens and cost, and the conversation's
+title.
 See
 .Sx THE SCREEN .
 .Pp
@@ -113,6 +114,26 @@ apart by colour.
 A tool call is one line until opened.
 The rule says what is going on: the model working, a question waiting
 for your key, or copy mode.
+.Pp
+The status line starts with the mode, its name on a colour of its own:
+chat blue, review green, improve cyan, pair in the text's own colour,
+build yellow.
+Beside it is the safety, a green
+.Ql \[u25CF] auto
+or a yellow
+.Ql \[u25C6] safe ,
+and in build mode the plan,
+.Ql plan \(OK
+once you approved it,
+.Ql "plan ?"
+before.
+Then come the model and its provider, the context as a bar of eight
+cells and a percentage, green, yellow from 60%, red from 85%, the
+tokens and cost, and the title, cut to the room left.
+On a narrow terminal the hints go first, then the title, the tokens
+and cost, the provider, the context and the model; the mode, safety
+and plan stay.
+A change of mode or safety is said on the rule for two seconds.
 .Pp
 A message is a turn, run on a thread of its own, so the screen stays
 live while the model works.
@@ -1775,7 +1796,14 @@ The other providers cache on their own.
 The status line shows how full the context is and what the session has
 used:
 .Bd -literal -offset indent
-arno \(pc chat \(pc claude-sonnet-5-5 @ claude \(pc ctx 23.4k/1.0M 2% \(pc in 120k out 4.2k \(pc $0.121
+CHAT  \[u25CF] auto   claude-sonnet-5-5 @ claude   ctx \[u25B1]\[u25B1]\[u25B1]\[u25B1]\[u25B1]\[u25B1]\[u25B1]\[u25B1] 2%   in 120k out 4.2k \(pc $0.121
+.Ed
+.Pp
+and, as text, to
+.Fl \-serve Ns 's
+host:
+.Bd -literal -offset indent
+arno \(pc chat (auto) \(pc claude-sonnet-5-5 @ claude \(pc ctx 23.4k/1.0M 2% \(pc in 120k out 4.2k \(pc $0.121
 .Ed
 .Pp
 .Ql ctx
