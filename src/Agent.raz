@@ -156,7 +156,8 @@ const
         "build, and run check. Earlier workers' reports, when the brief has them, are what is known: use the " +
         "units and findings they name rather than finding or writing them again. Do not ask questions; if " +
         "something blocks you, stop and say what. End with a short report: what you did, what you read and " +
-        "found that the next worker should know, what is left, the files you changed, and check's verdict.";
+        "found that the next worker should know, what is left, the files you changed, and check's verdict. " +
+        "Write it in the brief's language, whatever language you think in.";
     (* added to it while staged *)
     WorkerCopy = " Your copy was made for this task alone: when you end, the session that leads sees what you " +
         "changed as one diff, and merges it or not.";
