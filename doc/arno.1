@@ -426,6 +426,15 @@ Show or set the provider; see
 Setting one drops the request parameters the configuration gave.
 .It Ic /tools
 List the tools on offer in this mode.
+.It Ic /mcp Op Cm login Ar NAME
+What became of each MCP server: the tools it offers, or why it was not
+attached.
+With
+.Cm login ,
+log in to the server
+.Ar NAME ,
+at a URL; see
+.Sx MCP .
 .It Ic /usage
 This session's requests, tokens in and out, what reading from the
 provider's prompt cache saved, the cost and the price it was worked out
@@ -1380,6 +1389,24 @@ mcp_token.linear = pass linear/mcp
 .Pp
 A server that answers 401 is not attached, and says it needs a login.
 .Pp
+.Ic /mcp login Ar NAME
+logs in by OAuth instead, through the browser: the server's
+authorization server is found and
+.Nm
+registered there, and the page to log in at is shown, and opened by
+.Xr xdg-open 1
+if there is one; a human on another machine opens it there.
+The browser is waited for five minutes at most, or until ^C.
+The login is kept, and the server attached with it.
+A session after has its access token again from the login kept;
+a token is renewed a minute before it runs out, and once if the
+server refuses it.
+A login that has run out is said, with the command that makes a new
+one.
+.Cm mcp_token. Ns Ar NAME
+goes before a login kept, and a login kept for another URL than the
+configuration's is passed by.
+.Pp
 A result's content blocks are joined: a text block as it is, any other
 as its type in brackets.
 A server's own error makes the result start with
@@ -1978,6 +2005,11 @@ keeps a record of each turn.
 Remembered facts.
 .It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md
 The project's context file kept outside its repository, read last.
+.It Pa ~/.local/share/arno/mcp/ Ns Ar NAME Ns .json
+The login to the MCP server
+.Ar NAME :
+its URL, the client id, the token endpoint and the refresh token,
+readable by you alone.
 .It Pa ~/.local/share/arno/notes.json
 Each project's notes, by project root.
 .It Pa ~/.local/share/arno/tests.json

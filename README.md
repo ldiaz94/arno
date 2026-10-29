@@ -142,6 +142,7 @@ these are the ones to start with:
 | `/budget [DOLLARS]` | what a turn may spend, workers included; 0 for no limit |
 | `/compact [FOCUS]` | replace the history with a summary |
 | `/tools`, `/usage` | the tools on offer; tokens and cost |
+| `/mcp [login NAME]` | what became of each MCP server; log in to one |
 | `/test [COMMAND]` | set and run the project's test command |
 | `/remember [#tag,...] FACT`, `/forget`, `/my-memory` | facts kept for every conversation |
 | `/notes` | this project's notes |
@@ -204,11 +205,13 @@ over HTTP, is added to the config, a line each:
 
     mcp = files npx -y @modelcontextprotocol/server-filesystem /home/me/work
     mcp = linear https://mcp.linear.app/mcp
-    mcp_token.linear = pass linear/mcp
 
-A server at a URL that needs a login is sent the first line that its
-`mcp_token.NAME` command prints, as a bearer token, so the secret stays
-in your password store.
+A server at a URL that needs a login is logged in to once, by
+`/mcp login NAME` in the browser; the login is kept in
+`~/.local/share/arno/mcp/`, readable by you alone, and its token renewed
+as it runs out. Or `mcp_token.NAME = pass linear/mcp` gives a command
+whose first line is the token, so the secret stays in your password
+store.
 
 Its tools reach the model as `NAME_TOOL`, and every call asks first,
 with the arguments shown. A server is somebody else's program: the
@@ -315,9 +318,6 @@ by `make loc`.
 - **The jail beyond x86_64.** It needs Linux 5.12 and x86_64.
 - **MCP's pages and non-text.** `tools/list` is read to its first page,
   and content that is not text shows as `[type]`.
-- **MCP's OAuth login.** A server at a URL that answers 401 is not
-  attached; a token from `mcp_token.NAME` is the only way in, until
-  `/mcp login` comes.
 - **An editor's buffer list for `@` completion.** The `buffers` verb is
   in `arno-peer(5)`, but arno does not ask it.
 - **Asks in a one-shot or a plain session.** Only a terminal's arno

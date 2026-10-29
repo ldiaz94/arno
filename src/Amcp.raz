@@ -21,10 +21,12 @@
    The session's id comes in initialize's answer, and goes with each
    message after, with the version initialize agreed; a 404 to one
    means the server forgot the session, and arno shakes hands again,
-   once, and asks again. A token from the config goes as Authorization:
-   Bearer; a 401 refuses the server, whose WWW-Authenticate, how it
-   wants a login, is kept (challenge). stop sends DELETE, to end the
-   session.
+   once, and asks again. A token goes as Authorization: Bearer; a 401
+   refuses the server, whose WWW-Authenticate, how it wants a login, is
+   kept (challenge). A token from a login runs out: the program's renew
+   gives a new one a minute before, and once on a 401. stop sends
+   DELETE, to end the session. A server not attached is kept, with why,
+   for status to say.
 
    attach starts a server, or attachUrl names one; then each shakes
    hands (initialize, then the notification initialized) and asks
@@ -59,8 +61,8 @@
    compact), rjson's Json, rnet's Http. Leaves out the rest of the
    protocol: pagination of tools/list, other content than text,
    resources and prompts, a server's requests of arno, and over HTTP
-   the stream a GET opens and resuming a broken one; and a login by
-   OAuth, which a 401 asks for. Asking the human before a call is the
+   the stream a GET opens and resuming a broken one; and the login
+   itself, which is the program's (Alogin). Asking the human before a call is the
    caller's. *)
 module Amcp;
 import Awire, Amsg, Json, Http, Buf, Str, Sys, Fmt, Heap, Out, Rt, Servers := Vec(Server),
@@ -76,6 +78,8 @@ type
         session: []const U8;    (* the Mcp-Session-Id its initialize gave, or "" *)
         protocol: []const U8;   (* the protocol's version its initialize agreed, or "" before *)
         challenge: []const U8;  (* the WWW-Authenticate of its 401: how it wants a login *)
+        expires: I64;       (* when token runs out, on Sys.clock, for one renew gives again; 0, never *)
+        why: []const U8;    (* why it was not attached, after its name *)
         due: I64;           (* the time, on Sys.clock, an HTTP answer must come by; 0, none *)
         pid: INT;           (* its process, and its group's; 0 once it has been waited for, and for a URL *)
         rd, wr: INT;        (* its output, and its input; -1 for a URL *)
@@ -83,6 +87,10 @@ type
         pending: Buf.Buf;   (* what it wrote, of which the first used bytes are read *)
         used: INT;          (* how many of the bytes of pending have been read *)
     end;
+
+    (* What went wrong with a message to a server at a URL, that a
+       second try may mend. *)
+    Trouble = (fine, forgot, unauthorized);   (* the server forgot the session; it refused the token *)
 
     (* Where a tool on the belt is from. *)
     Origin = record
@@ -100,10 +108,11 @@ const
     IdLen = 20;        (* bytes enough for a request id, an INT in decimal *)
     Gone = "server gone";   (* what a request says when the server ended first *)
     Interrupted = "interrupted";   (* what it says when the human said to stop *)
+    Early = 60000000000;   (* nanoseconds before a token runs out that it is renewed *)
 
 var
     servers: Servers.Vec;   (* every server attached, from Heap *)
-    refused: Servers.Vec;   (* every server at a URL refused with a 401, for a login *)
+    dropped: Servers.Vec;   (* every server that was not attached, with why *)
     belt: Belt.Vec;         (* every tool they offer *)
     origins: Origins.Vec;   (* where each tool of belt is from, in the same order *)
 
@@ -296,21 +305,23 @@ begin
 end;
 
 (* Whether rsp, the head of the response to a message to s, is a
-   success; if not, why, into res: a 401, whose challenge s keeps; a
-   404 to a message with a session, which expired says the server has
-   forgotten; any other status. A session it names, as initialize's
+   success; if not, why, into res, and trouble what a second try may
+   mend: a 401, whose challenge s keeps; a 404 to a message with a
+   session, which the server has forgotten; any other status. A session it names, as initialize's
    does, s keeps. *)
-proc judge(var s: Server; const rsp: Http.Message; var res: Buf.Buf; var expired: BOOL): BOOL;
+proc judge(var s: Server; const rsp: Http.Message; var res: Buf.Buf; var trouble: Trouble): BOOL;
 var session: []const U8;
 begin
     Buf.reset(res);
     if rsp.status = 401 then
+        trouble := Trouble.unauthorized;
         s.challenge := Amsg.keep(Http.header(rsp, "WWW-Authenticate"));
-        Fmt.write(res, "the server needs a login (401); set mcp_token.{}", [Fmt.str(s.name)]);
+        Fmt.write(res, "the server needs a login (401); /mcp login {}, or set mcp_token.{}", [Fmt.str(s.name),
+            Fmt.str(s.name)]);
         return false;
     end;
     if (rsp.status = 404) and (LEN(s.session) > 0) then
-        expired := true;
+        trouble := Trouble.forgot;
         Buf.str(res, "the server forgot the session");
         return false;
     end;
@@ -326,12 +337,12 @@ end;
 (* body, a JSON-RPC message, posted to s, a server at a URL, and if
    id is not "", the answer to request id waited for, as request does;
    the answer is the body, or an event of the stream the body is.
-   expired says the server has forgotten s's session. *)
-proc post(var s: Server; body, id: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var expired: BOOL): BOOL;
+   trouble is what a second try may mend. *)
+proc post(var s: Server; body, id: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var trouble: Trouble): BOOL;
 var cl: Http.Client; req, rsp: Http.Message; auth: Buf.Buf; rd: ^Http.Reader; err: ERROR; why: []const U8;
     failed: BOOL;
 begin
-    expired := false;
+    trouble := Trouble.fine;
     failed := false;
     Awire.initClient(cl);
     defer Http.doneClient(cl);
@@ -350,7 +361,7 @@ begin
     heads(s, req, auth);
     rd, err := Http.open(cl, req, s.url, rsp);
     if err # nil then return failure(err, stopped, res); end;
-    if not judge(s, rsp, res, expired) then return false; end;
+    if not judge(s, rsp, res, trouble) then return false; end;
     if LEN(id) = 0 then return true; end;
     if Str.hasPrefix(Http.header(rsp, "Content-Type"), "text/event-stream") then
         why := events(s, rd^, id, stopped, res, failed);
@@ -386,26 +397,54 @@ end;
 
 (* Both transports *)
 
+var
+    (* A new token for the server called name at url, and when it runs
+       out; "" if there is none. The program's, which knows where
+       logins are kept; nil, none. *)
+    renew: proc(name, url: []const U8; var expires: I64): []const U8;
+
+(* renew made f: the program's, which knows where logins are kept. *)
+proc renewWith*(f: proc(name, url: []const U8; var expires: I64): []const U8);
+begin
+    renew := f;
+end;
+
+(* Whether s, whose token is from a login, has a new one from renew. *)
+proc renewed(var s: Server): BOOL;
+var token: []const U8; expires: I64;
+begin
+    if (renew = nil) or (s.expires = 0) then return false; end;
+    token := renew(s.name, s.url, expires);
+    if LEN(token) = 0 then return false; end;
+    s.token := token;
+    s.expires := expires;
+    return true;
+end;
+
 (* The method of s asked with params, a JSON object, and the answer
    waited for, by s's transport: true, and res the result as compact
-   JSON; or false, and res says what went wrong, and expired whether
-   because the server forgot the session. *)
-proc exchange(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var expired: BOOL): BOOL;
-var q: Buf.Buf; id: [IdLen]U8; n: INT;
+   JSON; or false, and res says what went wrong, and trouble what a
+   second try may mend. A token from a login is renewed a minute
+   before it runs out, and once if the server refuses it. *)
+proc exchange(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf; var trouble: Trouble): BOOL;
+var q: Buf.Buf; id: [IdLen]U8; n: INT; ok: BOOL;
 begin
     Buf.init(q, Heap.heap);
     defer Buf.done(q);
     INC(s.seq);
     id, n := Str.fromInt(s.seq);
     message(q, id[0..n], method, params);
-    expired := false;
+    trouble := Trouble.fine;
     if LEN(s.url) = 0 then return ask(s, q, id[0..n], stopped, res); end;
-    return post(s, Buf.bytes(q), id[0..n], stopped, res, expired);
+    if (s.expires # 0) and (Sys.clock() > s.expires - Early) then _ := renewed(s); end;
+    ok := post(s, Buf.bytes(q), id[0..n], stopped, res, trouble);
+    if (trouble = Trouble.unauthorized) and renewed(s) then ok := post(s, Buf.bytes(q), id[0..n], stopped, res, trouble); end;
+    return ok;
 end;
 
 (* The notification method sent to s, whatever becomes of it. *)
 proc notify(var s: Server; method: []const U8);
-var q, res: Buf.Buf; expired: BOOL;
+var q, res: Buf.Buf; trouble: Trouble;
 begin
     Buf.init(q, Heap.heap);
     defer Buf.done(q);
@@ -416,7 +455,7 @@ begin
         Buf.add(q, '\n');
         _ := send(s.wr, Buf.bytes(q));
     else
-        _ := post(s, Buf.bytes(q), "", nil, res, expired);
+        _ := post(s, Buf.bytes(q), "", nil, res, trouble);
     end;
 end;
 
@@ -436,10 +475,10 @@ end;
    it agrees kept, then the notification initialized sent. false, and
    res says why, if initialize fails. *)
 proc handshake(var s: Server; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
-var expired: BOOL;
+var trouble: Trouble;
 begin
     if not exchange(s, "initialize", "{\"protocolVersion\":\"" + Version +
-            "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"arno\",\"version\":\"0.1\"}}", stopped, res, expired) then
+            "\",\"capabilities\":{},\"clientInfo\":{\"name\":\"arno\",\"version\":\"0.1\"}}", stopped, res, trouble) then
         return false;
     end;
     s.protocol := versionOf(res);
@@ -451,13 +490,13 @@ end;
    at a URL that has forgotten its session is given a new one, by
    shaking hands again, and asked once more. *)
 proc request(var s: Server; method, params: []const U8; stopped: proc: BOOL; var res: Buf.Buf): BOOL;
-var ok, expired: BOOL;
+var ok: BOOL; trouble: Trouble;
 begin
-    ok := exchange(s, method, params, stopped, res, expired);
-    if expired then
+    ok := exchange(s, method, params, stopped, res, trouble);
+    if trouble = Trouble.forgot then
         s.session := "";
         s.protocol := "";
-        if handshake(s, stopped, res) then ok := exchange(s, method, params, stopped, res, expired); end;
+        if handshake(s, stopped, res) then ok := exchange(s, method, params, stopped, res, trouble); end;
     end;
     return ok;
 end;
@@ -547,7 +586,7 @@ begin
     end;
     for i := 0 to LEN(all) - 1 do finish(all[i], 0); end;
     Servers.reset(servers);
-    Servers.reset(refused);
+    Servers.reset(dropped);
     Belt.reset(belt);
     Origins.reset(origins);
 end;
@@ -634,8 +673,8 @@ end;
 
 (* s, started or named, shaken hands with and asked its tools, which
    are put on the belt, given startWait ms to answer; why is what went
-   wrong, after its name. A server refused for want of a login is kept
-   in refused. *)
+   wrong, after its name. A server not attached is kept in dropped,
+   with why. *)
 proc admit(var s: Server; var why: Buf.Buf): BOOL;
 var res: Buf.Buf; ok: BOOL;
 begin
@@ -649,13 +688,14 @@ begin
     if not ok then
         if late then Buf.reset(res); Buf.str(res, "no answer in time"); end;
         Buf.str(why, Buf.bytes(res));
-        finish(s, Grace);
-        if LEN(s.challenge) > 0 then Servers.push(refused, s); end;
-        return false;
-    end;
-    if offer(s, servers.len, Buf.bytes(res)) = 0 then
+    elsif offer(s, servers.len, Buf.bytes(res)) = 0 then
         Buf.str(why, "offers no tool that is new");
+        ok := false;
+    end;
+    if not ok then
         finish(s, Grace);
+        s.why := Amsg.keep(Buf.bytes(why));
+        Servers.push(dropped, s);
         return false;
     end;
     Servers.push(servers, s);
@@ -682,30 +722,66 @@ begin
 end;
 
 (* The server at url, called name, sent token as a bearer's if it is
-   not "", and its tools put on the belt, as attach puts a child's. *)
-proc attachUrl*(name, url, token: []const U8): []const U8;
-var s: Server; why: Buf.Buf;
+   not "", and its tools put on the belt, as attach puts a child's. A
+   token that runs out at expires (0, never) is renewed by renew. A
+   server of that name already attached just takes the token. *)
+proc attachUrl*(name, url, token: []const U8; expires: I64): []const U8;
+var s: Server; why: Buf.Buf; i: INT;
 begin
+    for i := 0 to servers.len - 1 do
+        if Servers.all(servers)[i].name = name then
+            Servers.all(servers)[i].token := Amsg.keep(token);
+            Servers.all(servers)[i].expires := expires;
+            return "";
+        end;
+    end;
     Buf.init(why, Heap.heap);
     defer Buf.done(why);
     Fmt.write(why, "{}: ", [Fmt.str(name)]);
-    s := {name: Amsg.keep(name), url: Amsg.keep(url), token: Amsg.keep(token), rd: -1, wr: -1};
+    s := {name: Amsg.keep(name), url: Amsg.keep(url), token: Amsg.keep(token), expires: expires, rd: -1, wr: -1};
     Buf.init(s.pending, Heap.heap);
     if admit(s, why) then return ""; end;
     return Amsg.keep(Buf.bytes(why));
 end;
 
-(* How the server called name, refused with a 401, wants a login: its
-   WWW-Authenticate, where a login starts, the last refusal's; "" if no
-   such server was refused. *)
-proc challenge*(name: []const U8): []const U8;
-var i: INT; c: []const U8;
+(* The last server called name that was not attached, or nil. *)
+proc droppedAs(name: []const U8): ^Server;
+var i: INT; s: ^Server;
 begin
-    c := "";
-    for i := 0 to refused.len - 1 do
-        if Servers.all(refused)[i].name = name then c := Servers.all(refused)[i].challenge; end;
+    s := nil;
+    for i := 0 to dropped.len - 1 do
+        if Servers.all(dropped)[i].name = name then s := SYSTEM.ADR(Servers.all(dropped)[i]); end;
     end;
-    return c;
+    return s;
+end;
+
+(* How the server called name, refused with a 401, wants a login: its
+   WWW-Authenticate, where a login starts; "" if it was not refused. *)
+proc challenge*(name: []const U8): []const U8;
+var s: ^Server;
+begin
+    s := droppedAs(name);
+    if s = nil then return ""; end;
+    return s^.challenge;
+end;
+
+(* What became of the server called name, a line into b: how many
+   tools it offers, or why it was not attached. *)
+proc status*(name: []const U8; var b: Buf.Buf);
+var i, n: INT; s: ^Server;
+begin
+    n := 0;
+    for i := 0 to origins.len - 1 do
+        if Servers.all(servers)[Origins.all(origins)[i].server].name = name then INC(n); end;
+    end;
+    s := droppedAs(name);
+    if n > 0 then
+        Fmt.write(b, "{}: {} tools\n", [Fmt.str(name), Fmt.int(n)]);
+    elsif s # nil then
+        Fmt.write(b, "{}\n", [Fmt.str(s^.why)]);
+    else
+        Fmt.write(b, "{}: not attached\n", [Fmt.str(name)]);
+    end;
 end;
 
 (* The tools the attached servers offer. *)
@@ -821,6 +897,13 @@ begin
     return Buf.bytes(at);
 end;
 
+(* A token renewed, as a login's would be: the one /login takes. *)
+proc fresh(_name, _url: []const U8; var expires: I64): []const U8;
+begin
+    expires := Sys.clock() + 3600000000000;
+    return "secret";
+end;
+
 (* The checks over HTTP, against web, which they start and leave
    running: a session, an event stream, a session forgotten, a login
    wanted and a token. *)
@@ -835,17 +918,24 @@ begin
         expect("the HTTP server", "not started", "started");
         return;
     end;
-    err := attachUrl("web", url(Buf.bytes(port), "/mcp"), "");
+    err := attachUrl("web", url(Buf.bytes(port), "/mcp"), "", 0);
     expect("attach over HTTP", err, "");
     expect("tools over HTTP", num(LEN(tools())), "16");
     expect("an event stream", run("web_echo", "{\"text\":\"streamed\"}", nil), "streamed\n");
     expect("a session forgotten", run("web_die", "{}", nil), "(no output)");
     expect("a new session", run("web_echo", "{\"text\":\"again\"}", nil), "again\n");
-    err := attachUrl("lin", url(Buf.bytes(port), "/login"), "");
-    expect("a login wanted", err, "lin: the server needs a login (401); set mcp_token.lin");
+    err := attachUrl("lin", url(Buf.bytes(port), "/login"), "", 0);
+    expect("a login wanted", err, "lin: the server needs a login (401); /mcp login lin, or set mcp_token.lin");
     expect("how", challenge("lin"), "Bearer realm=\"stub\"");
-    err := attachUrl("key", url(Buf.bytes(port), "/login"), "secret");
+    err := attachUrl("key", url(Buf.bytes(port), "/login"), "secret", 0);
     expect("a token", err, "");
+    renew := fresh;
+    err := attachUrl("old", url(Buf.bytes(port), "/login"), "stale", Sys.clock() + 3600000000000);
+    expect("a token renewed on a 401", err, "");
+    Buf.reset(at);
+    status("old", at);
+    status("lin", at);
+    expect("status", Buf.bytes(at), "old: 8 tools\nlin: the server needs a login (401); /mcp login lin, or set mcp_token.lin\n");
     expect("no server down", run("web_echo", "{\"text\":\"still\"}", nil), "still\n");
 end;
 
@@ -900,7 +990,7 @@ begin
     Servers.init(servers, Heap.heap);
     Belt.init(belt, Heap.heap);
     Origins.init(origins, Heap.heap);
-    Servers.init(refused, Heap.heap);
+    Servers.init(dropped, Heap.heap);
     startWait := 10000;
     _ := Rt.atExit(stop);   (* the servers end with the program, whichever way it ends *)
 end Amcp.

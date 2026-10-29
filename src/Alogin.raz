@@ -1,0 +1,287 @@
+(* Alogin: logins to MCP servers at a URL, by OAuth, kept between
+   sessions.
+
+   /mcp login NAME logs in through the browser, in two steps, so that
+   the caller can show the address between them: open finds the
+   server's authorization server (from its 401's challenge), listens
+   for the browser's return and registers arno as a client there,
+   giving the address of the consent page; close waits for the browser
+   to come back, a few seconds at a time so that the human can stop it,
+   and changes the code it brings for an access token and a refresh
+   token. The refresh token is what is kept, a file a server:
+
+       ~/.local/share/arno/mcp/NAME.json   (0600, in a directory 0700)
+       {"url":...,"client_id":...,"token_url":...,"resource":...,
+        "scope":...,"refresh":...}
+
+   renewed has an access token again from it, as a session starts and,
+   through Amcp.renew, when the one in use runs out or is refused; a
+   refresh token the server rotates is kept again. A login whose url
+   is not the config's is passed by: the human pointed NAME elsewhere.
+
+   Depends on roauth's Oauth, Awire (its HTTPS client), Amcp (renew),
+   Astore (arno's directory), Amsg, rjson's Json. Leaves out revoking a
+   login and the access token's keeping: it is had again each session. *)
+module Alogin;
+import Oauth, Awire, Amcp, Astore, Amsg, Json, Http, Buf, Str, Sys, Fmt, Files, Heap, Out, Rt;
+import SYSTEM;
+
+type
+    (* A login kept, as its file has it. *)
+    Kept* = record
+        url*, clientId*, tokenUrl*, resource*, scope*, refresh*: []const U8;
+    end;
+
+    (* A login under way, between open and close. *)
+    Pending* = record
+        name, url: []const U8;   (* the server's, from the config *)
+        cl: Http.Client;         (* to its endpoints *)
+        found: Oauth.Found;      (* its authorization server, which c points into *)
+        c: Oauth.Client;
+        id, said: Oauth.Text;    (* the client id registration gave; what it said when it refused *)
+        l: Oauth.Login;          (* the browser's way back *)
+    end;
+
+const
+    NotSaved*: ERROR = "the login can't be written";
+    Wait = 30;          (* seconds an endpoint is given to answer *)
+    Patience = 300;     (* seconds the browser is given to come back *)
+    Look = 500;         (* milliseconds between looks at whether the human said to stop *)
+    Second = 1000000000;   (* nanoseconds *)
+
+(* The file of the login to the server called name, into b; "" if the
+   name is not letters, digits, - and _, which keeps it in the
+   directory. *)
+proc path(name: []const U8; var b: Buf.Buf): []const U8;
+var i: INT;
+begin
+    for i := 0 to LEN(name) - 1 do
+        if not Str.isLetter(name[i]) and not Str.isDigit(name[i]) and (name[i] # '-') and (name[i] # '_') then return ""; end;
+    end;
+    Buf.reset(b);
+    Fmt.write(b, "{}mcp/{}.json", [Fmt.str(Astore.dir()), Fmt.str(name)]);
+    return Buf.bytes(b);
+end;
+
+(* The login to the server called name at url, into k; false if none
+   is kept, or it is for another url. *)
+proc load*(name, url: []const U8; var k: Kept): BOOL;
+var b, text: Buf.Buf; d: Json.Doc; v: Json.Value; p: []const U8;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    p := path(name, b);
+    if (LEN(p) = 0) or (Files.load(p, text) # 0) then return false; end;
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(text));
+    k := {url: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "url"))),
+        clientId: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "client_id"))),
+        tokenUrl: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "token_url"))),
+        resource: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "resource"))),
+        scope: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "scope"))),
+        refresh: Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), v, "refresh")))};
+    return (k.url = url) and (LEN(k.refresh) > 0) and (LEN(k.tokenUrl) > 0);
+end;
+
+(* A field of k's file, "name":value, added to b, with a comma before
+   all but the first. *)
+proc field(var b: Buf.Buf; name, value: []const U8);
+begin
+    if b.len > 1 then Buf.add(b, ','); end;
+    Amsg.quote(b, name);
+    Buf.add(b, ':');
+    Amsg.quote(b, value);
+end;
+
+(* k kept as the login to the server called name: written whole to a
+   temporary, readable by the human alone, then renamed over the
+   file. *)
+proc save*(name: []const U8; const k: Kept): ERROR;
+var b, p, tmp: Buf.Buf; fd: INT; ok: BOOL;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(p, Heap.heap);
+    defer Buf.done(p);
+    Buf.init(tmp, Heap.heap);
+    defer Buf.done(tmp);
+    if LEN(path(name, p)) = 0 then return NotSaved; end;
+    Fmt.write(tmp, "{}mcp", [Fmt.str(Astore.dir())]);
+    _ := Sys.makeDirMode(Buf.bytes(tmp), 1C0H);   (* 700 *)
+    Fmt.write(tmp, "/{}.tmp", [Fmt.int(Sys.pid())]);
+    Buf.add(b, '{');
+    field(b, "url", k.url);
+    field(b, "client_id", k.clientId);
+    field(b, "token_url", k.tokenUrl);
+    field(b, "resource", k.resource);
+    field(b, "scope", k.scope);
+    field(b, "refresh", k.refresh);
+    Buf.str(b, "}\n");
+    fd := Sys.openMode(Buf.bytes(tmp), {Sys.Access.writing, Sys.Access.creating, Sys.Access.truncating}, 180H);   (* 600 *)
+    if fd < 0 then return NotSaved; end;
+    ok := Files.writeAll(fd, Buf.bytes(b)) = 0;
+    ok := (Sys.closeChecked(fd) = 0) and ok and (Sys.rename(Buf.bytes(tmp), Buf.bytes(p)) = 0);
+    if not ok then _ := Sys.remove(Buf.bytes(tmp)); return NotSaved; end;
+    return nil;
+end;
+
+(* err, and what the other end said with it if anything, into why. *)
+proc explain(err: ERROR; said: []const U8; var why: Buf.Buf);
+begin
+    Buf.str(why, MSG(err));
+    if LEN(said) > 0 then Fmt.write(why, " ({})", [Fmt.str(said)]); end;
+end;
+
+(* An access token for the server called name at url, from the login
+   kept for it, and when it runs out; "" if there is none, and then
+   why says why, or nothing if no login is kept. *)
+proc renewed*(name, url: []const U8; var expires: I64; var why: Buf.Buf): []const U8;
+var k: Kept; c: Oauth.Client; cl: Http.Client; t: Oauth.Token; err: ERROR;
+begin
+    if not load(name, url, k) then return ""; end;
+    c := {id: k.clientId, tokenUrl: k.tokenUrl, resource: k.resource};
+    Awire.initClient(cl);
+    defer Http.doneClient(cl);
+    cl.deadline := Sys.clock() + Wait * Second;
+    err := Oauth.refresh(cl, c, k.refresh, t);
+    if err # nil then explain(err, Oauth.text(t.said), why); return ""; end;
+    if Oauth.text(t.refresh) # k.refresh then
+        k.refresh := Oauth.text(t.refresh);
+        _ := save(name, k);
+    end;
+    expires := t.expires;
+    return Amsg.keep(Oauth.text(t.access));
+end;
+
+(* renewed, as Amcp.renew asks it. *)
+proc renew(name, url: []const U8; var expires: I64): []const U8;
+var why: Buf.Buf;
+begin
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    return renewed(name, url, expires, why);
+end;
+
+(* A login to the server called name at url begun, into p: its
+   authorization server found, from challenge (its 401's
+   WWW-Authenticate, or ""), arno registered there, and the consent
+   page's address into page. false, and why says why, if it can't be. *)
+proc open*(var p: Pending; name, url, challenge: []const U8; var page, why: Buf.Buf): BOOL;
+var err: ERROR;
+begin
+    p.name := name;
+    p.url := url;
+    Awire.initClient(p.cl);
+    p.cl.deadline := Sys.clock() + Wait * Second;
+    err := Oauth.discover(p.cl, url, challenge, p.found);
+    if err = nil then err := Oauth.start(p.l); end;
+    if err # nil then explain(err, "", why); Http.doneClient(p.cl); return false; end;
+    err := Oauth.register(p.cl, p.found, "arno", p.l, p.id, p.said);
+    if err # nil then
+        explain(err, Oauth.text(p.said), why);
+        Oauth.stop(p.l);
+        Http.doneClient(p.cl);
+        return false;
+    end;
+    Oauth.use(p.found, p.c);
+    p.c.id := Oauth.text(p.id);
+    Oauth.url(p.c, p.l, "", page);
+    return true;
+end;
+
+(* The browser waited for, Patience seconds at most, and asked every
+   Look ms whether stopped says to stop. *)
+proc await(var p: Pending; stopped: proc: BOOL): ERROR;
+var deadline: I64; err: ERROR;
+begin
+    deadline := Sys.clock() + Patience * Second;
+    repeat
+        err := Oauth.await(p.l, Sys.clock() + Look * 1000000);
+        if (err = Oauth.TimedOut) and (stopped # nil) and stopped() then return err; end;
+    until (err # Oauth.TimedOut) or (Sys.clock() > deadline);
+    return err;
+end;
+
+(* The login p ended: the browser waited for, its code changed for
+   tokens, and the login kept. The access token, and when it runs out
+   into expires; or "", and why says why. *)
+proc close*(var p: Pending; stopped: proc: BOOL; var expires: I64; var why: Buf.Buf): []const U8;
+var t: Oauth.Token; err: ERROR; said: []const U8;
+begin
+    defer Http.doneClient(p.cl);
+    t := {};
+    err := await(p, stopped);
+    if err = nil then
+        p.cl.deadline := Sys.clock() + Wait * Second;
+        err := Oauth.exchange(p.cl, p.c, p.l, t);
+    end;
+    if err # nil then
+        said := Oauth.text(t.said);
+        if err = Oauth.Denied then said := Oauth.text(p.l.said); end;
+        explain(err, said, why);
+        Oauth.stop(p.l);
+        return "";
+    end;
+    Oauth.stop(p.l);
+    err := save(p.name, {url: p.url, clientId: p.c.id, tokenUrl: p.c.tokenUrl, resource: p.c.resource, scope: p.c.scope,
+        refresh: Oauth.text(t.refresh)});
+    if err # nil then explain(err, "", why); return ""; end;
+    expires := t.expires;
+    return Amsg.keep(Oauth.text(t.access));
+end;
+
+(* The test: a login kept and read back, its file the human's alone,
+   and passed by for another url. *)
+
+var failed: BOOL;   (* whether a check failed *)
+
+(* A failure noted, and said, if got is not want. *)
+proc expect(what, got, want: []const U8);
+begin
+    if got = want then return; end;
+    Out.str("Alogin: ");
+    Out.str(what);
+    Out.str(": got \"");
+    Out.str(got);
+    Out.str("\", wanted \"");
+    Out.str(want);
+    Out.str("\"\n");
+    failed := true;
+end;
+
+proc main*: INT;
+var k, back: Kept; dir, b: Buf.Buf; info: Sys.Info;
+begin
+    Buf.init(dir, Heap.heap);
+    Buf.init(b, Heap.heap);
+    Fmt.write(dir, "build/login{}/", [Fmt.int(Sys.pid())]);
+    _ := Sys.makeDir(Buf.bytes(dir));
+    Astore.use(Buf.bytes(dir));
+    k := {url: "https://mcp.example.com/mcp", clientId: "id \"1\"", tokenUrl: "https://auth.example.com/token",
+        resource: "https://mcp.example.com/mcp", scope: "read write", refresh: "r1"};
+    if save("ex", k) # nil then expect("save", "failed", "saved"); end;
+    if save("../ex", k) = nil then expect("a name out of the directory", "saved", "refused"); end;
+    if not load("ex", k.url, back) then expect("load", "nothing", "the login"); end;
+    expect("the client id back", back.clientId, k.clientId);
+    expect("the refresh token back", back.refresh, "r1");
+    expect("the scope back", back.scope, "read write");
+    if load("ex", "https://elsewhere.example.com/mcp", back) then expect("another url", "loaded", "passed by"); end;
+    info, _ := Sys.info(path("ex", b));
+    if info.mode # 180H then expect("the file's mode", "not 600", "600"); end;
+    _ := Sys.remove(Buf.bytes(b));
+    Buf.str(dir, "mcp");
+    info, _ := Sys.info(Buf.bytes(dir));
+    if info.mode # 1C0H then expect("the directory's mode", "not 700", "700"); end;
+    _ := Sys.removeDir(Buf.bytes(dir));
+    dir.len := dir.len - 3;
+    _ := Sys.removeDir(Buf.bytes(dir));
+    if failed then return 1; end;
+    return 0;
+end;
+
+begin
+    Amcp.renewWith(renew);
+end Alogin.

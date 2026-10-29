@@ -265,6 +265,8 @@ answering(['call', 'stub_echo', '{"text":"hi"}'], 'n' + #10 + 'not now')
 holds('an mcp no', 'out', 'the tool said: declined by user: not now. Nothing was run.')
 answering([], '/tools')
 holds('mcp in /tools', 'out', 'stub_echo  ')
+answering([], '/mcp')
+holds('/mcp', 'out', 'stub: 8 tools')
 configure([])
 
 // a session: each line a turn of the same conversation, or a command

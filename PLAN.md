@@ -545,8 +545,17 @@ one or more commits that build with `-Werror`.
      connection's deadline, and a stop is heard as for the model's
      requests. Tested over loopback against test/Amcpstub.raz's http
      mode.
-   - [ ] MCP login: OAuth through roauth (discovery, registration,
-     PKCE), tokens kept per server, `/mcp login NAME`.
+   - [x] MCP login: OAuth through roauth (discovery, registration,
+     PKCE), tokens kept per server, `/mcp login NAME`. Alogin: open
+     finds the authorization server from the 401's challenge, registers
+     arno and gives the consent page, shown and handed to xdg-open;
+     close waits for the browser in half-second looks, so ^C ends it,
+     five minutes at most, and keeps the refresh token in
+     mcp/NAME.json (0600, the directory 0700, written whole and
+     renamed), passed by if its url isn't the config's. A session has
+     the access token again from it as it starts (mcp_token.NAME goes
+     first), and Amcp.renew, Alogin's, renews it a minute before it
+     runs out and once on a 401. /mcp says what became of each server.
    - [ ] An eval: a task with a good plan approved first, supervisor
      and workers against one model alone.
    - [x] Context files in an editor's sessions. `ask` was put once, at

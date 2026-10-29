@@ -43,7 +43,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Afence, Arun, Amsg, Buf, Str,
+import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Alogin, Afence, Arun, Amsg, Buf, Str,
     Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
 import SYSTEM;
 
@@ -116,10 +116,11 @@ end;
 
 (* The MCP server name at url attached, sent as its token the first
    line of what mcp_token.NAME prints, if it is set: a command of the
-   human's own config, as only its global settings may set it. What
-   went wrong, which names the server, or "". *)
+   human's own config, as only its global settings may set it; else a
+   token from the login kept for it (Alogin), if any. What went wrong,
+   which names the server, or "". *)
 proc attachUrl(const s: Session; name, url: []const U8): []const U8;
-var key, out: Buf.Buf; cmd, token: []const U8; status: INT;
+var key, out: Buf.Buf; cmd, token: []const U8; status: INT; expires: I64;
 begin
     Buf.init(key, Heap.heap);
     defer Buf.done(key);
@@ -136,9 +137,17 @@ begin
             return Amsg.keep(Buf.bytes(out));
         end;
         token, _, _ := Str.cut(Buf.bytes(out), "\n");
-        token := Str.trim(token);
+        return Amcp.attachUrl(name, url, Str.trim(token), 0);
     end;
-    return Amcp.attachUrl(name, url, token);
+    expires := 0;
+    token := Alogin.renewed(name, url, expires, out);
+    if (LEN(token) = 0) and (out.len > 0) then
+        Buf.reset(key);
+        Fmt.write(key, "{}: the login has run out ({}); /mcp login {}", [Fmt.str(name), Fmt.str(Buf.bytes(out)),
+            Fmt.str(name)]);
+        return Amsg.keep(Buf.bytes(key));
+    end;
+    return Amcp.attachUrl(name, url, token, expires);
 end;
 
 (* The MCP servers config's mcp lines name, each a name and then the
@@ -1187,6 +1196,89 @@ begin
     say(s, Buf.bytes(s.out));
 end;
 
+(* The URL of the MCP server config's mcp lines call name; "" if
+   there is none, or it is a command. *)
+proc urlOf(const s: Session; name: []const U8): []const U8;
+var value, first, rest: []const U8; n: INT; ok: BOOL;
+begin
+    n := 0;
+    value, ok := Aconf.nth(s.conf, "mcp", n);
+    while ok do
+        first, rest := Str.field(value);
+        if first = name then
+            first, _ := Str.field(rest);
+            if Str.hasPrefix(first, "http://") or Str.hasPrefix(first, "https://") then return first; end;
+        end;
+        INC(n);
+        value, ok := Aconf.nth(s.conf, "mcp", n);
+    end;
+    return "";
+end;
+
+(* url opened in the human's browser by xdg-open, if there is one;
+   started apart, without a shell, and not waited for. *)
+proc browse(url: []const U8);
+var nul, pid: INT;
+begin
+    nul := Sys.open("/dev/null", {Sys.Access.reading, Sys.Access.writing});
+    if nul < 0 then return; end;
+    pid := Sys.spawn({path: "xdg-open", args: ["xdg-open", url], fds: [nul, nul, nul], group: -1});
+    Sys.close(nul);
+    if pid > 0 then _, _, _ := Sys.wait(pid, false); end;   (* reaped now if it ended at once *)
+end;
+
+(* /mcp login NAME: the MCP server name logged in to through the
+   browser, whose address is shown too, for a human on another
+   machine; the login kept, and the server attached with it. *)
+proc login(var s: Session; name: []const U8);
+var url, token, err: []const U8; p: Alogin.Pending; page, why: Buf.Buf; expires: I64;
+begin
+    url := urlOf(s, name);
+    if LEN(url) = 0 then fail(s, "usage: /mcp login NAME, NAME an MCP server at a URL in config"); return; end;
+    Buf.init(page, Heap.heap);
+    defer Buf.done(page);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    if not Alogin.open(p, name, url, Amcp.challenge(name), page, why) then
+        Fmt.write(s.out, "{}: can't log in: {}", [Fmt.str(name), Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    Fmt.write(s.out, "{}: log in at {}", [Fmt.str(name), Fmt.str(Buf.bytes(page))]);
+    say(s, Buf.bytes(s.out));
+    Buf.reset(s.out);
+    browse(Buf.bytes(page));
+    token := Alogin.close(p, s.agent.front.stopped, expires, why);
+    if LEN(token) = 0 then
+        Fmt.write(s.out, "{}: not logged in: {}", [Fmt.str(name), Fmt.str(Buf.bytes(why))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    err := Amcp.attachUrl(name, url, token, expires);
+    if LEN(err) > 0 then fail(s, err); return; end;
+    Amcp.status(name, s.out);
+    say(s, Str.trimRight(Buf.bytes(s.out)));
+end;
+
+(* /mcp: what became of each MCP server; /mcp login NAME, a login. *)
+proc mcp(var s: Session; arg: []const U8);
+var verb, rest, value, name: []const U8; n: INT; ok: BOOL;
+begin
+    verb, rest := Str.field(arg);
+    if verb = "login" then login(s, Str.trim(rest)); return; end;
+    if LEN(verb) > 0 then fail(s, "usage: /mcp, or /mcp login NAME"); return; end;
+    n := 0;
+    value, ok := Aconf.nth(s.conf, "mcp", n);
+    while ok do
+        name, _ := Str.field(value);
+        Amcp.status(name, s.out);
+        INC(n);
+        value, ok := Aconf.nth(s.conf, "mcp", n);
+    end;
+    if n = 0 then Buf.str(s.out, "no MCP servers in config"); end;
+    say(s, Str.trimRight(Buf.bytes(s.out)));
+end;
+
 (* /test: the project's test command run, as check runs it, or first
    set to arg, for this project, in tests.json. A failure is put to the
    model as a turn, with the end of the output: the human runs the
@@ -1261,6 +1353,7 @@ begin
         say(s, Buf.bytes(s.out));
     | "/notes": notes(s, arg);
     | "/test": test(s, arg);
+    | "/mcp": mcp(s, arg);
     | "/stage": stage(s, arg);
     | "/safety": safety(s, arg);
     | else: fail(s, "unknown command; /help lists them");
