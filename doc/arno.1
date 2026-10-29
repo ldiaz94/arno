@@ -687,6 +687,9 @@ or
 the model gets the verdict and the end of the output.
 It takes no arguments, so it runs only what you typed yourself, and
 without asking.
+While staged it runs in the jail, as
+.Ic shell
+does: the model may have edited the Makefile it runs.
 Offered only when there is a command.
 See
 .Sx CAVEATS .
@@ -1046,7 +1049,9 @@ so one that wants a person fails at once instead of waiting; ^C stops
 one that runs on.
 It sees
 .Ev ARNO_SCRATCH .
-It is not jailed.
+While staged it runs in the jail, with the copy and
+.Ev ARNO_SCRATCH
+its only writable places and no network; safe, it is not jailed.
 The tool's description names the programs allowed and those that run
 without asking, so a model need not guess.
 .Pp
@@ -1695,11 +1700,12 @@ While the stage is up,
 and a trusted
 .Ic run
 program execute files in the copy, which the model has edited without
-approval, and they run outside the jail.
-A model that writes a Makefile can make the next
-.Ic check
-run what it wrote.
-Look at the diff before you apply it.
+approval.
+They run in the jail then, but the jail does not stop all, as below,
+and a test that needs the network, or writes to a cache in your home,
+fails there.
+Look at the diff before you apply it: what it changes in a Makefile runs
+outside the jail once applied.
 .Pp
 The jail confines its command with Linux's unprivileged namespaces, and
 that has limits.

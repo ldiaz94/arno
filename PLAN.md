@@ -251,7 +251,7 @@ one or more commits that build with `-Werror`.
      the copy's `.git` and all below it, and every git command in the
      copy pins the git directory `up` recorded and turns fsmonitor off,
      since a model-written `.git` could name a program git would run
-     unjailed at the turn's end. Still open (4d jails only `shell`): `check`
+     unjailed at the turn's end. Open until stage 8 (4d jails only `shell`): `check`
      and a trusted `run` program (make, say) execute the copy's own files,
      which the model edits without approval, so `edit Makefile` then
      `check` runs code nobody approved, outside the jail.
@@ -396,9 +396,11 @@ one or more commits that build with `-Werror`.
      `/safety auto|safe`, kept per project in `stage.json`; `/stage`
      keeps only offering and `drop`. A project git doesn't keep has no
      stage, and is safe, said at start-up.
-   - [ ] Auto runs `check` and `run` in the jail too, the copy and the
+   - [x] Auto runs `check` and `run` in the jail too, the copy and the
      scratch writable, no network: in the copy the model can rewrite
-     the Makefile that `check` runs.
+     the Makefile that `check` runs (`Atools.confine`). Where the jail
+     can't be made they run as before. A test that needs the network,
+     or a cache in the home, fails staged; a profile may open that up.
    - [ ] The ignored dependency directories (`node_modules`, `.venv`)
      reach the copy read-only, and the prompt says installing is the
      human's: no network in the jail, and an install's scripts are the

@@ -267,10 +267,10 @@ by `make loc`.
 
 ## Left out
 
-- **A fence around `check` and `run`.** While the stage is up, the
-  model's edits to the copy, a Makefile among them, are not asked
-  about, and `check` and trusted `run` programs execute them outside
-  the jail. Only `shell` is jailed.
+- **`check` and `run` jailed when safe.** Safe, nothing they run was
+  changed unasked, so they run as they are; staged, they are jailed
+  with `shell`, and a test that needs the network or a cache in your
+  home fails there.
 - **The jail beyond x86_64.** It needs Linux 5.12 and x86_64.
 - **MCP's pages and non-text.** `tools/list` is read to its first page,
   and content that is not text shows as `[type]`.

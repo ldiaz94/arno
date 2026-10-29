@@ -834,6 +834,32 @@ begin
     return Buf.bytes(b);
 end;
 
+(* j put in the jail while the session is staged (safety auto) and the
+   kernel allows it, the copy and the scratch directory its only
+   writable places, with no network: there the model edits unasked, so
+   what check and run start may be its work, a Makefile it rewrote.
+   Safe, j runs as it is: nothing it runs was changed unasked. *)
+proc confine(var j: Arun.Job; mem: ^Mem.Allocator);
+var rw: Strs.Vec;
+begin
+    if (LEN(Afence.stage) = 0) or not Arun.jails() then return; end;
+    Strs.init(rw, mem);
+    Strs.push(rw, Afence.stage);
+    if LEN(Afence.scratch) > 0 then Strs.push(rw, Afence.scratch); end;
+    j.jail := true;
+    j.rw := Strs.all(rw);
+end;
+
+(* Whether a jailed job's status and output, got, say the sandbox could
+   not be made; then the error is added to out. *)
+proc unjailed(status: INT; const got: Buf.Buf; var out: Buf.Buf): BOOL;
+begin
+    if (status # 126) or not Str.hasPrefix(Buf.bytes(got), "sandbox:") then return false; end;
+    Buf.str(out, "error: ");
+    Buf.str(out, Str.trim(Buf.bytes(got)));
+    return true;
+end;
+
 (* "declined by user" added to out, then the human's reason if they give
    one, then ending, which says what was left undone. *)
 proc declined(const h: Human; ending: []const U8; var out: Buf.Buf);
@@ -954,17 +980,16 @@ begin
     Strs.push(env, scratchVar(a.mem));
     for k := 0 to LEN(c) - 1 do
         if k > 0 then Buf.str(out, "\n\n"); end;
-        start := out.len;
-        Buf.str(out, "exit ");
         j := {args: c[k].args, env: Strs.all(env), detach: true};
+        confine(j, a.mem);
         Buf.init(line, a.mem);
         status, _, _ := Arun.start(j, MaxOut + 1, line);
+        if unjailed(status, line, out) then continue; end;
         if (status = 127) and (line.len = 0) or (status < 0) then
-            out.len := start;
             Fmt.write(out, "error: {} is not installed", [Fmt.str(c[k].args[0])]);
             continue;
         end;
-        Fmt.write(out, "{}: ", [Fmt.int(status)]);
+        Fmt.write(out, "exit {}: ", [Fmt.int(status)]);
         Str.join(out, c[k].args, " ");
         if line.len > 0 then
             Buf.add(out, '\n');
@@ -1001,11 +1026,7 @@ begin
         jail: true, rw: Strs.all(rw), timeout: limit, flood: ShellFlood};
     status, cut, flooded := Arun.start(j, MaxOut - 1000, got);
     if status < 0 then Buf.str(out, "error: cannot start /bin/sh"); return; end;
-    if (status = 126) and Str.hasPrefix(Buf.bytes(got), "sandbox:") then
-        Buf.str(out, "error: ");
-        Buf.str(out, Str.trim(Buf.bytes(got)));
-        return;
-    end;
+    if unjailed(status, got, out) then return; end;
     if clipped then Fmt.write(out, "(timeout cut to {} s, the most allowed)\n", [Fmt.int(limit)]); end;
     if Arun.stopped() then
         Fmt.write(out, "stopped by the human: {}", [Fmt.str(cmd)]);
@@ -1031,8 +1052,7 @@ end;
    runner's output doesn't always say; the output is kept from the end,
    where a build's or a test's summary and the error that matters
    are. While the stage is up it runs in the copy, whose files the
-   model may edit unasked: until the jail (4d) the command can run
-   what the model wrote there (PLAN.md, stage 4c). *)
+   model may edit unasked, and so in the jail (confine). *)
 proc check(mem: ^Mem.Allocator; var out: Buf.Buf);
 var b, got: Buf.Buf; cmd: []const U8; j: Arun.Job; status: INT; cut: BOOL;
 begin
@@ -1044,7 +1064,9 @@ begin
         return;
     end;
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
+    confine(j, mem);
     status, cut, _ := Arun.start(j, MaxOut - 1000, got);
+    if unjailed(status, got, out) then return; end;
     if status = 0 then
         Fmt.write(out, "passed: {}", [Fmt.str(cmd)]);
     else
@@ -2055,6 +2077,13 @@ begin
     Afence.useScratch("../no-such-scratch");   (* a writable place that isn't there: no sandbox *)
     expect("shell, no sandbox", run("shell", `{"command":"true"}`, nil)[0..15], "error: sandbox:");
     Afence.useScratch("../scratch");
+    (* staged, check and run are jailed too: the copy writable, nothing outside it *)
+    commands("touch", "", "", "touch", "touch made2 && touch ../out/y");
+    expect("check, jailed", run("check", `{}`, nil)[0..6], "FAILED");
+    holds("made2", "");
+    expect("run, jailed", run("run", `{"args":["touch","made3"]}`, nil), "exit 0: touch made3");
+    holds("made3", "");
+    commands("", "", "", "", "");
     Afence.leaveStage;
 
     (* changes *)
