@@ -88,7 +88,7 @@ provider's request, and drops the rest.
 
 A section gives a tree of projects settings of its own: the lines after
 `[~/r]` are for every project under `~/r`, a deeper section winning, and
-only the keys of a project (`run`, `trust`, `test_cmd`, `safety`,
+only the keys of a project (`run`, `trust`, `test_cmd`, `check.NAME`, `safety`,
 `jail_net`, `jail_rw` and the like) may be set there:
 
     run = tiza man fd
@@ -173,7 +173,9 @@ dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
 grant. Each change to a file shows its diff and asks. `run` is limited
 to programs the config allows, and `ls wc head file stat`, which
-only read. `check` runs the test command you set.
+only read. `check` runs the test command you set, or a named `check.NAME` one (say
+`check.unit = npx vitest run {}`), the model giving the files that fill the `{}`:
+each must exist inside the project; the command itself is always yours.
 
 **The stage.** By default (`safety = auto`) the model works on a copy of
 the project, and a turn's changes reach you as one diff and one question,

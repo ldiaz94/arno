@@ -149,7 +149,8 @@ const
         "- Edit only when asked, in small exact replacements. The human approves each edit; " +
         "never repeat a declined one. When they say why, the reason follows \"declined by user:\" " +
         "and tells you what to do instead; when they do not, ask what they want.\n" +
-        "- After changing code, run check if it is on offer, and fix what it reports. Build and " +
+        "- After changing code, run check if it is on offer, and fix what it reports. Run the " +
+        "narrowest check that covers a change first, and the whole one before you finish. Build and " +
         "check after each piece of a larger change, not only at the end, and before saying " +
         "something works, run what you built on that very case.\n" +
         "- Find out how something behaves once, in one batch of tries, then use what you " +

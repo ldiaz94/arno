@@ -120,7 +120,7 @@ end;
    show of commands, with a new conversation. What is wrong with the
    config is shown. *)
 proc init*(s: ^Session; front: Agent.Front; show: Show; arg: ^U8);
-var id: Buf.Buf; n: I64; x: F64; i: INT; ok: BOOL;
+var id: Buf.Buf; n: I64; x: F64; i: INT; ok: BOOL; name, cmd: []const U8;
 begin
     s^ := {show: show, arg: arg};
     Arun.stopWhen(front.stopped);
@@ -156,6 +156,14 @@ begin
     Atools.shellEnabled(Aconf.get(s^.conf, "shell") # "no");
     Atools.commands(Aconf.get(s^.conf, "run"), Aconf.get(s^.conf, "run_ro"),
         Aconf.get(s^.conf, "run_env"), Aconf.get(s^.conf, "trust"), Aconf.get(s^.conf, "test_cmd"));
+    Atools.clearChecks;
+    i := 0;
+    name, cmd, ok := Aconf.named(s^.conf, "check", i);
+    while ok do
+        Atools.addCheck(name, cmd);
+        INC(i);
+        name, cmd, ok := Aconf.named(s^.conf, "check", i);
+    end;
     Atools.jail(Aconf.get(s^.conf, "jail_net") = "yes", Aconf.get(s^.conf, "jail_rw"));
     attachServers(s^);
     stageStart(s^);

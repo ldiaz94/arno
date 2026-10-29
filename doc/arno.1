@@ -725,12 +725,24 @@ The project's test command, as set by
 or
 .Cm test_cmd ;
 the model gets the verdict and the end of the output.
-It takes no arguments, so it runs only what you typed yourself, and
-without asking.
+It may name one of the checks of
+.Cm check.NAME
+instead, and give files for its
+.Ql {} :
+each must exist inside the project and may not start with
+.Ql - ,
+and is quoted for the shell.
+A check whose command has no
+.Ql {}
+takes no files; one that has it, given none, runs with it removed, the whole
+suite.
+The model chooses which check and on what files, never the command, so
+it runs only what you typed yourself, and without asking.
 While staged it runs in the jail, as
 .Ic shell
 does: the model may have edited the Makefile it runs.
-Offered only when there is a command.
+Offered only when there is a command or a named check; the names and their
+commands are in its description.
 See
 .Sx CAVEATS .
 .It Ic run
@@ -1510,6 +1522,19 @@ and
 run in a project
 .Ic /test
 has not been given a command for.
+.It Cm check.NAME
+A named check, for any NAME of letters, digits,
+.Ql -
+and
+.Ql _ :
+.Ql check.unit = npx vitest run {} .
+The
+.Ic check
+tool may run it by name, with files for the
+.Ql {}
+in the command.
+Given more than once, as a key of a project's section or not, a deeper
+section's wins.
 .It Cm safety
 .Ql auto
 (the default) starts a session staged;
@@ -1637,7 +1662,7 @@ jail_rw = ~/.npm ~/.cache/ms-playwright
 .Ed
 .Pp
 A section may set only what is one project's:
-.Cm run , run_ro , run_env , trust , test_cmd , safety , shell ,
+.Cm run , run_ro , run_env , trust , test_cmd , check.NAME , safety , shell ,
 .Cm jail_net , jail_rw , context_files , project_map , prefetch ,
 .Cm mode , worker , max_steps , turn_budget , build_steps
 and

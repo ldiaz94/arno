@@ -85,6 +85,10 @@ const
         "project_map", "prefetch", "shell", "jail_net", "jail_rw", "mode", "worker", "build_steps", "build_budget",
         "max_steps", "turn_budget"];
 
+    (* the prefixes of keys PREFIX.NAME, each name its own setting, that
+       a section may set too: check.unit, check.fmt *)
+    Prefixed: []const []const U8 = ["check"];
+
 (* c made a configuration of nothing: the ollama preset. *)
 proc init*(var c: Conf);
 begin
@@ -122,6 +126,24 @@ begin
     Buf.done(c.text);
     Buf.done(c.warnings);
     c := {};
+end;
+
+(* Whether key is PREFIX.NAME for a prefix of Prefixed and a NAME of
+   letters, digits, - and _. *)
+proc prefixed(key: []const U8): BOOL;
+var i, j: INT; name: []const U8;
+begin
+    for i := 0 to LEN(Prefixed) - 1 do
+        if not Str.hasPrefix(key, Prefixed[i]) or (LEN(key) <= LEN(Prefixed[i]) + 1) or (key[LEN(Prefixed[i])] # '.') then
+            continue;
+        end;
+        name := key[LEN(Prefixed[i]) + 1..LEN(key)];
+        for j := 0 to LEN(name) - 1 do
+            if not Str.isLetter(name[j]) and not Str.isDigit(name[j]) and (name[j] # '-') and (name[j] # '_') then return false; end;
+        end;
+        return true;
+    end;
+    return false;
 end;
 
 (* The value of key, as the deepest section applied sets it, else the
@@ -186,6 +208,41 @@ begin
     return "", false;
 end;
 
+(* Whether key, valid or not, is PREFIX.something for a prefix of
+   Prefixed: arno's, and never a provider's parameter. *)
+proc ours(key: []const U8): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(Prefixed) - 1 do
+        if Str.hasPrefix(key, Prefixed[i]) and (LEN(key) > LEN(Prefixed[i])) and (key[LEN(Prefixed[i])] = '.') then
+            return true;
+        end;
+    end;
+    return false;
+end;
+
+(* The nth, from 0, of the names NAME of the keys prefix.NAME that
+   apply, in the order the file first gives them, with its value as get
+   gives it; false past the last. *)
+proc named*(const c: Conf; prefix: []const U8; n: INT): ([]const U8, []const U8, BOOL);
+var i, j: INT; keys: [][]const U8; sect: []INT; s: []Section; seen: BOOL;
+begin
+    keys := Strs.all(c.keys);
+    sect := Ints.all(c.sect);
+    s := Sections.all(c.sections);
+    for i := 0 to LEN(keys) - 1 do
+        if (s[sect[i]].rank < 0) or not prefixed(keys[i]) or not Str.hasPrefix(keys[i], prefix) then continue; end;
+        seen := false;
+        for j := 0 to i - 1 do
+            if (keys[j] = keys[i]) and (s[sect[j]].rank >= 0) then seen := true; end;
+        end;
+        if seen then continue; end;
+        if n = 0 then return keys[i][LEN(prefix) + 1..LEN(keys[i])], get(c, keys[i]), true; end;
+        DEC(n);
+    end;
+    return "", "", false;
+end;
+
 proc warn(var c: Conf; a, b: []const U8);
 begin
     Buf.str(c.warnings, "config: ");
@@ -236,7 +293,7 @@ begin
     for i := 0 to LEN(Known) - 1 do
         if key = Known[i] then return true; end;
     end;
-    return false;
+    return prefixed(key);
 end;
 
 (* Whether a section may set key. *)
@@ -246,7 +303,7 @@ begin
     for i := 0 to LEN(Sectioned) - 1 do
         if key = Sectioned[i] then return true; end;
     end;
-    return false;
+    return prefixed(key);
 end;
 
 (* The header line, [DIR], made the section the settings after it go
@@ -295,7 +352,12 @@ begin
             word, rest := Str.field(rest);
         end;
     | else:
-        if not known(key) then param(c, key, value); end;
+        if known(key) then
+        elsif ours(key) then   (* a PREFIX.NAME gone wrong, check.bad name: no provider's *)
+            warn(c, key, " is no key: a name of letters, digits, - and _ goes after the dot");
+        else
+            param(c, key, value);
+        end;
     end;
 end;
 
@@ -410,6 +472,39 @@ begin
     done(c);
 end;
 
+(* check.NAME keys: global and in a section, the deeper one over, a bad name refused. *)
+proc checks;
+var c: Conf; n, v: []const U8; ok: BOOL;
+begin
+    init(c);
+    read(c, `
+        check.unit = make unit
+        check.fmt = make fmt
+        check.bad name = x
+        check. = x
+        [/nowhere/p]
+        check.unit = make unit2
+        check.e2e_1 = make e2e
+        `);
+    apply(c, "/nowhere/q");
+    n, v, ok := named(c, "check", 1);
+    expect("a named check", n, "fmt");
+    expect("a named check, its command", v, "make fmt");
+    _, _, ok := named(c, "check", 2);
+    if ok then expect("a section not applied", "a third", "two"); end;
+    apply(c, "/nowhere/p");
+    n, v, ok := named(c, "check", 0);
+    expect("the deeper section over", n, "unit");
+    expect("the deeper section over, its command", v, "make unit2");
+    n, v, ok := named(c, "check", 2);
+    expect("a section's own check", n, "e2e_1");
+    expect("a section's own check, its command", v, "make e2e");
+    expect("the warnings of check keys", Buf.bytes(c.warnings),
+        "config: check.bad name is no key: a name of letters, digits, - and _ goes after the dot\n" +
+        "config: check. is no key: a name of letters, digits, - and _ goes after the dot\n");
+    done(c);
+end;
+
 proc main*: INT;
 var c: Conf; b: Buf.Buf; v: []const U8; ok: BOOL;
 begin
@@ -453,6 +548,7 @@ begin
     expect("the effort for a model", Awire.param(c.prov, "reasoning_effort@kimi-k3"), "high");
     done(c);
     sections();
+    checks();
     if failed then return 1; end;
     return 0;
 end;

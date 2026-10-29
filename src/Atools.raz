@@ -197,10 +197,14 @@ const
             `"environment variables for the programs, NAME to value, of the names the human allows"}},` +
             `"required":["args"]}`},
         {name: "check",
-         description: "Build and test the project, with the command the human set for it, and see " +
-            "whether it passed and what it printed. Run it after changing code, and again after each " +
-            "fix, until it passes. Takes no arguments.",
-         params: `{"type":"object","properties":{}}`},
+         description: "Build and test the project, with a command the human set, and see whether it " +
+            "passed and what it printed. Run the narrowest check that covers your change first, and " +
+            "the whole one before you finish; run it again after each fix, until it passes. Without a " +
+            "name it runs the project's own test command.",
+         params: `{"type":"object","properties":` +
+            `{"name":{"type":"string","description":"the check to run"},` +
+            `"files":{"type":"array","items":{"type":"string"},"description":` +
+            `"files inside the project for a check whose command takes them"}}}`},
         {name: "shell",
          description: "Run a shell command line in the project, sandboxed: no network, no input, no " +
             "display. Only the project's copy, $ARNO_SCRATCH and /tmp are writable. Use it for what " +
@@ -753,6 +757,11 @@ var
     testCmd: []const U8;     (* config's test_cmd, for a project with none of its own *)
     runDesc: Buf.Buf;  (* the run tool's description with the programs it names *)
     runDescFor: INT;   (* trust's length runDesc was made for, -1 until it is made *)
+    checkNames: Strs.Vec;  (* the named checks' names, config's check.NAME *)
+    checkCmds: Strs.Vec;   (* their commands, each as many as its name *)
+    checkDesc: Buf.Buf;    (* the check tool's description with the checks it names *)
+    checkParams: Buf.Buf;  (* its schema, name an enum of them *)
+    checkMade: BOOL;       (* whether checkDesc and checkParams are made for the checks now set *)
 
 const
     (* The programs always allowed, only reading and trusted, whatever
@@ -813,6 +822,67 @@ begin
         s := testCmd;
     end;
     return s;
+end;
+
+(* The named checks made none; then each one set with addCheck. The
+   strings are kept, not copied: config's. *)
+proc clearChecks*;
+begin
+    Strs.done(checkNames);
+    Strs.done(checkCmds);
+    Strs.init(checkNames, Heap.heap);
+    Strs.init(checkCmds, Heap.heap);
+    checkMade := false;
+end;
+
+(* The check name, which runs command, added. *)
+proc addCheck*(name, command: []const U8);
+begin
+    Strs.push(checkNames, name);
+    Strs.push(checkCmds, command);
+    checkMade := false;
+end;
+
+(* The command of the check name, "" if there is none. *)
+proc checkCommand(name: []const U8): []const U8;
+var i: INT;
+begin
+    for i := 0 to checkNames.len - 1 do
+        if Strs.all(checkNames)[i] = name then return Strs.all(checkCmds)[i]; end;
+    end;
+    return "";
+end;
+
+(* t, the check tool, with the named checks and their commands ended on
+   its description, and name an enum of them, so that a model need not
+   guess. Made again only when the checks change, in new buffers, so
+   that what was handed out before stays whole. *)
+proc checkOffer(t: Awire.Tool): Awire.Tool;
+var i: INT;
+begin
+    if not checkMade then
+        Buf.init(checkDesc, Heap.heap);
+        Buf.init(checkParams, Heap.heap);
+        Buf.str(checkDesc, t.description);
+        Buf.str(checkParams, `{"type":"object","properties":{`);
+        if checkNames.len > 0 then
+            Buf.str(checkDesc, " Checks, and the command each runs ({} stands for the files you give; " +
+                "without files it is removed, and the whole suite runs):");
+            Buf.str(checkParams, `"name":{"type":"string","description":"the check to run","enum":[`);
+            for i := 0 to checkNames.len - 1 do
+                Fmt.write(checkDesc, "\n- {}: {}", [Fmt.str(Strs.all(checkNames)[i]), Fmt.str(Strs.all(checkCmds)[i])]);
+                if i > 0 then Buf.add(checkParams, ','); end;
+                Fmt.write(checkParams, "\"{}\"", [Fmt.str(Strs.all(checkNames)[i])]);
+            end;
+            Buf.str(checkParams, "]},");
+        end;
+        Buf.str(checkParams, `"files":{"type":"array","items":{"type":"string"},"description":` +
+            `"files inside the project, for a check whose command has {}"}}}`);
+        checkMade := true;
+    end;
+    t.description := Buf.bytes(checkDesc);
+    t.params := Buf.bytes(checkParams);
+    return t;
 end;
 
 (* Whether x, a word for fd, asks it to run a program: --exec or
@@ -1100,25 +1170,100 @@ begin
     end;
 end;
 
-(* The 'check' tool: the project's test command run, and how it went,
-   so that the model sees its own edit break the build and fixes it
-   without the human passing the errors on. It takes no arguments: the
-   command is always the human's (testFor), so it runs without asking;
-   the model chooses when, never what. The verdict comes first, as a
-   runner's output doesn't always say; the output is kept from the end,
-   where a build's or a test's summary and the error that matters
-   are. While the stage is up it runs in the copy, whose files the
-   model may edit unasked, and so in the jail (confine). *)
-proc check(mem: ^Mem.Allocator; var out: Buf.Buf);
-var b, got: Buf.Buf; cmd: []const U8; j: Arun.Job; status: INT; cut: BOOL;
+(* s added to b as one word for sh: in single quotes, each one in it
+   closed, escaped and opened again. *)
+proc shellWord(var b: Buf.Buf; s: []const U8);
 begin
-    Buf.init(b, mem);
-    Buf.init(got, mem);
-    cmd := testFor(b);
-    if LEN(cmd) = 0 then
-        Buf.str(out, "error: no test command for this project; ask the human to run /test COMMAND once");
-        return;
+    Buf.add(b, '\'');
+    Str.replace(b, s, "'", "'\\''");
+    Buf.add(b, '\'');
+end;
+
+(* Whether the files check was given are fit to go into a command: each
+   inside the fence, existing, and no option's look. If not, why is
+   added to out. *)
+proc filesFit(files: [][]const U8; var out: Buf.Buf): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(files) - 1 do
+        if Str.hasPrefix(files[i], "-") then
+            Fmt.write(out, "error: {} may not start with -", [Fmt.str(files[i])]);
+        elsif not Afence.inside(files[i]) then
+            Fmt.write(out, "error: {} is outside the project", [Fmt.str(files[i])]);
+        elsif Sys.access(files[i], {}) # 0 then
+            Fmt.write(out, "error: {} does not exist", [Fmt.str(files[i])]);
+        else
+            continue;
+        end;
+        return false;
     end;
+    return true;
+end;
+
+(* The command of check's call, added to cmd: the project's own test
+   command if the call names no check, which takes no files; else the
+   named check's, its {} made the files, quoted, parted by blanks, or
+   nothing if there are none. False, and why added to out, if the check
+   or the files are unfit. quoted is scratch for the quoted files. *)
+proc checkCmd(const a: Args; var quoted, cmd, out: Buf.Buf): BOOL;
+var name, command: []const U8; files: [][]const U8; i: INT;
+begin
+    name := str(a, "name");
+    files := list(a, "files");
+    if LEN(name) = 0 then
+        command := testFor(quoted);
+        if LEN(command) = 0 then
+            Buf.str(out, "error: no test command for this project; ask the human to run /test COMMAND once");
+            return false;
+        end;
+        if LEN(files) > 0 then
+            Buf.str(out, "error: the project's own check takes no files; name a check that has {}");
+            return false;
+        end;
+        Buf.str(cmd, command);
+        return true;
+    end;
+    command := checkCommand(name);
+    if LEN(command) = 0 then
+        Fmt.write(out, "error: there is no check named {}; the checks are:", [Fmt.str(name)]);
+        for i := 0 to checkNames.len - 1 do
+            Buf.add(out, ' ');
+            Buf.str(out, Strs.all(checkNames)[i]);
+        end;
+        return false;
+    end;
+    if (LEN(files) > 0) and (Str.find(command, "{}") < 0) then
+        Fmt.write(out, "error: check {} takes no files: its command has no {}", [Fmt.str(name), Fmt.str("{}")]);
+        return false;
+    end;
+    if not filesFit(files, out) then return false; end;
+    Buf.reset(quoted);
+    for i := 0 to LEN(files) - 1 do
+        if i > 0 then Buf.add(quoted, ' '); end;
+        shellWord(quoted, files[i]);
+    end;
+    Str.replace(cmd, command, "{}", Buf.bytes(quoted));
+    return true;
+end;
+
+(* The 'check' tool: a test command run, and how it went, so that the
+   model sees its own edit break the build and fixes it without the
+   human passing the errors on. The command is always the human's, the
+   project's (testFor) or a named check's (config's check.NAME); the
+   model chooses which, and the files that fill its {}, never what, so
+   it runs without asking. The verdict comes first, as a runner's
+   output doesn't always say; the output is kept from the end, where a
+   build's or a test's summary and the error that matters are. While
+   the stage is up it runs in the copy, whose files the model may edit
+   unasked, and so in the jail (confine). *)
+proc check(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
+var quoted, cmdBuf, got: Buf.Buf; cmd: []const U8; j: Arun.Job; status: INT; cut: BOOL;
+begin
+    Buf.init(quoted, mem);
+    Buf.init(cmdBuf, mem);
+    Buf.init(got, mem);
+    if not checkCmd(a, quoted, cmdBuf, out) then return; end;
+    cmd := Buf.bytes(cmdBuf);
     j := {args: ["sh", "-c", cmd], env: [scratchVar(mem)], detach: true, tail: true};
     confine(j, mem);
     status, cut, _ := Arun.start(j, MaxOut - 1000, got);
@@ -1819,7 +1964,10 @@ begin
         | "editor", "open": if not Apeer.reachable() then continue; end;
         | "edit", "move", "remove": if not edits then continue; end;
         | "run": Tools.push(offer, runOffer(Offered[i])); continue;
-        | "check": if LEN(testFor(b)) = 0 then continue; end;
+        | "check":
+            if (LEN(testFor(b)) = 0) and (checkNames.len = 0) then continue; end;
+            Tools.push(offer, checkOffer(Offered[i]));
+            continue;
         | "shell": if not edits or not shellOn() then continue; end;
         | else:
         end;
@@ -1972,7 +2120,7 @@ begin
     elsif name = "run" then
         runTool(a, h, res);
     elsif name = "check" then
-        check(mem, res);
+        check(a, mem, res);
     elsif name = "shell" then
         shell(a, mem, res);
     elsif name = "edit" then
@@ -2101,7 +2249,7 @@ begin
 end;
 
 proc main*: INT;
-var dir, s, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
+var dir, s, t, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
     Arun.child();
     Buf.init(hostSaid, Heap.heap);
@@ -2316,6 +2464,36 @@ begin
     expect("check", run("check", `{}`, nil), "FAILED, exit 1: echo testing; exit 1\n\ntesting\n");
     _ := Astore.setKeyed("tests.json", Afence.root, "echo ok");
     expect("check, the project's", run("check", `{}`, nil), "passed: echo ok\n\nok\n");
+
+    (* named checks: listed, run, with files in {}, and the unfit refused *)
+    clearChecks;
+    addCheck("unit", "echo unit {}");
+    addCheck("fmt", "echo fmt");
+    tools := offered(false, true, false);
+    for i := 0 to LEN(tools) - 1 do
+        if tools[i].name = "check" then s := tools[i].description; t := tools[i].params; end;
+    end;
+    if not Str.hasSuffix(s, "\n- unit: echo unit {}\n- fmt: echo fmt") then
+        Out.str("Atools: check's description doesn't end in its names\n");
+        failed := true;
+    end;
+    if Str.find(t, `"enum":["unit","fmt"]`) < 0 then Out.str("Atools: check's names are no enum\n"); failed := true; end;
+    expect("check, a name", run("check", `{"name":"fmt"}`, nil), "passed: echo fmt\n\nfmt\n");
+    expect("check, {} with a file", run("check", `{"name":"unit","files":["f"]}`, nil), "passed: echo unit 'f'\n\nunit f\n");
+    expect("check, {} with no file", run("check", `{"name":"unit"}`, nil), "passed: echo unit \n\nunit\n");
+    expect("check, a file outside", run("check", `{"name":"unit","files":["/etc/passwd"]}`, nil),
+        "error: /etc/passwd is outside the project");
+    expect("check, a file like an option", run("check", `{"name":"unit","files":["-f"]}`, nil),
+        "error: -f may not start with -");
+    expect("check, a file not there", run("check", `{"name":"unit","files":["nonesuch"]}`, nil),
+        "error: nonesuch does not exist");
+    expect("check, an unknown name", run("check", `{"name":"e2e"}`, nil),
+        "error: there is no check named e2e; the checks are: unit fmt");
+    expect("check, files for a command with no {}", run("check", `{"name":"fmt","files":["f"]}`, nil),
+        "error: check fmt takes no files: its command has no {}");
+    expect("check, files for the project's own", run("check", `{"files":["f"]}`, nil),
+        "error: the project's own check takes no files; name a check that has {}");
+    clearChecks;
 
     (* the host's tools: its own, run by it; a name of arno's refused; the builtins it left out gone *)
     hosting(hostRan, nil);

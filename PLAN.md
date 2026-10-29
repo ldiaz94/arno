@@ -463,8 +463,12 @@ one or more commits that build with `-Werror`.
      network, `jail_rw` adds writable directories, a missing one passed
      over. In the human's config, never the project's, so a cloned
      repository grants itself nothing.
-   - [ ] Named checks: `check(name, files?)`, a profile's `check.NAME`
-     commands, `{}` standing for files inside the fence.
+   - [x] Named checks: `check(name, files?)`, a profile's `check.NAME`
+     commands, `{}` standing for files inside the fence. The description
+     lists them and `name` is an enum; each file must exist, lie inside
+     the fence (refused, not asked) and not start with `-`, and is
+     shell-quoted. Files for a command without `{}` are an error; none
+     for one with it runs the whole suite. Still unasked and jailed.
    - [x] `outline` and `def` know `const f = () =>` and `= function`:
      at any indentation, with async, generics and a type after the
      parameters; a call holding an arrow is not one.
