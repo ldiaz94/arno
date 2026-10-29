@@ -1002,11 +1002,10 @@ A result is cut at 32000 bytes.
 Old long results are cut from the history, in the saved conversation
 too, once it passes
 .Cm prune
-bytes.
-A worker's report can't be had again by calling again, so each is kept
-whole in the scratch directory, as
+bytes; a worker's report never is, as it is what the work found.
+Each is also kept in the scratch directory, as
 .Pa report- Ns Ar n Ns Pa .md ,
-named on its first line, and a cut one says to read it there.
+named on its first line.
 .Sh THE PATH FENCE
 The file tools
 .Po

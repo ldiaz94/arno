@@ -262,7 +262,9 @@ end;
    than a little every step, is for the provider's prompt cache, which
    matches only a prefix that hasn't changed, and bills what it matches
    at a fraction of the price: between cuts the prefix stays put. A
-   result already cut is left as it is. *)
+   result already cut is left as it is, and so is a worker's report,
+   which is no listing gone stale but what the work found: a lead that
+   lost them wrote its answer from their first lines. *)
 proc prune(var a: Agent; var c: Astore.Conv);
 var m: []Amsg.Msg; b: Buf.Buf; t, line, rest: []const U8; i, k, steps, n: INT;
 begin
@@ -276,7 +278,9 @@ begin
     Buf.init(b, SYSTEM.ADR(a.mem.base));
     for k := 0 to i do
         t := m[k].text;
-        if (m[k].role # Amsg.Role.tool) or (LEN(t) < 2000) or (Str.find(t, CutMark) >= 0) then continue; end;
+        if (m[k].role # Amsg.Role.tool) or (LEN(t) < 2000) or (Str.find(t, CutMark) >= 0) or (m[k].tool = "delegate") then
+            continue;
+        end;
         Buf.reset(b);
         rest := t;
         n := 0;
@@ -287,13 +291,8 @@ begin
             INC(n);
         end;
         if LEN(rest) = 0 then continue; end;
-        if m[k].tool = "delegate" then
-            Fmt.write(b, "{}{} more bytes, cut from the history as old; the whole report is in the file its first " +
-                "line names: read it, as calling again would run a new worker]", [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
-        else
-            Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
-                [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
-        end;
+        Fmt.write(b, "{}{} more bytes, cut from the history as old; make the call again to see them]",
+            [Fmt.str(CutMark), Fmt.int(LEN(rest))]);
         Amsg.setText(m[k], Buf.bytes(b));
     end;
     Arena.reset(a.mem);
@@ -430,9 +429,9 @@ begin
 end;
 
 (* report kept in the scratch directory as report-K.md, the first K
-   free, its path into path: a worker's report is the one result that
-   can't be had again by calling again, so a cut of it (prune) points
-   here. false if there is no scratch or it can't be written. *)
+   free, its path into path, for the human to read: a worker's report
+   can't be had again by calling again. false if there is no scratch or
+   it can't be written. *)
 proc keepReport(var a: Agent; report: []const U8; var path: Buf.Buf): BOOL;
 var e: INT;
 begin
@@ -472,7 +471,6 @@ begin
     Buf.str(out, "worker ");
     if n > 0 then Fmt.write(out, "{} ", [Fmt.int(n)]); end;
     Fmt.write(out, "({}) report ({} steps, ${})", [Fmt.str(model), Fmt.int(steps(w)), Fmt.real(cost, 2)]);
-    (* on the first line, which a cut keeps (prune) *)
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
@@ -1010,7 +1008,7 @@ begin
         Out.str("Agent: prune keeps the head\n");
         return 1;
     end;
-    (* a worker's report, cut, points to the file it is kept in, not to a call again *)
+    (* a worker's report is never cut *)
     Astore.init(c, "test");
     for i := 0 to 5 do
         m := Msgs.add(c.msgs);
@@ -1022,8 +1020,7 @@ begin
         Amsg.setText(m^, Buf.bytes(long));
     end;
     prune(a, c);
-    if not Str.hasSuffix(Msgs.all(c.msgs)[1].text, "the whole report is in the file its first line names: read it, as " +
-        "calling again would run a new worker]") then
+    if Msgs.all(c.msgs)[1].text # Buf.bytes(long) then
         Out.str("Agent: prune, a report\n");
         return 1;
     end;
