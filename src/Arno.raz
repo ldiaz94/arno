@@ -53,7 +53,7 @@ const
            arno -h | --help
            arno --version
     `;
-    Version = "arno 0.5.1\n";    (* as the release is tagged, v0.5.1 *)
+    Version = "arno 0.6.0\n";    (* as the release is tagged, v0.6.0 *)
 
 var stopped: BOOL;
 
