@@ -39,7 +39,7 @@ pseudo-terminal (`test/Play.raz`, `test/cast.cn`).
 
 ## Get it
 
-You need Linux, `make`, [raz 0.25.0](https://raz.lucelad.workers.dev)
+You need Linux, `make`, [raz 0.25.3](https://raz.lucelad.workers.dev)
 on your `PATH`, and the OpenSSL development files (the default TLS
 backend; `TLS=gnutls` selects rnet's GnuTLS one). arno links libc,
 pthreads and the TLS libraries. `make check` also needs
