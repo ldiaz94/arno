@@ -76,7 +76,7 @@ import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, status, ended);
+    Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, revise, status, ended);
 
     (* The parts of the status line a narrow row leaves out, in the
        order it leaves them out; the mode, safety and plan always show. *)
@@ -113,6 +113,7 @@ var
     stopping: BOOL;     (* the human said to stop the turn *)
     ending: BOOL;       (* the loop has ended: a question is a no, unasked *)
     reason: Buf.Buf;    (* the human's why, written before the answer *)
+    revision: Buf.Buf;  (* the text the human's editor left, written before the answer *)
     answerRead, answerWrite: INT;   (* the pipe an answer comes by, a byte *)
 
     (* a job's own *)
@@ -123,9 +124,12 @@ var
     posted: Asession.Facts;   (* the facts it made last, under mutex *)
     fresh: BOOL;        (* posted is newer than what the loop shows, under mutex *)
     because: Buf.Buf;   (* the why it was given *)
+    revised: Buf.Buf;   (* the text the human's editor left, as it was given *)
 
     (* the loop's own *)
     thread: ^Thread.Thread;   (* the job running, or nil *)
+    toRevise: Buf.Buf;        (* the text a job asked to have edited, edited once the queue is let go *)
+    revising: BOOL;           (* whether it waits *)
     editor: TuiEdit.Editor;   (* the input *)
     map: TuiMap.Map;
     reader: TuiMap.Reader;
@@ -269,11 +273,26 @@ begin
     return Buf.bytes(because);
 end;
 
+(* text as the human left it in their editor, which the loop's thread
+   runs (reviseNow), and whether it ran. *)
+proc revise(text: []const U8): ([]const U8, BOOL);
+var c: U8;
+begin
+    if gone() or stopped() then return "", false; end;
+    post(Sort.revise, text, "", "", false);
+    c := answer();
+    Thread.lock(mutex);
+    Buf.reset(revised);
+    Buf.str(revised, Buf.bytes(revision));
+    Thread.unlock(mutex);
+    return Buf.bytes(revised), c = 'y';
+end;
+
 (* The front end a session on the screen tells. *)
 proc front*: Agent.Front;
 begin
     return {text: text, call: call, result: result, note: note, ask: ask, why: reasoned, stopped: stopped,
-        counted: counted};
+        counted: counted, edit: revise};
 end;
 
 (* c shown again from its start, on the job's thread, which has it: the
@@ -491,6 +510,8 @@ begin
     restate(f);
 end;
 
+proc reviseNow(text: []const U8); forward;
+
 (* What a job told, taken from the queue into the board. *)
 proc woken;
 var e: []Event; i: INT; finished: BOOL;
@@ -509,6 +530,10 @@ begin
         | cleared: Aview.cleared(); back := 0;
         | asked: pose(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
         | Sort.why: TuiLine.start(SYSTEM.ADR(why), " why not? ", "", nil);
+        | revise:
+            Buf.reset(toRevise);
+            Buf.str(toRevise, Buf.bytes(e[i].a));
+            revising := true;
         | Sort.status:
             if fresh then restate(posted); fresh := false; end;
             Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b));
@@ -523,6 +548,12 @@ begin
     end;
     Events.reset(events);
     Thread.unlock(mutex);
+    (* the editor runs with the queue let go: reviseNow takes the mutex
+       to leave its answer, and the job may tell more meanwhile *)
+    if revising then
+        revising := false;
+        reviseNow(Buf.bytes(toRevise));
+    end;
     if finished and (thread # nil) then
         Thread.join(thread);
         thread := nil;
@@ -938,6 +969,26 @@ end;
 
 (* C-x C-e: the input written in the editor, the last exchange below
    the scissors line; what is above it comes back. *)
+(* text edited in $VISUAL or $EDITOR, as C-x C-e edits the input, for a
+   job's revise: what the editor left, and whether it ran, the answer;
+   the input as it was before. *)
+proc reviseNow(text: []const U8);
+var mine: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(mine, Heap.heap);
+    defer Buf.done(mine);
+    Buf.str(mine, TuiEdit.text(SYSTEM.ADR(editor)));
+    TuiEdit.setText(SYSTEM.ADR(editor), text);
+    ok := TuiEdit.external(SYSTEM.ADR(editor));
+    Thread.lock(mutex);
+    Buf.reset(revision);
+    if ok then Buf.str(revision, TuiEdit.text(SYSTEM.ADR(editor))); end;
+    Thread.unlock(mutex);
+    fill(Buf.bytes(mine), LEN(Buf.bytes(mine)));
+    if not ok then Buf.str(flash, "the editor failed or was quit; the plan is as it was"); end;
+    if ok then reply('y'); else reply('n'); end;
+end;
+
 proc external(_n: INT);
 var b, last: Buf.Buf; s: []const U8; k: INT;
 begin
@@ -1386,6 +1437,9 @@ begin
     Buf.init(job, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(because, Heap.heap);
+    Buf.init(revision, Heap.heap);
+    Buf.init(revised, Heap.heap);
+    Buf.init(toRevise, Heap.heap);
     Asession.initFacts(facts);
     Asession.initFacts(posted);
     Buf.init(flash, Heap.heap);

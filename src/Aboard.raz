@@ -61,6 +61,7 @@ const
     UserBar = "\u{258C} ";
     ReplyBar = "\u{258C} ";
     Gutter = "    \u{2502} ";
+    Plan = "    ";   (* a plan's lines, under its call *)
 
 var
     entries: Entries.Vec;
@@ -461,8 +462,24 @@ begin
     | tool:
         header(e^, w - 2);
         if not e^.open then return; end;
-        lines(Buf.bytes(e^.args), Gutter, dim, dim, w - 6);
-        if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;
+        (* a plan is read, not checked against its arguments, which hold it
+           again: it stands apart from the call, as markdown, as a reply does *)
+        if (Buf.bytes(e^.text) = "plan") and (e^.detail.len > 0) then
+            start();
+            emit("", plain, 0, 0);
+            s := Str.trimRight(Buf.bytes(e^.detail));
+            fence := false;
+            repeat
+                line, s, ok := Str.cut(s, "\n");
+                markdown(line, fence);
+                wrap(Plan, plain, w - 4);
+            until not ok;
+            start();
+            emit("", plain, 0, 0);
+        else
+            lines(Buf.bytes(e^.args), Gutter, dim, dim, w - 6);
+            if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;
+        end;
         s, more := head(Str.trimRight(Buf.bytes(e^.res)), MaxShown);
         if LEN(s) > 0 then
             if Buf.bytes(e^.text) = "git" then diff(s, Gutter, w - 6); else lines(s, Gutter, dim, dim, w - 6); end;
@@ -584,6 +601,11 @@ begin
     toggle;
     _ := push(error, "it failed");
     ok := expect("opened", 30, 6, 0, "  \u{25BE} read {\"path\":\"a.r  3 lines\n    \u{2502} {\"path\":\"a.raz\"}\n    \u{2502} one\n    \u{2502} two\n    \u{2502} three\n  it failed\nback 0\n") and ok;
+    (* a plan apart from its call, as markdown, its arguments not shown *)
+    clear;
+    call("plan", `{"plan":"# Steps"}`);
+    detail("# Steps\n1. **one** thing");
+    ok := expect("a plan", 30, 6, 0, "  \u{25BE} plan {\"plan\":\"#   running\u{2026}\n\n    Steps\n    1. one thing\n\n\nback 0\n") and ok;
     if ok then return 0; end;
     return 1;
 end;

@@ -89,6 +89,7 @@ type
         why*: Atools.Why;                          (* after a no, why; nil not to ask *)
         stopped*: proc: BOOL;                      (* whether the human said to stop *)
         counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
+        edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
         arg*: ^U8;
     end;
 
@@ -642,10 +643,44 @@ begin
     end;
 end;
 
-(* plan, with the arguments args: the plan written to plan.md in the
-   scratch directory, and put to the human, whose yes or no, and why,
-   is added to out, and where the plan is kept. With nobody to ask,
-   the answer is no. Its work is done in the call's arena. *)
+(* text, a plan, put to the human: their answer added to out, and the
+   plan as it ends. A human with an editor may change it first, the
+   front's edit; it is asked again as they left it, and an edited plan
+   goes back to the model whole, as theirs replaces the model's. *)
+proc approve(var a: Agent; text: []const U8; var out: Buf.Buf): []const U8;
+var keys, mine: []const U8; answer: U8; edited, ok: BOOL; revised: Buf.Buf;
+begin
+    keys := "yn";
+    if a.front.edit # nil then keys := "yne"; end;
+    edited := false;
+    answer := a.human.ask("carry out this plan?", text, keys);
+    while answer = 'e' do
+        mine, ok := a.front.edit(text);
+        if ok and (LEN(Str.trim(mine)) > 0) and (Str.trim(mine) # text) then
+            Buf.init(revised, SYSTEM.ADR(a.mem.base));
+            Buf.str(revised, Str.trim(mine));
+            text := Buf.bytes(revised);
+            edited := true;
+        end;
+        answer := a.human.ask("carry out this plan?", text, keys);
+    end;
+    if (answer = 'y') and edited then
+        Fmt.write(out, "{} the human edited the plan, then approved it; carry out their version, not yours:\n\n{}",
+            [Fmt.str(Approved), Fmt.str(text)]);
+    elsif answer = 'y' then
+        Fmt.write(out, "{} the human approved the plan; carry it out.", [Fmt.str(Approved)]);
+    else
+        Atools.declined(a.human, "Revise the plan as they say and call plan again; nothing may be changed or " +
+            "delegated until a plan is approved.", out);
+    end;
+    return text;
+end;
+
+(* plan, with the arguments args: the plan put to the human (approve),
+   whose yes or no, and why, is added to out, then written to plan.md
+   in the scratch directory as it ended, and where it is kept added
+   too. With nobody to ask, the answer is no. Its work is done in the
+   call's arena. *)
 proc plan(var a: Agent; args: []const U8; var out: Buf.Buf);
 var d: Json.Doc; p: Atools.Args; path: Buf.Buf; text: []const U8;
 begin
@@ -663,17 +698,14 @@ begin
     if a.human.ask = nil then
         Buf.str(out, "not approved: there is nobody here to approve a plan, so nothing may be changed or " +
             "delegated. Give the plan in your answer, and stop.");
-    elsif a.human.ask("carry out this plan?", text, "yn") = 'y' then
-        Fmt.write(out, "{} the human approved the plan; carry it out.", [Fmt.str(Approved)]);
     else
-        Atools.declined(a.human, "Revise the plan as they say and call plan again; nothing may be changed or " +
-            "delegated until a plan is approved.", out);
+        text := approve(a, text, out);
     end;
     if LEN(Afence.scratch) = 0 then return; end;
     Buf.init(path, SYSTEM.ADR(a.mem.base));
     Fmt.write(path, "{}/plan.md", [Fmt.str(Afence.scratch)]);
     if Files.write(Buf.bytes(path), text) then
-        Fmt.write(out, " The plan is kept in {}.", [Fmt.str(Buf.bytes(path))]);
+        Fmt.write(out, "\n\nThe plan is kept in {}.", [Fmt.str(Buf.bytes(path))]);
     end;
 end;
 
