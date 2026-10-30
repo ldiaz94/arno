@@ -23,10 +23,11 @@
    share): shown dim above the input, counted on the status line, and
    run in order, each a job of its own, as the one before ends; a
    command waits its place too, but /view, the screen's own, acts at
-   once. Up on an empty input takes the last back to be edited. C-c
-   stops the turn and keeps the queue; a second, or one with no turn,
-   empties it. A job that ends on an error or a stop holds the queue
-   until RET.
+   once, and /usage answers at once from the counters as the turn
+   began. C-p on an empty input takes the last back to be edited (not
+   Up, which the wheel sends). C-c stops the turn and keeps the queue;
+   a second, or one with no turn, empties it. A job that ends on an
+   error or a stop holds the queue until RET.
 
    The keys are emacs's, over rtui's editor (TuiEdit): RET sends, M-RET
    breaks the line, C-c stops the turn or, with none, empties the
@@ -130,6 +131,7 @@ var
 
     (* a job's own *)
     job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
+    usageText: Buf.Buf; (* /usage as it stood when the job began, for asking it during the job *)
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
@@ -370,6 +372,9 @@ begin
     Buf.str(job, line);
     stopping := false;
     troubled := false;
+    Buf.reset(usageText);
+    Buf.str(usageText, "as of the start of the turn:\n");
+    Asession.usage(session^, usageText);   (* no job runs yet, so the counters are still *)
     Aview.busied(true);
     thread, err := Thread.spawn(work, nil);
     if err # nil then
@@ -664,10 +669,24 @@ begin
     back := 0;
 end;
 
+(* /usage while a job runs: the counters as they stood when it began,
+   the job owning the live ones. *)
+proc usageDuringJob;
+begin
+    Aview.noted(Aboard.info, Buf.bytes(usageText));
+    back := 0;
+end;
+
 proc send(_n: INT);
 var s: []const U8;
 begin
     s := Str.trim(TuiEdit.text(SYSTEM.ADR(editor)));
+    if (s = "/usage") and not viewing and (thread # nil) then
+        Ahistory.add(s);
+        usageDuringJob;
+        TuiEdit.setText(SYSTEM.ADR(editor), "");
+        return;
+    end;
     if (s = "/view") or Str.hasPrefix(s, "/view ") then
         Ahistory.add(s);
         chooseView(Str.trim(s[LEN("/view")..LEN(s)]));
@@ -1610,6 +1629,7 @@ begin
     Events.init(events, Heap.heap);
     Buf.init(reason, Heap.heap);
     Buf.init(job, Heap.heap);
+    Buf.init(usageText, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(because, Heap.heap);
     Buf.init(revision, Heap.heap);

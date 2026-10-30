@@ -1139,7 +1139,7 @@ end;
 (* /usage: what the session's requests cost, in tokens and in dollars
    at list price, and the price of the model in use. A session is this
    run of arno, across every conversation it went through. *)
-proc usage(const s: Session; var out: Buf.Buf);
+proc usage*(const s: Session; var out: Buf.Buf);
 var pr: Aprice.Price; priced: BOOL;
 begin
     Buf.str(out, "context   ");

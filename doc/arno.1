@@ -178,7 +178,10 @@ line each, counted on the status line, and run in order, each as a turn
 of its own, as the one before ends.
 A command waits its place in the queue too, except
 .Ic /view ,
-which acts at once.
+which acts at once, and
+.Ic /usage ,
+which answers at once as the counters stood when the turn began, and
+shows them as of then until the turn ends.
 C-p on an empty input takes the last queued line back to edit.
 C-c stops the turn and keeps the queue; a second C-c empties it.
 A turn that ends on an error or a stop holds the queue, as the rule
