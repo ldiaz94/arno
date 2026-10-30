@@ -753,6 +753,19 @@ begin
     return (LEN(line) > 0) and ((line[0] # '/') or Str.hasPrefix(line, "/compact"));
 end;
 
+(* /usage as the turn begins, for a viewer's /usage during it, which
+   is answered from it (Aview.metered); no job runs yet, so the
+   counters are still. *)
+proc metered;
+var u: Buf.Buf;
+begin
+    Buf.init(u, Heap.heap);
+    defer Buf.done(u);
+    Buf.str(u, "as of the start of the turn:\n");
+    Asession.usage(session, u);
+    Aview.metered(Buf.bytes(u));
+end;
+
 (* A job started on line, "" to prepare the session. *)
 proc start(line: []const U8);
 var err: ERROR;
@@ -763,7 +776,10 @@ begin
     stopping := false;
     Thread.unlock(mutex);
     turning := isTurn(line);
-    if turning then Aview.busied(true); end;
+    if turning then
+        metered();
+        Aview.busied(true);
+    end;
     thread, err := Thread.spawn(work, nil);
     if err # nil then
         thread := nil;

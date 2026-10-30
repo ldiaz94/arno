@@ -64,10 +64,15 @@
    edited. A change is told when the owner settles, after taking what
    it can, so that a line that runs at once is never told as waiting.
 
-   A viewer's screen completes /model from the session's models,
-   which only the session has: the owner lists them when no job has
-   the session, and they are told to viewers as listed when they
-   change.
+   Two things a viewer's screen needs the session for are told it or
+   answered for it here, so that it is as good as the owner's. The
+   models, which /model completes from: the owner lists them when no
+   job has the session, and they are told as listed when they change.
+   And /usage during a turn, which the turn's counters can't answer
+   while it runs: the owner leaves the text as the turn begins, and a
+   viewer's /usage is answered from it at once, not queued, as an
+   entry of the transcript, shown on every screen, since a viewer's
+   own would put its numbers out of step with the session's.
 
    Depends on Aboard, Aframe, Astore and Sys. Leaves out the editors'
    protocol of arno-peer(5), which has a socket of its own. *)
@@ -117,6 +122,8 @@ var
     status: Buf.Buf;          (* the status line last told *)
     busy: BOOL;               (* a turn is running, as last told *)
     models: Buf.Buf;          (* the models /model completes from, a line each, as last told *)
+    usage: Buf.Buf;           (* /usage as it stood when the turn began *)
+    usageWanted: BOOL;        (* a viewer asked /usage during the turn, to be answered *)
 
 (* Telling *)
 
@@ -462,6 +469,21 @@ begin
     return Buf.bytes(models);
 end;
 
+(* /usage as it stands as a turn begins is u, for a /usage asked while
+   the turn runs, which owns the live counters. *)
+proc metered*(u: []const U8);
+begin
+    Buf.reset(usage);
+    Buf.str(usage, u);
+end;
+
+(* /usage during the turn: the counters as it began, an entry for every
+   screen. *)
+proc usageAsked*;
+begin
+    noted(Aboard.info, Buf.bytes(usage));
+end;
+
 (* The session is run by o, in the project r, until told otherwise. *)
 proc owning*(o, r: []const U8);
 begin
@@ -570,7 +592,8 @@ begin
 end;
 
 (* Viewer i's inbox read as far as it makes whole messages: a hail
-   or a who first, then lines, cancels and unqueues. false if it sent what is no
+   or a who first, then lines, cancels and unqueues; a /usage during a
+   turn is not queued but wanted. false if it sent what is no
    message, or a who is answered, and it is to be dropped. *)
 proc read(i: INT): BOOL;
 var v: ^Viewer; f: Fields.Vec; one: []const U8; used: INT;
@@ -593,7 +616,9 @@ begin
             if used <= 0 then return used = 0; end;
             if f.len > 0 then
                 one := Fields.all(f)[0];
-                if (one = "line") and (f.len >= 2) then
+                if (one = "line") and (f.len >= 2) and busy and (Fields.all(f)[1] = "/usage") then
+                    usageWanted := true;   (* answered once the viewers are left alone: telling may drop one *)
+                elsif (one = "line") and (f.len >= 2) then
                     enqueue(Fields.all(f)[1]);
                 elsif one = "cancel" then
                     cancelling := true;
@@ -609,7 +634,7 @@ begin
 end;
 
 (* The fd is ready: a connection to take, or a viewer to read from or
-   write to. *)
+   write to; then a /usage it asked, answered. *)
 proc service*(fd: INT);
 var i, n: INT; chunk: [16384]U8; v: ^Viewer;
 begin
@@ -618,18 +643,22 @@ begin
         if Viewers.all(viewers)[i].fd = fd then
             v := SYSTEM.ADR(Viewers.all(viewers)[i]);
             n := Sys.read(fd, chunk);
-            if n = 0 then drop(i); return; end;
+            if n = 0 then drop(i); break; end;
             if n > 0 then
                 Buf.str(v^.inbox, chunk[0..n]);
-                if not read(i) then drop(i); return; end;
+                if not read(i) then drop(i); break; end;
             end;
             if (n >= 0) or (n = Sys.errAgain) or (n = Sys.errIntr) then
                 if not flush(i) then drop(i); end;
             else
                 drop(i);
             end;
-            return;
+            break;
         end;
+    end;
+    if usageWanted then
+        usageWanted := false;
+        usageAsked();
     end;
 end;
 
@@ -944,9 +973,10 @@ begin
     end;
 end;
 
-(* The viewer on fd is told the models once for each change, and has
-   the list a session told it. *)
-proc listedTold(fd: INT);
+(* The viewer on fd, with a turn running and the board empty, is told
+   the models once for each change, and has the list a session told
+   it; its /usage is answered at once, and not queued. *)
+proc listedAndUsage(fd: INT);
 var got, line: Buf.Buf; ok: BOOL;
 begin
     Buf.init(got, Heap.heap);
@@ -957,6 +987,14 @@ begin
     listed("m1\nm2");
     received(fd, got);
     expect("the models, told once", Buf.bytes(got), "listed|m1\nm2\n");
+    metered("as the turn began");
+    Aframe.pack(line, ["line", "/usage"]);
+    _ := Sys.send(fd, Buf.bytes(line));
+    serviceAll();
+    settle();
+    received(fd, got);
+    expect("a viewer's /usage during a turn", Buf.bytes(got), "push|0|info|as the turn began\n");
+    if LEN(queue()) # 0 then failed := true; Out.str("Aview: /usage queued\n"); end;
     apply(["listed", "a\nb"], line, ok);
     expect("the models a session told", modelsListed(), "a\nb");
 end;
@@ -1040,7 +1078,7 @@ begin
     apply(["queue", "1", "x"], line, ok);
     if not held() or (LEN(queue()) # 1) then failed := true; Out.str("Aview: a queue told\n"); end;
     clearQueue();
-    listedTold(fd);
+    listedAndUsage(fd);
     Sys.close(fd);
     serviceAll();
 
@@ -1074,4 +1112,5 @@ begin
     Buf.init(title, Heap.heap);
     Buf.init(status, Heap.heap);
     Buf.init(models, Heap.heap);
+    Buf.init(usage, Heap.heap);
 end Aview.

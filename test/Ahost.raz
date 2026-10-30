@@ -27,8 +27,9 @@
      - on a terminal, holds a queue after an error too, answers /usage
        at once during a turn, and draws the menu of commands then;
      - shows a viewer on its session socket the transcript, and runs
-       the line the viewer types; tells it the models, which an
-       attached screen completes /model from;
+       the line the viewer types; answers its /usage during a turn at
+       once; tells it the models, which an attached screen completes
+       /model from;
      - on a terminal, queues what is typed during a turn, holds the
        queue after C-c until RET, gives the last back to C-p, and
        empties it at a second C-c, as a viewer is told;
@@ -331,6 +332,38 @@ begin
     _, how, rc := Sys.waitExit(at);
     if (how # Sys.Status.exited) or (rc # 0) then fail("leaving the screen", "arno --attach did not end with status 0"); end;
     Sys.close(pty);
+end;
+
+(* A viewer's /usage while a turn waits on the host's tool is answered
+   at once, from the counters as the turn began, and not queued. *)
+proc usageAtOnce(socket: []const U8);
+var fd: INT; got, buf, id: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(buf, Heap.heap);
+    Buf.init(id, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(buf);
+    defer Buf.done(id);
+    fd := Sys.connect(socket);
+    if fd < 0 then fail("a viewer for /usage", "no socket"); return; end;
+    _ := Sys.send(fd, "6:attach,");
+    clear();
+    line(`call doc_read {"n":3}`);
+    _ := await("call|");
+    Buf.str(id, idOf());
+    Buf.reset(out);
+    Aframe.pack(out, ["line", "/usage"]);
+    _ := Sys.send(fd, Buf.bytes(out));
+    ok := read(fd, buf, got);
+    while ok and (Str.find(Buf.bytes(got), "as of the start of the turn") < 0) do ok := read(fd, buf, got); end;
+    if not ok then fail("a viewer's /usage during a turn is answered", Buf.bytes(got)); end;
+    send(["result", Buf.bytes(id), "fine"]);
+    idle();
+    mustHave("the host sees the answer too", "as of the start of the turn");
+    mustNotHave("a viewer's /usage during a turn is not queued", "queue|0|/usage");
+    mustNotHave("nor run after it", "|user|/usage");
+    Sys.close(fd);
 end;
 
 (* The messages to a viewer, on fd, read until one holds text, which is
@@ -832,6 +865,7 @@ begin
     whoNotLast(Buf.bytes(socket));
     listing(arno, "testhost");
     screen(arno, Buf.bytes(pid));
+    usageAtOnce(Buf.bytes(socket));
     completes(arno, Buf.bytes(socket), Buf.bytes(pid));
     terminal(arno);
 end;
