@@ -42,6 +42,19 @@
          |   > read {"path":"a.raz"}  40 lines
          | | a reply of the worker's
 
+   Shown the lead's, each worker is a line under the delegate that
+   started it, kept up to date: its number and model, how many calls it
+   has made, and its latest, the call's name and the first string of
+   its arguments; toggled, the delegate shows the worker's view:
+
+         > delegate {"task":"..."}  running...
+             w2 glm-5.3-flash . 23 calls . read enterprise/cv.ts
+
+   A worker's first entry is linked to the lead's newest delegate
+   before it, as a worker's first word follows its own call, so the
+   link falls out of the entries, for a viewer too. Left out: what a
+   worker has spent, which the entries don't hold.
+
    flatten lays the whole transcript out as text, for copy mode to move
    over: each row's text, without its styles or what goes before it,
    and the column it starts at; and what joins it to the row above
@@ -51,7 +64,8 @@
    Depends on rtui's TuiScreen, rterm's Term, Buf, Str and
    Heap. *)
 module Aboard;
-import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf);
+import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf),
+    Ints := Vec(INT);
 import SYSTEM;
 
 type
@@ -87,7 +101,10 @@ const
     Gutter = "    \u{2502} ";
     Plan = "    ";   (* a plan's lines, under its call *)
     WorkerBar = "  \u{2502} ";   (* before each row of a worker's entry, shown all *)
+    WorkerLine = "    ";   (* before a worker's line, under its delegate *)
+    Dot = " \u{B7} ";      (* between a worker line's facts *)
     All* = -1;       (* the view of every entry *)
+    Unseen = -2;     (* in starts: the worker has said nothing yet *)
     MaxCols = 16;    (* a table's columns shown; those past are left out *)
 
 var
@@ -95,6 +112,8 @@ var
     view*: INT;         (* whose entries are shown: All, 0 the lead's, N worker N's *)
     entries: Entries.Vec;
     models: Models.Vec;   (* worker N's model at N; empty where none was named *)
+    starts: Ints.Vec;     (* at N, the index of the lead's delegate that started worker N: -1 if
+                             none, Unseen if N has said nothing, as past the end *)
     styles: [11]TuiScreen.Style;   (* each Look's *)
     (* the line being laid out: its text, and the Look of each byte *)
     text, looks: Buf.Buf;
@@ -151,6 +170,36 @@ begin
     return Buf.bytes(Models.all(models)[n]);
 end;
 
+(* Whether e is a delegate of the lead's. *)
+proc isDelegate(const e: Entry): BOOL;
+begin
+    return (e.speaker = 0) and (e.kind = Kind.tool) and (Buf.bytes(e.text) = "delegate");
+end;
+
+(* Worker n's first entry, the last, linked to the lead's newest
+   delegate before it: a worker's first word follows its own call. *)
+proc attach(n: INT);
+var e: []Entry; i: INT;
+begin
+    while starts.len <= n do Ints.push(starts, Unseen); end;
+    if Ints.all(starts)[n] # Unseen then return; end;
+    e := all();
+    i := LEN(e) - 2;
+    while (i >= 0) and not isDelegate(e[i]) do DEC(i); end;
+    Ints.all(starts)[n] := i;
+end;
+
+(* The worker that entry i started, or 0 if none. *)
+proc started(i: INT): INT;
+var s: []INT; n: INT;
+begin
+    s := Ints.all(starts);
+    for n := 1 to LEN(s) - 1 do
+        if s[n] = i then return n; end;
+    end;
+    return 0;
+end;
+
 (* A new entry of kind k saying s, at the end. *)
 proc push*(k: Kind; s: []const U8): ^Entry;
 var e: ^Entry;
@@ -163,6 +212,7 @@ begin
     Buf.init(e^.res, Heap.heap);
     Buf.init(e^.detail, Heap.heap);
     Buf.str(e^.text, s);
+    if speaker > 0 then attach(speaker); end;
     return e;
 end;
 
@@ -243,6 +293,7 @@ begin
         Buf.done(e[i].detail);
     end;
     Entries.reset(entries);
+    Ints.reset(starts);
 end;
 
 (* Whether the view shows e. *)
@@ -279,13 +330,18 @@ begin
     view := next;
 end;
 
-(* The newest call shown opened, or closed if it is open. *)
+(* The newest call shown opened, or closed if it is open; but shown the
+   lead's, a delegate that started a worker shows the worker's view,
+   which holds its whole run, its report last. *)
 proc toggle*;
 var e: []Entry; i: INT;
 begin
     e := all();
     for i := LEN(e) - 1 to 0 by -1 do
-        if (e[i].kind = tool) and shows(e[i]) then e[i].open := not e[i].open; return; end;
+        if (e[i].kind = tool) and shows(e[i]) then
+            if (view = 0) and (started(i) > 0) then view := started(i); else e[i].open := not e[i].open; end;
+            return;
+        end;
     end;
 end;
 
@@ -802,6 +858,58 @@ begin
     return s, 0;
 end;
 
+(* What a call's arguments are about, for a line: the first string
+   after a key in them, its escapes as written, or all of them if there
+   is none. *)
+proc gist(args: []const U8): []const U8;
+var a, b: INT;
+begin
+    a := Str.find(args, `":"`);
+    if a < 0 then return args; end;
+    a := a + 3;
+    b := a;
+    while (b < LEN(args)) and (args[b] # '"') do
+        if args[b] = '\\' then INC(b); end;
+        INC(b);
+    end;
+    if b > LEN(args) then b := LEN(args); end;
+    return args[a..b];
+end;
+
+(* Worker n's line, under its delegate, cut to w columns: its number
+   and model, how many calls it has made, and the latest, its name and
+   what its arguments are about. *)
+proc workerLine(n, w: INT);
+var e: []Entry; i, calls, latest: INT; b: Buf.Buf;
+begin
+    e := all();
+    calls := 0;
+    latest := -1;
+    for i := 0 to LEN(e) - 1 do
+        if (e[i].speaker = n) and (e[i].kind = tool) then
+            INC(calls);
+            latest := i;
+        end;
+    end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "w{} {}", [Fmt.int(n), Fmt.str(model(n))]);
+    start();
+    add(Str.trimRight(Buf.bytes(b)), worker);
+    Buf.reset(b);
+    Fmt.write(b, "{}{} call", [Fmt.str(Dot), Fmt.int(calls)]);
+    if calls # 1 then Buf.str(b, "s"); end;
+    add(Buf.bytes(b), dim);
+    if latest >= 0 then
+        add(Dot, dim);
+        add(Buf.bytes(e[latest].text), dim);
+        add(" ", dim);
+        flat(gist(Buf.bytes(e[latest].args)), dim);
+    end;
+    fit(w);
+    emit(WorkerLine, plain, 0, text.len);
+end;
+
 (* Worker e's label, its number and its model, as a row: e is entry i,
    and the label comes where the speaker changes, at the head of a run
    of the worker's entries. *)
@@ -844,6 +952,7 @@ begin
         prose(s, ReplyBar, w - 2);
     | tool:
         header(e^, w - 2);
+        if (view = 0) and (started(i) > 0) then workerLine(started(i), w - TuiScreen.columns(WorkerLine)); end;
         if not e^.open then return; end;
         (* a plan is read, not checked against its arguments, which hold it
            again: it stands apart from the call, as markdown, as a reply does *)
@@ -1008,7 +1117,7 @@ begin
     result("reported");
     ok := expect("all", 30, 4, 0, "  \u{25B8} delegate {}  reported\n  w1 glm\n  \u{2502}   \u{25B8} read {}  one line\n\nback 0\n") and ok;
     choose(0);
-    ok := expect("the lead's", 30, 2, 0, "  \u{25B8} delegate {}  reported\n\nback 0\n") and ok;
+    ok := expect("the lead's", 30, 3, 0, "  \u{25B8} delegate {}  reported\n    w1 glm \u{B7} 1 call \u{B7} read {}\n\nback 0\n") and ok;
     choose(1);
     if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read {}  one line") or (rowAt(0).x # 2) then
         Out.str("Aboard: a worker's view\n");
@@ -1017,6 +1126,28 @@ begin
     choose(All);
     if (flatten(30) # 3) or (rowText(1) # "w1 glm") or (rowAt(2).x # 6) then
         Out.str("Aboard: all, flattened\n");
+        ok := false;
+    end;
+    (* a worker as one line, with its latest call; toggled, its view *)
+    speak(1);
+    call("read", `{"path":"enterprise/cv.ts","limit":9}`);
+    speak(0);
+    choose(0);
+    ok := expect("a worker as one line", 50, 2, 0, "  \u{25B8} delegate {}  reported\n    w1 glm \u{B7} 2 calls \u{B7} read enterprise/cv.ts\nback 0\n") and ok;
+    toggle;
+    if view # 1 then
+        Out.str("Aboard: a worker's line opened\n");
+        ok := false;
+    end;
+    (* a delegate refused starts no worker: the next worker is the next delegate's *)
+    clear;
+    call("delegate", "{}");
+    call("delegate", "{}");
+    speak(2);
+    _ := push(info, "worker glm: look");
+    speak(0);
+    if (started(0) # 0) or (started(1) # 2) then
+        Out.str("Aboard: a worker linked to its delegate\n");
         ok := false;
     end;
     if ok then return 0; end;
@@ -1036,6 +1167,7 @@ begin
     joinNext := '\n';
     view := All;
     Models.init(models, Heap.heap);
+    Ints.init(starts, Heap.heap);
     styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.dim, {}), TuiScreen.style(Term.bad, {}), TuiScreen.style(Term.good, {}),

@@ -617,13 +617,9 @@ end;
    its own, or on the lead's, holding the lead's place but while it
    waits for the model (ask). *)
 proc labour(arg: ^U8);
-var w: ^Worker; l: ^Agent;
+var w: ^Worker;
 begin
     w := ^Worker(arg);
-    (* the front told the worker's model once, for its label *)
-    l := speak(^U8(SYSTEM.ADR(w^.agent)));
-    if l^.front.speaker # nil then l^.front.speaker(w^.agent.who, w^.model, l^.front.arg); end;
-    spoken(l);
     take(w^.agent);
     w^.err := turn(w^.agent, w^.conv, w^.why);
     Thread.unlock(w^.agent.lead^.place);
@@ -833,7 +829,11 @@ begin
     end;
     Buf.reset(b);
     Fmt.write(b, "worker {}: {}", [Fmt.str(w.model), Fmt.str(w.task[0..min(LEN(w.task), 120)])]);
+    (* said by the worker, its model told once, for its label: its first
+       word, which follows its own call, as no worker runs yet *)
+    if a.front.speaker # nil then a.front.speaker(w.agent.who, w.model, a.front.arg); end;
     note(a, Buf.bytes(b));
+    if a.front.speaker # nil then a.front.speaker(0, "", a.front.arg); end;
     return true;
 end;
 
@@ -864,6 +864,10 @@ proc fan(var a: Agent; calls: []Amsg.Call; results: []Buf.Buf);
 var ws: [MaxFan]Worker; made: [MaxFan]BOOL; i: INT;
 begin
     for i := 0 to LEN(calls) - 1 do
+        (* several are told here, each before its worker is made ready, so
+           that each worker's first word follows its own call; one alone,
+           run told *)
+        if (LEN(calls) > 1) and (a.front.call # nil) then a.front.call(calls[i].name, calls[i].args, a.front.arg); end;
         open(a, ws[i]);
         made[i] := ready(a, calls[i].args, LEN(calls), ws[i], results[i]);
     end;
@@ -1031,7 +1035,10 @@ var name, args: []const U8;
 begin
     name := calls[0].name;
     args := calls[0].args;
-    if stopped(a) then
+    if LEN(calls) > 1 then
+        forget(a);
+        fan(a, calls, results);   (* which tells them *)
+    elsif stopped(a) then
         Buf.str(results[0], Interrupted);
     elsif again(a, name, args) then
         Buf.str(results[0], Repeated);
@@ -1053,7 +1060,8 @@ end;
    tool's message: how many of them failed. Once the human says to
    stop, the calls left aren't run, but answered all the same, as a
    request must answer every call. Delegations that run together are
-   all told before any runs, and their results after. *)
+   all told before any runs, by fan, each followed by its worker's
+   first word, and their results after. *)
 proc run(var a: Agent; var c: Astore.Conv): INT;
 var calls: []Amsg.Call; res: [MaxFan]Buf.Buf; m: ^Amsg.Msg; i, j, k, bad: INT;
 begin
@@ -1067,7 +1075,7 @@ begin
         j := i + together(a, c, calls[i..LEN(calls)]);
         for k := i to j - 1 do
             Buf.reset(res[k - i]);
-            if a.front.call # nil then a.front.call(calls[k].name, calls[k].args, a.front.arg); end;
+            if (j - i = 1) and (a.front.call # nil) then a.front.call(calls[k].name, calls[k].args, a.front.arg); end;
         end;
         answer(a, c, calls[i..j], res[0..j - i]);
         for k := i to j - 1 do

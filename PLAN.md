@@ -532,7 +532,7 @@ one or more commits that build with `-Werror`.
      indented under a gutter label, `w2 glm-5.3-flash`, in a colour of
      its own, and a header where the speaker changes, so a worker's
      run reads as one block and the lead's return is plain.
-   - [ ] A worker as one line. In the lead's view each worker is a line
+   - [x] A worker as one line. In the lead's view each worker is a line
      under its `delegate`, kept up to date: `w2 glm-5.3-flash · step 23
      · $0.04 · read enterprise/cv.ts`. Opening it shows its view. The
      shape parallel workers need, and may wait for them.

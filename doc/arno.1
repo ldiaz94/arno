@@ -131,6 +131,13 @@ worker's are indented behind a bar in green, under a label where the
 speaker changes: its number and its model, as
 .Ql "w2 glm-5.3-flash" ,
 so that a worker's run reads as one block.
+In the lead's view, each worker is one line under the
+.Cm delegate
+that started it, kept up to date: its number and model, how many calls
+it has made, and the latest, as
+.Ql "w2 glm-5.3-flash \[pc] 23 calls \[pc] read enterprise/cv.ts" .
+TAB on that delegate shows the worker's view, which ends with its
+report.
 .Pp
 The status line starts with the mode, its name on a colour of its own:
 chat blue, review green, improve cyan, pair in the text's own colour,
@@ -184,7 +191,9 @@ brings it back, drawn whole.
 The next mode; see
 .Sx MODES .
 .It TAB
-Open or close the newest tool call.
+Open or close the newest tool call; in the lead's view, a
+.Cm delegate
+that started a worker shows that worker's view instead.
 .It C-o
 Open or close every tool call.
 .It M-o

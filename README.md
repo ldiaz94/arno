@@ -169,7 +169,7 @@ Directories and images work too, if the model takes images.
 | C-c, C-d | stop the turn; quit |
 | C-z | stop arno as a shell does; `fg` brings it back |
 | S-Tab | change mode |
-| TAB, C-o | toggle a tool entry, all of them |
+| TAB, C-o | toggle a tool entry, all of them; TAB on a worker's `delegate`, in the lead's view, shows the worker's |
 | M-o | the next view: all, the lead's entries, each worker's (`/view`) |
 | PgUp, PgDn; Up, Down, the wheel | scroll by a page, by a line |
 | C-p, C-n; M-p, M-n | input history; by prefix |
