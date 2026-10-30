@@ -52,8 +52,8 @@
    over the foot of the transcript (Acomplete): TAB takes the one
    chosen, RET too, and sends a command that takes it as it is, with
    no blank after it; C-n, C-p and the arrows choose, Esc hides them
-   until the input changes. A command isn't completed during a job,
-   which has the session.
+   until the input changes. During a job, which has the session, a
+   model is completed from the list as it stood when the job began.
 
    M-v starts copy mode (Acopy): a cursor on the transcript, to move
    over it, select and copy, until it copies or is left.
@@ -132,6 +132,7 @@ var
     (* a job's own *)
     job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
     usageText: Buf.Buf; (* /usage as it stood when the job began, for asking it during the job *)
+    modelsText: Buf.Buf;   (* the models /model completes, as they stood when the job began *)
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
@@ -375,6 +376,8 @@ begin
     Buf.reset(usageText);
     Buf.str(usageText, "as of the start of the turn:\n");
     Asession.usage(session^, usageText);   (* no job runs yet, so the counters are still *)
+    Buf.reset(modelsText);
+    Buf.str(modelsText, Asession.models(session^));
     Aview.busied(true);
     thread, err := Thread.spawn(work, nil);
     if err # nil then
@@ -999,8 +1002,12 @@ begin
     if viewing then return; end;
     wordA, wordB := Acomplete.token(s, editor.point);
     if wordA < 0 then return; end;
-    if (s[wordA] = '/') and (thread # nil) then return; end;
-    menu := Acomplete.complete(s[wordA..wordB], Asession.models(session^));
+    (* a job has the session: its models as they stood when it began *)
+    if thread # nil then
+        menu := Acomplete.complete(s[wordA..wordB], Buf.bytes(modelsText));
+    else
+        menu := Acomplete.complete(s[wordA..wordB], Asession.models(session^));
+    end;
 end;
 
 (* Whether the menu is shown. *)
@@ -1630,6 +1637,7 @@ begin
     Buf.init(reason, Heap.heap);
     Buf.init(job, Heap.heap);
     Buf.init(usageText, Heap.heap);
+    Buf.init(modelsText, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(because, Heap.heap);
     Buf.init(revision, Heap.heap);
