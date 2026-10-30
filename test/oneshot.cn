@@ -79,6 +79,15 @@ begin
   result := status
 end;
 
+// the newest conversation's file: only the conversations, ID.json,
+// as notes, memory and the stage are written beside them, maybe after
+function newest();
+var convs;
+begin
+  convs := glob(dir + '/data/arno/2*.json')
+  result := `ls -t $convs | head -n 1`
+end;
+
 // the file out, dir/out or dir/err, must hold a line with text
 procedure holds(what, out, text);
 begin
@@ -166,9 +175,9 @@ expect(['system'], 0, 'out', '# Project map')
 holds('the system prompt', 'out', '- the stub is test/Astub.raz')
 // a name in the prompt, its definition attached, shown as a def
 expect(['how', 'does', '`interrupted`', 'work'], 0, 'err', '▸ def {"name":"interrupted"}')
-last := split(`ls -t "$dir/data/arno"`)[0]
-grep -qF '<file path=\"src/Arno.raz\" lines=' "$dir/data/arno/$last"
-if status <> 0 then fail('no definition attached: ' + `cat "$dir/data/arno/$last"`)
+last := newest()
+grep -qF '<file path=\"src/Arno.raz\" lines=' $last
+if status <> 0 then fail('no definition attached: ' + `cat $last`)
 
 // the web: a page fetched, and a search through SearXNG
 page := "http://127.0.0.1:$(port)/page"
@@ -313,9 +322,9 @@ holds('/clear', 'out', 'history cleared to the first exchange')
 if `tail -n 1 "$dir/out"` <> '4 messages' then fail('/clear: ' + `cat "$dir/out"`)
 answering([], 'a' + #10 + 'b' + #10 + '/compact' + #10 + 'c')
 holds('/compact', 'out', 'compacted 4 messages')
-last := split(`ls -t "$dir/data/arno"`)[0]
-grep -qF 'Summary of our conversation so far:\n\n6 messages' "$dir/data/arno/$last"
-if status <> 0 then fail('/compact: ' + `cat "$dir/data/arno/$last"`)
+last := newest()
+grep -qF 'Summary of our conversation so far:\n\n6 messages' $last
+if status <> 0 then fail('/compact: ' + `cat $last`)
 if `tail -n 1 "$dir/out"` <> '4 messages' then fail('/compact, then a turn: ' + `cat "$dir/out"`)
 
 // the mode, in the system prompt and the tools; the system prompt
