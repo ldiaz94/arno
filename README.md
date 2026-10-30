@@ -247,8 +247,9 @@ ask arno, in dwa `:ask QUESTION` over some lines, and arno answers in the
 editor when its turn ends; without a question the lines go into arno's
 input as an `@` reference. The ask shows in the transcript as coming
 from the editor, never as something you typed. While an editor is
-reachable (the one that asked last, `$ARNO_EDITOR`, else the best
-`dwa-PID.sock` in `$XDG_RUNTIME_DIR`), `read` gives a file as the editor
+reachable (the one that asked last, `$ARNO_EDITOR`, else the newest
+`dwa-PID.sock` in `$XDG_RUNTIME_DIR` whose dwa works in arno's directory
+or below it), `read` gives a file as the editor
 has it, unsaved changes and all, and an approved `edit` is made by the
 editor, as one of your own undo steps. The sockets are yours alone.
 

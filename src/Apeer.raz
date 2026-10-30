@@ -36,10 +36,11 @@
    line of the transcript.
 
    The client half. The editor called is the one whose ask came last,
-   else $ARNO_EDITOR (a socket's path), else the best dwa-PID.sock in
-   the socket directory: its process works in arno's directory, before
-   the newest; sockets of processes that are gone, or of another user's,
-   are passed over. The tools for the editor are offered only while one
+   else $ARNO_EDITOR (a socket's path), else the newest dwa-PID.sock in
+   the socket directory whose process works in arno's directory or
+   below it: never an editor of another project, whose buffers an edit
+   would change; sockets of processes that are gone, or of another
+   user's, are passed over. The tools for the editor are offered only while one
    is reachable, refreshed at the start of each turn. A busy editor is
    called again, a quarter of a second after, for about fifteen seconds.
 
@@ -85,7 +86,6 @@ const
     MaxRequest = 16 * 1024 * 1024;   (* a longer request is dropped *)
     MaxConns = 8;              (* connections held at once *)
     OwnerOnly = 3FH;           (* the umask 077: no one but this user *)
-    Near = I64(1) shl 40;      (* what an editor in arno's directory scores above the newest *)
     Mark = "[From the editor, not typed at the terminal";   (* what a message from an editor starts with *)
     Rule = "\n---\n";          (* parts the question from the lines *)
     Unknown = "arno does not know that request";
@@ -219,7 +219,9 @@ begin
     Thread.unlock(mutex);
 end;
 
-(* Whether the process pid works in the directory here, as /proc says. *)
+(* Whether the process pid works in the directory here or below it,
+   as /proc says: an editor of arno's project, which an editor of
+   another project, however new, is not. *)
 proc worksIn(pid: INT; here: []const U8): BOOL;
 var p: Buf.Buf; named: []const U8; e: INT;
 begin
@@ -227,13 +229,15 @@ begin
     defer Buf.done(p);
     Fmt.write(p, "/proc/{}/cwd", [Fmt.int(pid)]);
     named, e := Sys.readLink(Buf.bytes(p));
-    return (e = 0) and (named = here);
+    if e # 0 then return false; end;
+    if here = "/" then return true; end;
+    return (named = here) or (Str.hasPrefix(named, here) and (named[LEN(here)] = '/'));
 end;
 
 (* How good the socket at full is, of the process pid: the second it
-   last changed, and Near more if the process works in here; -1 if it
-   isn't there, is another user's, or its process is gone, when it is
-   removed. *)
+   last changed; -1 if it isn't there or is another user's, if its
+   process is gone, when it is removed, or if its process works
+   outside here. *)
 proc score(full: []const U8; pid: INT; here: []const U8): I64;
 var info: Sys.Info; e: INT;
 begin
@@ -243,7 +247,7 @@ begin
         _ := Sys.remove(full);
         return -1;
     end;
-    if worksIn(pid, here) then return info.seconds + Near; end;
+    if not worksIn(pid, here) then return -1; end;
     return info.seconds;
 end;
 
@@ -1053,6 +1057,31 @@ begin
     return true;
 end;
 
+(* An editor of another project, newer than ours, never called: its
+   socket's process, a sleep, works in /. *)
+proc testElsewhere;
+var b, name, best, ours: Buf.Buf; pid, fd: INT; cwd: []const U8;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(ours, Heap.heap);
+    defer Buf.done(ours);
+    Buf.init(name, Heap.heap);
+    defer Buf.done(name);
+    Buf.init(best, Heap.heap);
+    defer Buf.done(best);
+    pid := Sys.spawn({path: "/bin/sleep", args: ["sleep", "60"], dir: "/"});
+    if pid <= 0 then Rt.stop("Apeer: can't run sleep"); end;
+    Fmt.write(name, "dwa-{}.sock", [Fmt.int(pid)]);
+    fd := sock(Buf.bytes(name));
+    cwd, _ := Sys.workDir();
+    scan(cwd, best);
+    expect("an editor of another project passed over", Buf.bytes(best), at(mine("dwa", b), ours));
+    Sys.close(fd);
+    _ := Sys.remove(at(Buf.bytes(name), b));
+    _ := Sys.kill(pid, Sys.sigKill);
+end;
+
 (* The editors arno calls: which one, and the retries of a busy one. *)
 proc testClient;
 var line, b, other: Buf.Buf; text: Buf.Buf; st: Status; e: INT;
@@ -1066,6 +1095,7 @@ begin
     refresh(false);
     expect("not offered while the stage is up", yes(reachable()), "no");
     expect("the best dwa-PID.sock", called(["state"], line), "1 A");
+    testElsewhere;
     _ := Sys.setEnv("ARNO_EDITOR", at(mine("b", other), b));
     expect("$ARNO_EDITOR before the best socket", called(["state"], line), "1 B");
     setEditor(at(mine("dwa", other), b));

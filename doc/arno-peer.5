@@ -111,8 +111,9 @@ at
 .Ev ARNO_SOCK
 if it is set, else at the best
 .Pa arno- Ns Ar pid Ns Pa .sock
-in the directory of its own socket: the one whose process works in the
-editor's directory, before the newest.
+in the directory of its own socket: the newest whose process works in
+the editor's directory or above it; an arno of another project is never
+asked.
 .Pp
 .Nm arno
 calls the editor that asked last; else the socket in
@@ -121,9 +122,9 @@ else the best
 .Pa dwa- Ns Ar pid Ns Pa .sock
 in
 .Ev XDG_RUNTIME_DIR ,
-chosen as above, with the roles turned: the editor whose process works in
+chosen as above, with the roles turned: the newest whose process works in
 .Nm arno Ns 's
-directory, before the newest.
+directory or below it.
 A socket of a process that is gone, or of another user's, is passed over,
 and a socket at which no one listens is removed.
 .Pp

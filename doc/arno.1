@@ -1655,9 +1655,10 @@ else the best
 .Pa dwa- Ns Ar pid Ns Pa .sock
 in
 .Ev XDG_RUNTIME_DIR :
-one whose process works in
+the newest whose process works in
 .Nm Ns 's
-directory, before the newest.
+directory or below it; an editor of another directory is never called,
+however new.
 While one is reachable, checked at the start of each turn, and not while the
 session is staged:
 .Bl -bullet -compact
