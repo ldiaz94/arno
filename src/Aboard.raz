@@ -1413,27 +1413,9 @@ begin
     return s, 0;
 end;
 
-(* What a call's arguments are about, for a line: the first string
-   after a key in them, its escapes as written, or all of them if there
-   is none. *)
-proc gist(args: []const U8): []const U8;
-var a, b: INT;
-begin
-    a := Str.find(args, `":"`);
-    if a < 0 then return args; end;
-    a := a + 3;
-    b := a;
-    while (b < LEN(args)) and (args[b] # '"') do
-        if args[b] = '\\' then INC(b); end;
-        INC(b);
-    end;
-    if b > LEN(args) then b := LEN(args); end;
-    return args[a..b];
-end;
-
 (* Worker n's line, under its delegate, cut to w columns: its number
    and model, how many calls it has made, and the latest, its name and
-   what its arguments are about. *)
+   what it does, as its header says. *)
 proc workerLine(n, w: INT);
 var e: []Entry; i, calls, latest: INT; b: Buf.Buf;
 begin
@@ -1458,8 +1440,10 @@ begin
     if latest >= 0 then
         add(Dot, dim);
         add(Buf.bytes(e[latest].text), dim);
-        add(" ", dim);
-        flat(gist(Buf.bytes(e[latest].args)), dim);
+        if not summary(Buf.bytes(e[latest].text), Buf.bytes(e[latest].args)) then
+            add(" ", dim);
+            flat(Buf.bytes(e[latest].args), dim);
+        end;
     end;
     fit(w);
     emit(WorkerLine, plain, 0, text.len);
@@ -1721,15 +1705,15 @@ begin
     call("delegate", "{}");
     speak(1);
     name(1, "glm");
-    call("read", "{}");
+    call("read", "{\"path\":\"a.raz\"}");
     result("one line");
     speak(0);
     result("reported");
-    ok := expect("all", 30, 4, 0, "  \u{25B8} delegate  reported\n  w1 glm\n  \u{2502}   \u{25B8} read  one line\n\nback 0\n") and ok;
+    ok := expect("all", 30, 4, 0, "  \u{25B8} delegate  reported\n  w1 glm\n  \u{2502}   \u{25B8} read a.raz  one line\n\nback 0\n") and ok;
     choose(0);
-    ok := expect("the lead's", 30, 3, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 1 call \u{B7} read {}\n\nback 0\n") and ok;
+    ok := expect("the lead's", 32, 3, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 1 call \u{B7} read a.raz\n\nback 0\n") and ok;
     choose(1);
-    if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read  one line") or (rowAt(0).x # 2) then
+    if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read a.raz  one line") or (rowAt(0).x # 2) then
         Out.str("Aboard: a worker's view\n");
         ok := false;
     end;
@@ -1743,7 +1727,7 @@ begin
     call("read", `{"path":"enterprise/cv.ts","limit":9}`);
     speak(0);
     choose(0);
-    ok := expect("a worker as one line", 50, 2, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 2 calls \u{B7} read enterprise/cv.ts\nback 0\n") and ok;
+    ok := expect("a worker as one line", 50, 2, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 2 calls \u{B7} read enterprise/cv.ts 1\u{2013}9\nback 0\n") and ok;
     toggle;
     if view # 1 then
         Out.str("Aboard: a worker's line opened\n");
