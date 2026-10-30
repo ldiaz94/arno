@@ -371,8 +371,9 @@ one or more commits that build with `-Werror`.
      the editor but not on the disk can't be read by `read`; the
      `buffers` verb is not asked, so `@` completion doesn't offer the
      editor's buffers. A one-shot and a plain session take no ask.
-7. **The switch.** `make install`; the Pascal arno kept as `arno-fpc`
-   for a while; `man desktop` updated.
+7. **The switch.** `make install`; `man desktop` updated. Done: the
+   Pascal arno is retired, not installed, and `~/lib/arno` kept only as
+   a record and the reference for what arno does.
 8. **Less asking, more context.** The transcripts of October showed
    models refused basic programs about 14 times, sweeping the disk for
    what `~/r/CLAUDE.md` says, and one session past 600K tokens; they
