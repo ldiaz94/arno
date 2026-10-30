@@ -389,6 +389,13 @@ makes, as
 and questions.
 A command's text goes to standard output, an error to standard error.
 .Pp
+Workers run side by side, so a worker's text goes out a whole line at
+a time, each line after its label,
+.Ql "w1: "
+for worker 1; what is left of a line goes out when the worker calls a
+tool, or when the lead speaks again.
+A worker's calls, results and notes carry its label too.
+.Pp
 A question is put on standard error, and answered by a line of standard
 input: the first byte of
 .Ql y ,

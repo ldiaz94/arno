@@ -23,6 +23,14 @@
    request that failed or a conversation not found, 2 for a mistake on
    the command line, 130 for a turn stopped by ^C.
 
+   Workers run side by side (Agent), and their pieces of text, written
+   as they come, would run into one line. So a worker's text is held
+   until it ends a line, and goes out a whole line at a time behind
+   its label, "w1: " for worker 1; what is left of a line goes out
+   when the worker calls a tool or says something of its own, or the
+   lead speaks again. Its calls, results and notes carry the label too.
+   The lead's text goes out as it comes, as it always did.
+
    With no prompt, arno runs a session (Asession): on a terminal, on
    the full screen (Ascreen); else each line of standard input is a
    message to the model, or a command such as /help or /load; what a
@@ -40,7 +48,7 @@
 
    Depends on Asession, Ascreen, Aserve, Aview and Awire. *)
 module Arno;
-import Asession, Ascreen, Aserve, Aview, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap;
+import Asession, Ascreen, Aserve, Aview, Arun, Astore, Awire, Buf, Str, Sys, Files, Out, Heap, Fmt, Held := Vec(Buf.Buf);
 import SYSTEM;
 
 const
@@ -65,14 +73,11 @@ begin
     return stopped;
 end;
 
-var ended: BOOL;   (* the last piece of the model's text ended its line *)
-
-proc show(text: []const U8; _arg: ^U8);
-begin
-    Out.str(text);
-    Out.flush;
-    ended := Str.hasSuffix(text, "\n");
-end;
+var
+    ended: BOOL;     (* the last piece of the lead's text ended its line *)
+    speaking: INT;   (* who tells the front now: 0 the lead, N worker N, as the front's speaker says *)
+    held: Held.Vec;  (* worker N's text at N that is not yet a whole line *)
+    tag: Buf.Buf;    (* the label made by label *)
 
 proc say(a, b, c: []const U8);
 begin
@@ -81,12 +86,92 @@ begin
     _ := Sys.write(Sys.stderr, c);
 end;
 
-(* The model's text so far ended with a line feed, so that a line on
-   standard error doesn't run on from it on a terminal. *)
+(* The lead's text so far ended with a line feed, so that a line on
+   standard error, or a worker's, doesn't run on from it on a terminal. *)
 proc breakLine;
 begin
     if not ended then Out.ln; ended := true; end;
     Out.flush;
+end;
+
+(* What goes before each line speaker n says: "wN: " for worker N, ""
+   for the lead. *)
+proc label(n: INT): []const U8;
+begin
+    Buf.reset(tag);
+    if n > 0 then Fmt.write(tag, "w{}: ", [Fmt.int(n)]); end;
+    return Buf.bytes(tag);
+end;
+
+(* Worker n's held text. *)
+proc heldBy(n: INT): ^Buf.Buf;
+begin
+    while held.len <= n do Buf.init(Held.add(held)^, Heap.heap); end;
+    return SYSTEM.ADR(Held.all(held)[n]);
+end;
+
+(* What worker n holds written out as a line, behind its label, and
+   let go. *)
+proc utter(n: INT);
+var h: ^Buf.Buf;
+begin
+    h := heldBy(n);
+    breakLine;
+    Out.str(label(n));
+    Out.str(Buf.bytes(h^));
+    Out.ln;
+    Out.flush;
+    Buf.reset(h^);
+end;
+
+(* What is left of worker n's line, if anything, written out: its text
+   so far is over. *)
+proc over(n: INT);
+begin
+    if heldBy(n)^.len > 0 then utter(n); end;
+end;
+
+(* What every worker holds written out, as the lead is about to speak:
+   by then the workers' text is over. *)
+proc settle;
+var n: INT;
+begin
+    for n := 1 to held.len - 1 do over(n); end;
+end;
+
+(* Before the speaker tells a line on standard error: a worker's text so
+   far is over, or every worker's if it is the lead, and the lead's
+   text ends its line. *)
+proc before;
+begin
+    if speaking = 0 then settle; else over(speaking); end;
+    breakLine;
+end;
+
+(* A piece of the model's text: the lead's as it comes, a worker's
+   held until it ends a line, each whole line written behind its label. *)
+proc show(text: []const U8; _arg: ^U8);
+var line: []const U8; whole: BOOL;
+begin
+    if speaking > 0 then
+        whole := true;
+        while whole do
+            line, text, whole := Str.cut(text, "\n");
+            Buf.str(heldBy(speaking)^, line);
+            if whole then utter(speaking); end;
+        end;
+        return;
+    end;
+    settle;
+    Out.str(text);
+    Out.flush;
+    ended := Str.hasSuffix(text, "\n");
+end;
+
+(* Who speaks from now on, the front's speaker. *)
+proc speaker(n: INT; _model: []const U8; _arg: ^U8);
+begin
+    speaking := n;
 end;
 
 (* s's first line, cut to at most max bytes where a character starts. *)
@@ -103,9 +188,9 @@ end;
 
 proc called(name, args: []const U8; _arg: ^U8);
 begin
-    breakLine;
-    say("\u{25B8} ", name, " ");
-    say(line(args, 100), "\n", "");
+    before;
+    say(label(speaking), "\u{25B8} ", name);
+    say(" ", line(args, 100), "\n");
 end;
 
 (* A result in a line: a failure's first line, which says why, or how
@@ -113,8 +198,10 @@ end;
 proc answered(_name, res: []const U8; _arg: ^U8);
 var n, i: INT; digits: [20]U8;
 begin
+    before;
     if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then
-        say("  ", line(res, 100), "\n");
+        say(label(speaking), "  ", line(res, 100));
+        say("\n", "", "");
         return;
     end;
     n := 0;
@@ -123,13 +210,15 @@ begin
     end;
     if (LEN(res) > 0) and (res[LEN(res) - 1] # '\n') then INC(n); end;
     digits, i := Str.fromInt(n);
-    if n = 1 then say("  ", digits[0..i], " line\n"); else say("  ", digits[0..i], " lines\n"); end;
+    say(label(speaking), "  ", digits[0..i]);
+    if n = 1 then say(" line\n", "", ""); else say(" lines\n", "", ""); end;
 end;
 
 proc told(s: []const U8; _arg: ^U8);
 begin
-    breakLine;
-    say("arno: ", s, "\n");
+    before;
+    say(label(speaking), "arno: ", s);
+    say("\n", "", "");
 end;
 
 var answer: Buf.Buf;   (* the last line read from standard input *)
@@ -183,7 +272,7 @@ end;
    error. *)
 proc shown(s: []const U8; bad: BOOL; _arg: ^U8);
 begin
-    breakLine;
+    before;
     if bad then
         say("arno: ", s, "\n");
     else
@@ -208,7 +297,7 @@ begin
         stopped := false;
         ended := true;
         if not Asession.line(s, text) then break; end;
-        breakLine;
+        before;
     end;
     return 0;
 end;
@@ -313,8 +402,10 @@ begin
         return 1;
     end;
     Buf.init(answer, Heap.heap);
+    Buf.init(tag, Heap.heap);
+    Held.init(held, Heap.heap);
     Asession.init(SYSTEM.ADR(s), {text: show, call: called, result: answered, note: told, ask: asked, why: why,
-        stopped: interrupted}, shown, nil);
+        stopped: interrupted, speaker: speaker}, shown, nil);
     defer Asession.leave;
     _ := Sys.handle(Sys.sigInt);
     ended := true;
@@ -326,7 +417,7 @@ begin
     Asession.prepare(s);
     Buf.init(failure, Heap.heap);
     err := Asession.turn(s, Str.trim(Buf.bytes(prompt)), failure);
-    breakLine;
+    before;
     if err = Awire.Failed then say("arno: ", Buf.bytes(failure), "\n"); end;
     if err = Awire.Stopped then say("arno: stopped\n", "", ""); end;
     say("arno --resume ", s.conv.id, " PROMPT goes on from here\n");

@@ -482,10 +482,14 @@ if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('a worker''s copy was l
 // delegations that begin a step run side by side, each worker in a
 // copy of its own: their reports come back in the calls' order, each
 // with its diff, neither brief holds the other's report, as they
-// started together, and every request is counted, the workers' too
+// started together, and every request is counted, the workers' too;
+// each worker's text and calls come a whole line at a time, labelled
 one := '{"task":"call edit {\"path\":\"a.txt\",\"old\":\"four\",\"new\":\"six\"}","done_when":"edited"}'
 two := '{"task":"call edit {\"path\":\"b.txt\",\"old\":\"made\",\"new\":\"built\"}","done_when":"edited"}'
 stagedRun([], 'fan delegate ' + one + #9 + two + #10 + '/usage')
+holds('workers side by side', 'out', 'w1: the tool said: ok: 1 replaced')
+holds('workers side by side', 'out', 'w2: the tool said: ok: 1 replaced')
+holds('workers side by side', 'err', 'w2: ▸ edit {"path":"b.txt"')
 holds('workers side by side', 'out', 'the tool said: worker 1 (small) report (2 steps, $0.00)')
 holds('workers side by side', 'out', 'Worker 1 changed 1 file(s), in a copy of its own:')
 holds('workers side by side', 'out', '+1 -1 a.txt')
