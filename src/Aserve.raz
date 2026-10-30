@@ -63,7 +63,7 @@ import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (typed, said, called, answered, told, failed, status, request, switched, named, ended);
+    Sort = (typed, said, called, answered, told, failed, status, request, switched, named, costed, ended);
 
     Event = record
         sort: Sort;             (* what it tells *)
@@ -189,6 +189,16 @@ begin
     if (n > 0) and (LEN(model) > 0) then post(named, model, "", "", "", false); end;
 end;
 
+(* What the worker speaking has spent, for its line, as /usage says it. *)
+proc spent(dollars: F64; _arg: ^U8);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Asession.money(b, dollars);
+    post(costed, Buf.bytes(b), "", "", "", false);
+end;
+
 (* The front's call: a tool about to run, told. *)
 proc call(name, args: []const U8; _arg: ^U8);
 begin
@@ -309,7 +319,7 @@ end;
 proc front: Agent.Front;
 begin
     return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted,
-        speaker: speaker};
+        speaker: speaker, spent: spent};
 end;
 
 (* c shown again from its start, on the job's thread, which has it: the
@@ -855,6 +865,7 @@ begin
         Buf.reset(current);
         Buf.str(current, Buf.bytes(e.a));
     | named: Aboard.name(e.who, Buf.bytes(e.a));
+    | costed: Aview.spent(e.who, Buf.bytes(e.a));
     | ended: over(e.going);
     end;
 end;

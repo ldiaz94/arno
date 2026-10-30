@@ -189,6 +189,7 @@ var
     view*: INT;         (* whose entries are shown: All, 0 the lead's, N worker N's *)
     entries: Entries.Vec;
     models: Models.Vec;   (* worker N's model at N; empty where none was named *)
+    spends: Models.Vec;   (* what worker N has spent at N, as /usage writes dollars; empty where none is told *)
     starts: Ints.Vec;     (* at N, the index of the lead's delegate that started worker N: -1 if
                              none, Unseen if N has said nothing, as past the end *)
     styles: [13]TuiScreen.Style;   (* each Look's *)
@@ -256,6 +257,31 @@ proc model*(n: INT): []const U8;
 begin
     if (n < 1) or (n >= models.len) then return ""; end;
     return Buf.bytes(Models.all(models)[n]);
+end;
+
+(* Worker n has spent cost, dollars as /usage writes them, which its
+   line says. *)
+proc spend*(n: INT; cost: []const U8);
+var m: ^Buf.Buf;
+begin
+    if n < 1 then return; end;
+    while spends.len <= n do Buf.init(Models.add(spends)^, Heap.heap); end;
+    m := SYSTEM.ADR(Models.all(spends)[n]);
+    Buf.reset(m^);
+    Buf.str(m^, cost);
+end;
+
+(* One past the last worker whose spending was told. *)
+proc spenders*: INT;
+begin
+    return spends.len;
+end;
+
+(* What worker n has spent; "" if it wasn't told. *)
+proc spent*(n: INT): []const U8;
+begin
+    if (n < 1) or (n >= spends.len) then return ""; end;
+    return Buf.bytes(Models.all(spends)[n]);
 end;
 
 (* Whether e is a delegate of the lead's. *)
@@ -368,7 +394,8 @@ begin
     e^.open := true;
 end;
 
-(* Every entry dropped. *)
+(* Every entry dropped, and what the workers spent, which their lines
+   under the entries said. *)
 proc clear*;
 var e: []Entry; i: INT;
 begin
@@ -381,6 +408,8 @@ begin
     end;
     Entries.reset(entries);
     Ints.reset(starts);
+    for i := 0 to spends.len - 1 do Buf.done(Models.all(spends)[i]); end;
+    Models.reset(spends);
 end;
 
 (* Whether the view shows e. *)
@@ -1436,6 +1465,10 @@ begin
     Fmt.write(b, "{}{} call", [Fmt.str(Dot), Fmt.int(calls)]);
     if calls # 1 then Buf.str(b, "s"); end;
     add(Buf.bytes(b), dim);
+    if LEN(spent(n)) > 0 then
+        add(Dot, dim);
+        add(spent(n), dim);
+    end;
     if latest >= 0 then
         add(Dot, dim);
         add(Buf.bytes(e[latest].text), dim);
@@ -1727,6 +1760,10 @@ begin
     ok := expect("all", 30, 4, 0, "  \u{25B8} delegate  reported\n  w1 glm\n  \u{2502}   \u{25B8} read a.raz  one line\n\nback 0\n") and ok;
     choose(0);
     ok := expect("the lead's", 32, 3, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 1 call \u{B7} read a.raz\n\nback 0\n") and ok;
+    spend(1, "$0.042");
+    ok := expect("the lead's, with its cost", 44, 3, 0,
+        "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 1 call \u{B7} $0.042 \u{B7} read a.raz\n\nback 0\n") and ok;
+    spend(1, "");   (* the cases below tell no cost *)
     choose(1);
     if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read a.raz  one line") or (rowAt(0).x # 2) then
         Out.str("Aboard: a worker's view\n");
@@ -1840,6 +1877,7 @@ begin
     joinNext := '\n';
     view := All;
     Models.init(models, Heap.heap);
+    Models.init(spends, Heap.heap);
     Ints.init(starts, Heap.heap);
     styles := [TuiScreen.Plain, TuiScreen.style(Term.strong, {}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),

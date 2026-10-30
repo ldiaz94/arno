@@ -112,6 +112,7 @@ type
         counted*: proc(arg: ^U8);                  (* a request ended, what it cost counted *)
         edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
         speaker*: proc(n: INT; model: []const U8; arg: ^U8);   (* who speaks from now on: 0 the lead, N worker N, said around each thing a worker tells, with its model once as it starts and "" after; nil if it is not asked *)
+        spent*: proc(dollars: F64; arg: ^U8);     (* what the worker speaking has spent, at list price, said after each request of its; nil if it is not asked *)
         arg*: ^U8;
     end;
 
@@ -570,12 +571,14 @@ begin
     spoken(l);
 end;
 
-(* and a request of its counted. *)
+(* and a request of its counted, and what it has spent so far. *)
 proc workerCounted(arg: ^U8);
-var l: ^Agent;
+var l, w: ^Agent;
 begin
+    w := ^Agent(arg);
     l := speak(arg);
     if l^.front.counted # nil then l^.front.counted(l^.front.arg); end;
+    if l^.front.spent # nil then l^.front.spent(w^.spent, l^.front.arg); end;
     spoken(l);
 end;
 

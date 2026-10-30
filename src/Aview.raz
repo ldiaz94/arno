@@ -30,6 +30,8 @@
                           H is 1 when they wait for an Enter too
        listed MODELS      the models /model completes from, a line
                           each; to viewers only
+       spent N COST       what worker N has spent so far, dollars as
+                          /usage writes them, after each of its requests
 
    Whoever keeps a copy of the transcript appends what it is told, in
    order, and has the same numbers; apply is that, for a viewer. These
@@ -337,9 +339,10 @@ end;
 
 (* What a viewer that arrives is told: the transcript so far, a reply
    still streaming as far as it has got, then the status line, busy,
-   the queue if anything waits, and the models if any are listed. *)
+   the queue if anything waits, the models if any are listed, and what
+   each worker has spent. *)
 proc snapshot(var b: Buf.Buf);
-var i: INT;
+var i: INT; d: [20]U8;
 begin
     Aframe.pack(b, ["reset"]);
     for i := 0 to LEN(Aboard.all()) - 1 do entry(i, b); end;
@@ -347,6 +350,9 @@ begin
     if busy then Aframe.pack(b, ["busy", "1"]); else Aframe.pack(b, ["busy", "0"]); end;
     if queued.len > 0 then packQueue(b); end;
     if models.len > 0 then Aframe.pack(b, ["listed", Buf.bytes(models)]); end;
+    for i := 1 to Aboard.spenders() - 1 do
+        if LEN(Aboard.spent(i)) > 0 then Aframe.pack(b, ["spent", num(i, d), Aboard.spent(i)]); end;
+    end;
 end;
 
 (* The snapshot for the owner, a host that starts listening late: the
@@ -467,6 +473,15 @@ end;
 proc modelsListed*: []const U8;
 begin
     return Buf.bytes(models);
+end;
+
+(* Worker n has spent cost, dollars as /usage writes them: put on the
+   board, for its line, and told. *)
+proc spent*(n: INT; cost: []const U8);
+var d: [20]U8;
+begin
+    Aboard.spend(n, cost);
+    say(["spent", num(n, d), cost]);
 end;
 
 (* /usage as it stands as a turn begins is u, for a /usage asked while
@@ -751,6 +766,7 @@ begin
     | "status": if LEN(f) >= 2 then Buf.reset(statusLine); Buf.str(statusLine, f[1]); end;
     | "busy": if LEN(f) >= 2 then running := f[1] = "1"; end;
     | "listed": if LEN(f) >= 2 then Buf.reset(models); Buf.str(models, f[1]); end;
+    | "spent": if (LEN(f) >= 3) and (n >= 1) then Aboard.spend(INT(n), f[2]); end;
     | "queue":
         clearQueue();
         holding := (LEN(f) >= 2) and (f[1] = "1");
@@ -997,6 +1013,13 @@ begin
     if LEN(queue()) # 0 then failed := true; Out.str("Aview: /usage queued\n"); end;
     apply(["listed", "a\nb"], line, ok);
     expect("the models a session told", modelsListed(), "a\nb");
+    spent(2, "$0.042");
+    received(fd, got);
+    expect("a worker's spending, told", Buf.bytes(got), "spent|2|$0.042\n");
+    Aboard.clear;
+    apply(["spent", "3", "$0.010"], line, ok);
+    expect("a worker's spending a session told", Aboard.spent(3), "$0.010");
+    Aboard.clear;
 end;
 
 proc main*: INT;

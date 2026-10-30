@@ -313,6 +313,15 @@ Enter; else 0.
 With
 .Fl \-serve
 it is always 0: the host says what runs.
+.It Cm spent Ar n cost
+What worker
+.Ar n
+has spent so far, at list price, as
+.Ic /usage
+writes dollars:
+.Ql $0.042 .
+It comes after each request of the worker's, for the line that says
+the worker in the lead's view.
 .It Cm error Ar text
 What arno made of the host's last message: see above; or, to a request, why it
 cannot be done.
@@ -469,9 +478,11 @@ and
 if lines wait;
 and
 .Cm listed ,
-if there are models.
+if there are models; and
+.Cm spent
+for each worker that has spent anything.
 From then on it gets every change, in the host's own messages
-.Pq Cm push , tool , append , done , reset , status , busy , queue
+.Pq Cm push , tool , append , done , reset , status , busy , queue , spent
 and in
 .Cm listed .
 .Pp

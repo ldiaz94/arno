@@ -663,7 +663,7 @@ end;
 
 (* dollars as /usage shows them: a third decimal while there are only
    cents to show. *)
-proc money(var b: Buf.Buf; d: F64);
+proc money*(var b: Buf.Buf; d: F64);
 begin
     if d < 1.0 then Fmt.write(b, "${}", [Fmt.real(d, 3)]); else Fmt.write(b, "${}", [Fmt.real(d, 2)]); end;
 end;
