@@ -25,7 +25,10 @@
    for a test of a turn that doesn't end by itself; to "fan NAME ARGS",
    ARGS several parted by tabs, it makes as many calls of NAME at once,
    and answers their results with them all, a line each. A worker's brief,
-   "Task: " and then the task, asks the same by its task's first line.
+   "Task: " and then the task, asks the same by its task's first line,
+   and also "fail", which fails its request, and "empty", which is
+   answered with no text at all. To "failing NAME ARGS" it makes the
+   call, and a second later fails the request that follows its result.
 
    Depends on rnet's Http and Conn and rjson's Json, with no TLS. *)
 module Astub;
@@ -71,7 +74,7 @@ var verb, rest, name, args, one: []const U8; ok: BOOL; i: INT;
 begin
     if Str.hasPrefix(asked, "Task: ") then asked, _, _ := Str.cut(asked[6..LEN(asked)], "\n"); end;
     verb, rest, ok := Str.cut(asked, " ");
-    if not ok or (verb # "call") and (verb # "always") and (verb # "fan") then return false; end;
+    if not ok or (verb # "call") and (verb # "always") and (verb # "fan") and (verb # "failing") then return false; end;
     name, args, _ := Str.cut(rest, " ");
     if (role = "tool") and (verb # "always") then
         Buf.reset(text);
@@ -92,7 +95,7 @@ begin
 end;
 
 proc answer(const req: Http.Message; var res: Http.Message; _arg: ^U8);
-var text, results: Buf.Buf; d: Json.Doc; v, msgs, m: Json.Value; n, k, i, first: INT; last, role, asked: []const U8; digits: [20]U8;
+var text, results: Buf.Buf; d: Json.Doc; v, msgs, m: Json.Value; n, k, i, first: INT; last, role, asked, task: []const U8; digits: [20]U8;
 begin
     Buf.reset(reply);
     (* a connection at a time is served, and arno's workers each have
@@ -156,7 +159,22 @@ begin
             break;
         end;
     end;
-    if asked = "system" then
+    (* a worker's brief is "Task: " and the task, whose first line may ask *)
+    if Str.hasPrefix(asked, "Task: ") then task, _, _ := Str.cut(asked[6..LEN(asked)], "\n"); else task := asked; end;
+    if Str.hasPrefix(asked, "failing ") and (role = "tool") then
+        Sys.sleep(1000);   (* a turn that runs a while, and then ends in an error *)
+        res.status := 500;
+        res.body := `{"error":{"message":"the stub fails after the call, as asked"}}`;
+        return;
+    end;
+    if task = "fail" then
+        res.status := 500;
+        res.body := `{"error":{"message":"the stub fails the worker, as asked"}}`;
+        return;
+    end;
+    if task = "empty" then
+        (* an empty reply: usage only, no text *)
+    elsif asked = "system" then
         said(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, 0), "content")));
     elsif not tool(asked, role, last) then
         digits, k := Str.fromInt(n);

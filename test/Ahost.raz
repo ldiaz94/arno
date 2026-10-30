@@ -23,6 +23,9 @@
        doesn't speak and to bytes that are no message;
      - queues a line that comes during a turn, tells it as queue, and
        runs it after the turn;
+     - tells what two workers make with their numbers and their model;
+     - on a terminal, holds a queue after an error too, answers /usage
+       at once during a turn, and draws the menu of commands then;
      - shows a viewer on its session socket the transcript, and runs
        the line the viewer types;
      - on a terminal, queues what is typed during a turn, holds the
@@ -48,6 +51,7 @@ var
     pid: Buf.Buf;            (* arno's, from ready *)
     ident: Buf.Buf;          (* the conversation's id, from ready *)
     root: Buf.Buf;           (* the project's directory *)
+    screenText: Buf.Buf;     (* what a terminal arno drew, since it was last reset *)
 
 (* A failed check reported: what was being checked, and what was found. *)
 proc fail(what, detail: []const U8);
@@ -248,6 +252,33 @@ begin
     Sys.close(pty);
 end;
 
+(* What the terminal on pty has drawn, read and kept in screenText, so
+   that arno never waits to draw it. *)
+proc drain(pty: INT);
+var chunk: [4096]U8; n: INT;
+begin
+    while Sys.ready(pty, 0) do
+        n := Sys.read(pty, chunk);
+        if n <= 0 then break; end;
+        Buf.str(screenText, chunk[0..n]);
+    end;
+end;
+
+(* The terminal on pty read until it has drawn text since screenText
+   was reset; false if it never does. *)
+proc shows(pty: INT; text: []const U8): BOOL;
+var i: INT;
+begin
+    for i := 1 to Patience div 10 do
+        drain(pty);
+        if Str.find(Buf.bytes(screenText), text) >= 0 then return true; end;
+        _ := Sys.ready(pty, 10);
+    end;
+    fail("the screen shows", text);
+    Out.str(Buf.bytes(screenText));
+    return false;
+end;
+
 (* The messages to a viewer, on fd, read until one holds text, which is
    then in last; the terminal's screen, on pty, read meanwhile, so that
    arno never waits to draw it. Every message read is kept in seen. *)
@@ -261,7 +292,7 @@ begin
             Buf.add(seen, '\n');
             if Str.find(Buf.bytes(last), text) >= 0 then return true; end;
         end;
-        while Sys.ready(pty, 0) and (Sys.read(pty, chunk) > 0) do end;
+        drain(pty);
         if Sys.ready(fd, 10) then
             n := Sys.read(fd, chunk);
             if n <= 0 then break; end;
@@ -314,6 +345,46 @@ begin
     _ := watch(pty, fd, buf, "busy|0");
 end;
 
+(* A line queued during a turn that ends in an error is held after it,
+   as after a stop: it runs only at RET. *)
+proc afterError(pty, fd: INT; var buf: Buf.Buf);
+begin
+    clear();
+    _ := Sys.write(pty, `failing read {"path":"Makefile"}` + "\r");
+    _ := watch(pty, fd, buf, "busy|1");
+    _ := Sys.write(pty, "after the error\r");
+    _ := watch(pty, fd, buf, "queue|0|after the error");
+    _ := watch(pty, fd, buf, "busy|0");
+    mustHave("the turn ended in an error", "|err|");
+    if not has("queue|1|after the error") then _ := watch(pty, fd, buf, "queue|1|after the error"); end;
+    _ := Sys.ready(pty, 500);
+    drain(pty);
+    mustNotHave("a line queued before an error is held", "|user|after the error");
+    _ := Sys.write(pty, "\r");
+    _ := watch(pty, fd, buf, "|user|after the error");
+    _ := watch(pty, fd, buf, "busy|0");
+end;
+
+(* During a turn, /usage answers at once with the usage as of the
+   turn's start, and is not queued; typing a command draws the menu of
+   commands. *)
+proc midTurn(pty, fd: INT; var buf: Buf.Buf);
+begin
+    clear();
+    Buf.reset(screenText);
+    _ := Sys.write(pty, `always read {"path":"Makefile"}` + "\r");
+    _ := watch(pty, fd, buf, "busy|1");
+    _ := Sys.write(pty, "/usage\r");
+    _ := shows(pty, "as of the start of the turn:");
+    Buf.reset(screenText);
+    _ := Sys.write(pty, "/mo");
+    _ := shows(pty, "show or set the model");
+    _ := Sys.write(pty, "\x7f\x7f\x7f\x03");
+    _ := watch(pty, fd, buf, "busy|0");
+    mustNotHave("/usage during a turn is not queued", "queue|");
+    mustNotHave("/usage during a turn is not run after it", "|user|/usage");
+end;
+
 (* arno on a terminal is a session too: a viewer on its socket is
    shown its transcript, and what it types is run there. *)
 proc terminal(arno: []const U8);
@@ -354,6 +425,8 @@ begin
     while ok and (Str.find(Buf.bytes(got), "/new") < 0) do ok := read(fd, buf, got); end;
     if not ok then fail("a viewer's command is run on the terminal", Buf.bytes(got)); end;
     queueing(pty, fd, buf);
+    afterError(pty, fd, buf);
+    midTurn(pty, fd, buf);
     Sys.close(fd);
     _ := Sys.write(pty, "\x04");
     while Sys.ready(pty, 500) do
@@ -529,6 +602,26 @@ begin
     mustHave("the queued line runs", "|user|queued line");
 end;
 
+(* Two workers in one step: every entry they make is told with the
+   number of the worker that made it, and the model it runs on, the
+   lead's with neither. *)
+proc workers;
+begin
+    clear();
+    line("fan delegate " + `{"task":"call read {\"path\":\"f.txt\"}","done_when":"x"}` + "\t"
+        + `{"task":"call read {\"path\":\"f.txt\"}","done_when":"y"}`);
+    idle();
+    mustHave("the lead's delegation has no worker", `"done_when":"x"}` + "\n");
+    mustHave("worker 1's tool call", `|read|{"path":"f.txt"}|1|small` + "\n");
+    mustHave("worker 2's tool call", `|read|{"path":"f.txt"}|2|small` + "\n");
+    mustHave("worker 1's note", `|info|worker small: call read {"path":"f.txt"}|1|small` + "\n");
+    mustHave("worker 2's note", `|info|worker small: call read {"path":"f.txt"}|2|small` + "\n");
+    mustHave("worker 1's reply", "|asst||1|small\n");
+    mustHave("worker 2's reply", "|asst||2|small\n");
+    mustNotHave("only two workers", "|3|small");
+    mustHave("the lead's reply has no worker", "|asst|\n");
+end;
+
 (* A question refused with a reason, which is in the result; a question
    and a cancel; a turn after it. *)
 proc questions;
@@ -698,6 +791,7 @@ begin
     Buf.init(out, Heap.heap);
     Buf.init(pid, Heap.heap);
     Buf.init(root, Heap.heap);
+    Buf.init(screenText, Heap.heap);
     Buf.init(ident, Heap.heap);
     Fields.init(fields, Heap.heap);
     _ := Sys.ignore(Sys.sigPipe, true);
@@ -711,6 +805,7 @@ begin
     command();
     hostTool();
     queued();
+    workers();
     questions();
     requests();
     order();

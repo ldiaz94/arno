@@ -500,6 +500,49 @@ if convo = '' then fail('workers side by side: no conversation kept')
 grep -q 'earlier workers' $convo
 if status = 0 then fail('workers side by side: a brief holds the other''s report')
 if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('a worker''s copy was left, side by side')
+// a worker that fails, and one that answers nothing, end without a
+// report: the error says so, and names the conversation kept
+stagedRun(['call', 'delegate', '{"task":"fail","done_when":"x"}'], '')
+holds('a worker that fails', 'out', 'error: the worker ended without a report, after 0 steps, conversation in ')
+holds('a worker that fails', 'out', 'the stub fails the worker, as asked')
+convo := `grep -o '[^ ]*/worker-1.json' "$dir/out"`
+if convo = '' then fail('a worker that fails: no conversation named') else begin
+  test -f $convo
+  if status <> 0 then fail("a worker that fails: $convo is not there")
+end
+stagedRun(['call', 'delegate', '{"task":"empty","done_when":"x"}'], '')
+holds('a worker that says nothing', 'out', 'error: the worker ended without a report, after 1 steps, conversation in ')
+convo := `grep -o '[^ ]*/worker-1.json' "$dir/out"`
+if convo = '' then fail('a worker that says nothing: no conversation named') else begin
+  test -f $convo
+  if status <> 0 then fail("a worker that says nothing: $convo is not there")
+end
+
+// ^C in a turn of two workers side by side stops both: the turn ends,
+// every call is answered, and no worker's copy is left
+loop := '{"task":"always shell {\"command\":\"sleep 2\"}","done_when":"never"}'
+cd $proj
+env XDG_CONFIG_HOME="$here/$dir/config" XDG_DATA_HOME="$here/$dir/data" XDG_CACHE_HOME="$here/$dir/cache" XDG_RUNTIME_DIR="$here/$dir/run" $here/$arno fan delegate "$loop	$loop" < /dev/null > "$here/$dir/out" 2> "$here/$dir/err" &
+fanpid := lastpid
+cd $here
+// both are at work once each has said its task, and read a few times
+waited := 0
+while (waited < 100) and (`grep -c 'arno: worker small' "$dir/err"` < 2) do begin
+  sleep 0.1
+  inc(waited)
+end
+sleep 0.5
+kill -INT $fanpid
+wait $fanpid
+fanstatus := status
+if fanstatus <> 130 then fail("^C in a fan: arno ended with status $fanstatus: " + `cat "$dir/err"`)
+holds('^C in a fan', 'err', 'arno: stopped')
+if `grep -c 'error: the worker ended without a report' "$dir/err"` <> '2' then fail('^C in a fan: both workers did not stop: ' + `cat "$dir/err"`)
+// the turn's two calls were each answered, as the model's next request needs
+fanconvo := `ls -t $dir/data/arno/*.json | head -1`
+if `grep -o '"role":"tool"' $fanconvo | wc -l` <> '2' then fail('^C in a fan: a call went unanswered: ' + `cat $fanconvo`)
+if `ls "$dir/cache/arno/stage" | wc -l` <> '0' then fail('^C in a fan: a worker''s copy was left')
+
 configure([])
 
 if failures > 0 then halt(1)

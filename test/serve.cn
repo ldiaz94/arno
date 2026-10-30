@@ -45,6 +45,7 @@ echo "url = http://127.0.0.1:$(started[0])/v1" > "$dir/config/arno/config"
 echo 'context_files = no' >> "$dir/config/arno/config"
 echo 'project_map = no' >> "$dir/config/arno/config"
 echo 'safety = safe' >> "$dir/config/arno/config"
+echo 'workers = small' >> "$dir/config/arno/config"
 
 $host $arno "$dir/proj"
 if status <> 0 then begin
