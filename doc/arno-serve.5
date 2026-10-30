@@ -1,4 +1,4 @@
-.Dd October 28, 2026
+.Dd October 30, 2026
 .Dt ARNO-SERVE 5
 .Os
 .Sh NAME
@@ -460,9 +460,22 @@ and
 .Cm busy ;
 and
 .Cm queue ,
-if lines wait.
+if lines wait;
+and
+.Cm listed ,
+if there are models.
 From then on it gets every change, in the host's own messages
-.Pq Cm push , tool , append , done , reset , status , busy , queue .
+.Pq Cm push , tool , append , done , reset , status , busy , queue
+and in
+.Cm listed .
+.Pp
+.Cm listed Ar models
+is the models
+.Ic /model
+completes from, a line each, as the session has them when no job runs;
+it comes again when they change, as a job ends.
+It is a viewer's alone: a host asks with
+.Cm models .
 .Pp
 It may send
 .Cm line ,

@@ -27,7 +27,8 @@
      - on a terminal, holds a queue after an error too, answers /usage
        at once during a turn, and draws the menu of commands then;
      - shows a viewer on its session socket the transcript, and runs
-       the line the viewer types;
+       the line the viewer types; tells it the models, which an
+       attached screen completes /model from;
      - on a terminal, queues what is typed during a turn, holds the
        queue after C-c until RET, gives the last back to C-p, and
        empties it at a second C-c, as a viewer is told;
@@ -277,6 +278,59 @@ begin
     fail("the screen shows", text);
     Out.str(Buf.bytes(screenText));
     return false;
+end;
+
+(* A viewer is told the models the session lists, and the screen of
+   arno --attach completes /model from them: a model taken with TAB is
+   the line the session runs. *)
+proc completes(arno, socket, pid: []const U8);
+var fd, pty, at, n, rc: INT; got, buf: Buf.Buf; ok: BOOL; p: Sys.Program; args: [3][]const U8; chunk: [4096]U8;
+    how: Sys.Status;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(buf, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(buf);
+    fd := Sys.connect(socket);
+    if fd < 0 then fail("a viewer for the models", "no socket"); return; end;
+    _ := Sys.send(fd, "6:attach,");
+    Buf.reset(out);
+    Aframe.pack(out, ["line", "/models"]);
+    _ := Sys.send(fd, Buf.bytes(out));
+    ok := read(fd, buf, got);
+    while ok and not (Str.hasPrefix(Buf.bytes(got), "listed|") and (Str.find(Buf.bytes(got), "stub-one") >= 0)) do
+        ok := read(fd, buf, got);
+    end;
+    if not ok then fail("a viewer is told the models", Buf.bytes(got)); end;
+    Sys.close(fd);
+
+    pty := Sys.openPty();
+    if pty < 0 then fail("a pseudo-terminal", "none"); return; end;
+    _ := Sys.setTermSize(pty, 100, 30);
+    args := [arno, "--attach", pid];
+    p := {path: arno, args: args, tty: pty};
+    at := Sys.spawn(p);
+    if at < 0 then fail("the screen", "arno can't be run"); return; end;
+    (* the snapshot taken in, the models last *)
+    while Sys.ready(pty, 500) do
+        n := Sys.read(pty, chunk);
+        if n <= 0 then break; end;
+    end;
+    clear();
+    _ := Sys.write(pty, "/model stub-o");
+    while Sys.ready(pty, 300) and (Sys.read(pty, chunk) > 0) do end;
+    _ := Sys.write(pty, "\t\r");
+    ok := await("push|");
+    while ok and (Str.find(Buf.bytes(last), "|user|/model ") < 0) do ok := await("push|"); end;
+    mustHave("a model completed on an attached screen", "|user|/model stub-one\n");
+    send(["models"]);   (* answered once /model has run *)
+    _ := await("models|");
+    mustHave("and taken", `"model":"stub-one"`);
+    _ := Sys.write(pty, "\x04");
+    while Sys.ready(pty, 500) and (Sys.read(pty, chunk) > 0) do end;
+    _, how, rc := Sys.waitExit(at);
+    if (how # Sys.Status.exited) or (rc # 0) then fail("leaving the screen", "arno --attach did not end with status 0"); end;
+    Sys.close(pty);
 end;
 
 (* The messages to a viewer, on fd, read until one holds text, which is
@@ -778,6 +832,7 @@ begin
     whoNotLast(Buf.bytes(socket));
     listing(arno, "testhost");
     screen(arno, Buf.bytes(pid));
+    completes(arno, Buf.bytes(socket), Buf.bytes(pid));
     terminal(arno);
 end;
 

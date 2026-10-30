@@ -799,6 +799,7 @@ begin
     Aview.waiting("", false);
     if turning then Aview.busied(false); end;
     if not going then quit := true; return; end;
+    Aview.listed(Asession.models(session));   (* for viewers' /model, which complete from it *)
     runHeld();
 end;
 

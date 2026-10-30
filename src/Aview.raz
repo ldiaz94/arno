@@ -28,6 +28,8 @@
        busy 0|1           a turn ended or started
        queue H LINE...    the lines that wait for the turn, in order;
                           H is 1 when they wait for an Enter too
+       listed MODELS      the models /model completes from, a line
+                          each; to viewers only
 
    Whoever keeps a copy of the transcript appends what it is told, in
    order, and has the same numbers; apply is that, for a viewer. These
@@ -39,8 +41,8 @@
    only its user can enter; a connection from another user is dropped
    as well. A viewer opens with the netstring 6:attach, and keeps the
    connection: it is sent a reset, the transcript so far, the status
-   line, busy and the queue, then every change; it may send line,
-   cancel and unqueue. A
+   line, busy, the queue and the models, then every change; it may send
+   line, cancel and unqueue. A
    connection that sends 3:who, is answered with one message, ok, the
    owner, the project root and the title, and closed: that is how
    sessions are listed and found. A question is never sent to a
@@ -61,6 +63,11 @@
    unqueue TEXT takes the last line back, if it is still TEXT, to be
    edited. A change is told when the owner settles, after taking what
    it can, so that a line that runs at once is never told as waiting.
+
+   A viewer's screen completes /model from the session's models,
+   which only the session has: the owner lists them when no job has
+   the session, and they are told to viewers as listed when they
+   change.
 
    Depends on Aboard, Aframe, Astore and Sys. Leaves out the editors'
    protocol of arno-peer(5), which has a socket of its own. *)
@@ -109,6 +116,7 @@ var
     owner, root, title: Buf.Buf;   (* what who answers *)
     status: Buf.Buf;          (* the status line last told *)
     busy: BOOL;               (* a turn is running, as last told *)
+    models: Buf.Buf;          (* the models /model completes from, a line each, as last told *)
 
 (* Telling *)
 
@@ -161,6 +169,20 @@ proc tell(msg: []const U8);
 var i: INT;
 begin
     if sink # nil then sink(msg); end;
+    i := 0;
+    while i < viewers.len do
+        if Viewers.all(viewers)[i].role = viewing then
+            Buf.str(Viewers.all(viewers)[i].outbox, msg);
+            if not flush(i) then drop(i); continue; end;
+        end;
+        INC(i);
+    end;
+end;
+
+(* msg to every viewer that has attached, and not to the owner. *)
+proc toViewers(msg: []const U8);
+var i: INT;
+begin
     i := 0;
     while i < viewers.len do
         if Viewers.all(viewers)[i].role = viewing then
@@ -308,7 +330,7 @@ end;
 
 (* What a viewer that arrives is told: the transcript so far, a reply
    still streaming as far as it has got, then the status line, busy,
-   and the queue if anything waits. *)
+   the queue if anything waits, and the models if any are listed. *)
 proc snapshot(var b: Buf.Buf);
 var i: INT;
 begin
@@ -317,6 +339,7 @@ begin
     Aframe.pack(b, ["status", Buf.bytes(status)]);
     if busy then Aframe.pack(b, ["busy", "1"]); else Aframe.pack(b, ["busy", "0"]); end;
     if queued.len > 0 then packQueue(b); end;
+    if models.len > 0 then Aframe.pack(b, ["listed", Buf.bytes(models)]); end;
 end;
 
 (* The snapshot for the owner, a host that starts listening late: the
@@ -408,7 +431,7 @@ end;
 (* A question waits for its owner, who, or no longer does: told to
    viewers only, as the status line, which the owner's own is. *)
 proc waiting*(who: []const U8; yes: BOOL);
-var b: Buf.Buf; i: INT;
+var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
@@ -416,14 +439,27 @@ begin
     if yes then Fmt.write(b, " \u{B7} a question waits in {}", [Fmt.str(who)]); end;
     Buf.reset(out);
     Aframe.pack(out, ["status", Buf.bytes(b)]);
-    i := 0;
-    while i < viewers.len do
-        if Viewers.all(viewers)[i].role = viewing then
-            Buf.str(Viewers.all(viewers)[i].outbox, Buf.bytes(out));
-            if not flush(i) then drop(i); continue; end;
-        end;
-        INC(i);
-    end;
+    toViewers(Buf.bytes(out));
+end;
+
+(* The models /model completes from are m, a line each, as the session
+   has them with no job running: told to viewers if they changed. The
+   owner has its own; a host asks with models. *)
+proc listed*(m: []const U8);
+begin
+    if Buf.bytes(models) = m then return; end;
+    Buf.reset(models);
+    Buf.str(models, m);
+    Buf.reset(out);
+    Aframe.pack(out, ["listed", m]);
+    toViewers(Buf.bytes(out));
+end;
+
+(* The models last listed: the session's, or, on a viewer, as the
+   session told them. *)
+proc modelsListed*: []const U8;
+begin
+    return Buf.bytes(models);
 end;
 
 (* The session is run by o, in the project r, until told otherwise. *)
@@ -661,7 +697,7 @@ end;
 
 (* One message of the session applied to the Board here: status is
    the status line it set, busy whether a turn runs; queue is kept as
-   this one's queue, to be shown. A message that is
+   this one's queue, to be shown, and listed as its models. A message that is
    not understood, or an entry that isn't there, is left out. *)
 proc apply*(f: [][]const U8; var statusLine: Buf.Buf; var running: BOOL);
 var n: I64; ok: BOOL; e: []Aboard.Entry; i: INT;
@@ -685,6 +721,7 @@ begin
         end;
     | "status": if LEN(f) >= 2 then Buf.reset(statusLine); Buf.str(statusLine, f[1]); end;
     | "busy": if LEN(f) >= 2 then running := f[1] = "1"; end;
+    | "listed": if LEN(f) >= 2 then Buf.reset(models); Buf.str(models, f[1]); end;
     | "queue":
         clearQueue();
         holding := (LEN(f) >= 2) and (f[1] = "1");
@@ -907,6 +944,23 @@ begin
     end;
 end;
 
+(* The viewer on fd is told the models once for each change, and has
+   the list a session told it. *)
+proc listedTold(fd: INT);
+var got, line: Buf.Buf; ok: BOOL;
+begin
+    Buf.init(got, Heap.heap);
+    Buf.init(line, Heap.heap);
+    defer Buf.done(got);
+    defer Buf.done(line);
+    listed("m1\nm2");
+    listed("m1\nm2");
+    received(fd, got);
+    expect("the models, told once", Buf.bytes(got), "listed|m1\nm2\n");
+    apply(["listed", "a\nb"], line, ok);
+    expect("the models a session told", modelsListed(), "a\nb");
+end;
+
 proc main*: INT;
 var got, line: Buf.Buf; fd, k: INT; pid: [20]U8; ok: BOOL;
 begin
@@ -986,6 +1040,7 @@ begin
     apply(["queue", "1", "x"], line, ok);
     if not held() or (LEN(queue()) # 1) then failed := true; Out.str("Aview: a queue told\n"); end;
     clearQueue();
+    listedTold(fd);
     Sys.close(fd);
     serviceAll();
 
@@ -1018,4 +1073,5 @@ begin
     Buf.init(root, Heap.heap);
     Buf.init(title, Heap.heap);
     Buf.init(status, Heap.heap);
+    Buf.init(models, Heap.heap);
 end Aview.

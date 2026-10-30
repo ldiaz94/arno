@@ -53,7 +53,11 @@
    chosen, RET too, and sends a command that takes it as it is, with
    no blank after it; C-n, C-p and the arrows choose, Esc hides them
    until the input changes. During a job, which has the session, a
-   model is completed from the list as it stood when the job began.
+   model is completed from the list as it stood when the last job
+   ended, which viewers are told (Aview.listed); an attached screen
+   completes from that list as told, and the rest, commands, /load's
+   conversations and @paths, as here, an @path from the attached
+   screen's own working directory.
 
    M-v starts copy mode (Acopy): a cursor on the transcript, to move
    over it, select and copy, until it copies or is left.
@@ -132,7 +136,6 @@ var
     (* a job's own *)
     job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
     usageText: Buf.Buf; (* /usage as it stood when the job began, for asking it during the job *)
-    modelsText: Buf.Buf;   (* the models /model completes, as they stood when the job began *)
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
@@ -376,8 +379,6 @@ begin
     Buf.reset(usageText);
     Buf.str(usageText, "as of the start of the turn:\n");
     Asession.usage(session^, usageText);   (* no job runs yet, so the counters are still *)
-    Buf.reset(modelsText);
-    Buf.str(modelsText, Asession.models(session^));
     Aview.busied(true);
     thread, err := Thread.spawn(work, nil);
     if err # nil then
@@ -605,6 +606,7 @@ begin
         thread := nil;
         Aview.busied(false);
         Aview.waiting("", false);
+        Aview.listed(Asession.models(session^));
         if asking then
             Apeer.free(editorAsk);
             asking := false;
@@ -999,12 +1001,12 @@ begin
     hidden := false;
     menu := [];
     chosen := 0;
-    if viewing then return; end;
     wordA, wordB := Acomplete.token(s, editor.point);
     if wordA < 0 then return; end;
-    (* a job has the session: its models as they stood when it began *)
-    if thread # nil then
-        menu := Acomplete.complete(s[wordA..wordB], Buf.bytes(modelsText));
+    (* attached, the session's models as it told them; a job has the
+       session: its models as they were listed when the last job ended *)
+    if viewing or (thread # nil) then
+        menu := Acomplete.complete(s[wordA..wordB], Aview.modelsListed());
     else
         menu := Acomplete.complete(s[wordA..wordB], Asession.models(session^));
     end;
@@ -1566,6 +1568,7 @@ begin
         Fmt.str(s^.conf.prov.name)]);
     Aview.noted(Aboard.info, Buf.bytes(made));
     remade();
+    Aview.listed(Asession.models(session^));
     Aview.owning("terminal", Afence.zone);
     Aview.watching(watching);
     if Aview.listen() then _ := TuiLoop.watch(Aview.listenFd(), viewReady); end;
@@ -1637,7 +1640,6 @@ begin
     Buf.init(reason, Heap.heap);
     Buf.init(job, Heap.heap);
     Buf.init(usageText, Heap.heap);
-    Buf.init(modelsText, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(because, Heap.heap);
     Buf.init(revision, Heap.heap);

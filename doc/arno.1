@@ -1694,6 +1694,14 @@ Questions stay with the session's owner, its terminal or the program
 driving it; while one waits, the status line here says so, and the answer
 shows in the tool call's result.
 .Pp
+Commands, their arguments and @paths complete as on the session's own
+screen, and
+.Ic /model
+from the session's models, as it last listed them.
+An @path completes from this terminal's working directory, while the
+session reads the line from its own: attach from the same directory, or
+type a path that is the same from both.
+.Pp
 With a
 .Ar pid ,
 that session is shown; without one, a session working in this directory,
