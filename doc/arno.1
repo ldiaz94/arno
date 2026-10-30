@@ -117,7 +117,18 @@ The screen shows, from the top, the transcript, a rule, the input
 and the status line.
 Your messages, the model's, tool calls, notes and errors are told
 apart by colour.
-A tool call is one line until opened.
+A tool call is one line until opened: the tool's name, what the call
+does, its subject first, most often a path, as
+.Ql "edit src/Alock.raz"
+or
+.Ql "read src/Aboard.raz 252\(en306" ,
+and what came of it.
+A call of an MCP tool shows its arguments as JSON instead.
+Opened, a call shows its arguments, one
+.Ql "key: value"
+to a line, a value of several lines indented under its key, but for
+what the diff below them already shows, an edit's old and new text;
+then the diff, and its result.
 The rule says what is going on: the model working, a question waiting
 for your key, or copy mode.
 .Pp

@@ -24,11 +24,20 @@
    copying it copies what the model wrote. Left out: a bar escaped or
    in `code` within a cell, a quote's fence or table, more than
    MaxCols columns. A
-   tool call is a line, its name, its arguments and what came of it,
-   until it is opened: then its arguments in full, the diff its
-   question showed, and its result, 400 lines at most, follow, a diff
-   and git's result coloured as diffs. The newest call stays open
-   while its question is asked.
+   tool call is a line until it is opened: its name, what it does, as
+   Parts says, its subject first, a path most often, and what came of
+   it. A tool not in Parts, an MCP server's, shows its arguments as
+   JSON instead:
+
+         > edit src/Alock.raz  ok: 1 replaced
+         > read src/Aboard.raz 252-306  55 lines
+         > linear_get_issue {"id":"A-1"}  1 line
+
+   Opened, its arguments follow, key: value a line each, a string of
+   several lines indented under its key, but those the diff its
+   question showed holds, an edit's old and new; then that diff, and
+   its result, 400 lines at most, a diff and git's result coloured as
+   diffs. The newest call stays open while its question is asked.
 
    The view says whose entries are drawn: every one, the lead's alone,
    or one worker's. Every entry stays on the board; only what is shown
@@ -37,9 +46,9 @@
    number and its model, indented behind a bar in a colour of its own,
    and the lead's entries are as they always were:
 
-         > delegate {"task":"..."}  running...
+         > delegate fix the parser  running...
          w2 glm-5.3-flash
-         |   > read {"path":"a.raz"}  40 lines
+         |   > read a.raz  40 lines
          | | a reply of the worker's
 
    Shown the lead's, each worker is a line under the delegate that
@@ -47,7 +56,7 @@
    has made, and its latest, the call's name and the first string of
    its arguments; toggled, the delegate shows the worker's view:
 
-         > delegate {"task":"..."}  running...
+         > delegate fix the parser  running...
              w2 glm-5.3-flash . 23 calls . read enterprise/cv.ts
 
    A worker's first entry is linked to the lead's newest delegate
@@ -61,10 +70,10 @@
    when it is copied, so that a paragraph wrapped over several rows is
    copied as the one line it was.
 
-   Depends on rtui's TuiScreen, rterm's Term, Buf, Str and
+   Depends on rtui's TuiScreen, rterm's Term, rjson's Json, Buf, Str, Rt and
    Heap. *)
 module Aboard;
-import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf),
+import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Json, Rt, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf),
     Ints := Vec(INT);
 import SYSTEM;
 
@@ -90,6 +99,14 @@ type
                           blank where the row broke at one, 0 where it broke inside a word *)
     end;
 
+    (* A part of what a call's line says it does: an argument, after
+       pre, if the call gives it. *)
+    Part = record
+        tool: []const U8;   (* the tool it is a part of *)
+        key: []const U8;    (* the argument's key; LineRange for read's lines *)
+        pre: []const U8;    (* what goes before it: a blank and a word, or a colon *)
+    end;
+
     (* How a piece of text looks: an index into Styles. *)
     Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk, worker);
 
@@ -106,6 +123,36 @@ const
     All* = -1;       (* the view of every entry *)
     Unseen = -2;     (* in starts: the worker has said nothing yet *)
     MaxCols = 16;    (* a table's columns shown; those past are left out *)
+    ArgLines = Gutter + "  ";   (* an opened call's argument of several lines, under its key *)
+    LineRange = "offset+limit";   (* Part.key of read's offset and limit, shown as a range of lines *)
+
+    (* What a call of each of arno's tools says it does, on its line:
+       its parts in order, the first its subject. A tool not here, one
+       of an MCP server's, shows its arguments as JSON. *)
+    Parts: []Part = [
+        {tool: "read", key: "path", pre: " "}, {tool: "read", key: LineRange, pre: " "},
+        {tool: "find", key: "name", pre: " "}, {tool: "find", key: "path", pre: " in "},
+        {tool: "grep", key: "pattern", pre: " "}, {tool: "grep", key: "path", pre: " in "},
+        {tool: "grep", key: "glob", pre: " "},
+        {tool: "def", key: "name", pre: " "}, {tool: "def", key: "path", pre: " in "},
+        {tool: "refs", key: "name", pre: " "}, {tool: "refs", key: "path", pre: " in "},
+        {tool: "outline", key: "path", pre: " "},
+        {tool: "git", key: "args", pre: " "},
+        {tool: "run", key: "args", pre: " "},
+        {tool: "check", key: "name", pre: " "}, {tool: "check", key: "files", pre: " "},
+        {tool: "shell", key: "command", pre: " "},
+        {tool: "edit", key: "path", pre: " "},
+        {tool: "move", key: "path", pre: " "}, {tool: "move", key: "to", pre: " to "},
+        {tool: "remove", key: "path", pre: " "},
+        {tool: "skill", key: "name", pre: " "},
+        {tool: "note", key: "text", pre: " "},
+        {tool: "search", key: "query", pre: " "},
+        {tool: "fetch", key: "url", pre: " "},
+        {tool: "editor", key: "", pre: " "},   (* it takes no arguments *)
+        {tool: "open", key: "path", pre: " "}, {tool: "open", key: "line", pre: ":"},
+        {tool: "delegate", key: "task", pre: " "},
+        {tool: "plan", key: "plan", pre: " "},
+        {tool: "merge", key: "worker", pre: " worker "}, {tool: "merge", key: "apply", pre: " "}];
 
 var
     speaker*: INT;      (* who the entries pushed now are said by, as Entry.speaker; set by speak *)
@@ -132,6 +179,10 @@ var
     (* a table: its lines, and a line's cells as tableRow lays them out *)
     tableLines: Lines.Vec;
     cellText, cellLooks: Buf.Buf;
+    (* a call's arguments, parsed: the document, and the copy of their
+       text it is parsed in, as parsing rewrites it *)
+    argDoc: Json.Doc;
+    argText: Buf.Buf;
 
 (* The entries, oldest first, until one is added. *)
 proc all*: []Entry;
@@ -811,9 +862,142 @@ begin
     looks.len := i;
 end;
 
-(* A call's line: open or not, its name and arguments, cut to leave
-   room for what came of it: running, its result if it is a line, or
-   how many lines came; a failure in red. *)
+(* A call's arguments, args, parsed into argDoc: no object, if they
+   are bad JSON, as a model's can be. *)
+proc parsed(args: []const U8): Json.Value;
+begin
+    Json.reset(SYSTEM.ADR(argDoc));
+    Buf.reset(argText);
+    Buf.str(argText, args);
+    return Json.parse(SYSTEM.ADR(argDoc), Buf.bytes(argText));
+end;
+
+(* The argument key of v as a number, from a number or a string that
+   holds one, as models send both; def if it is neither. *)
+proc number(v: Json.Value; key: []const U8; def: INT): INT;
+var n: I64; ok: BOOL;
+begin
+    n, ok := Str.toInt(Json.text(SYSTEM.ADR(argDoc), Json.member(SYSTEM.ADR(argDoc), v, key)));
+    if not ok then return def; end;
+    return INT(n);
+end;
+
+(* The argument key of v as a call's line says it, added to b: a
+   string or a number as it is, an array's items parted by blanks, true
+   as the key itself; read's offset and limit as a range of lines,
+   from-to, or from on. Nothing if it isn't given. *)
+proc said(v: Json.Value; key: []const U8; var b: Buf.Buf);
+var d: ^Json.Doc; x: Json.Value; i, from, n: INT;
+begin
+    d := SYSTEM.ADR(argDoc);
+    if key = LineRange then
+        from := number(v, "offset", 1);
+        n := number(v, "limit", 0);
+        if (from = 1) and (n <= 0) then return; end;
+        Fmt.write(b, "{}\u{2013}", [Fmt.int(from)]);
+        if n > 0 then Fmt.write(b, "{}", [Fmt.int(from + n - 1)]); end;
+        return;
+    end;
+    x := Json.member(d, v, key);
+    match Json.kind(d, x) of
+    | Json.Kind.string, Json.Kind.number:
+        Str.replace(b, Json.text(d, x), "\n", "; ");   (* a command of several lines reads as one *)
+    | Json.Kind.array:
+        for i := 0 to Json.len(d, x) - 1 do
+            if i > 0 then Buf.add(b, ' '); end;
+            Buf.str(b, Json.text(d, Json.item(d, x, i)));
+        end;
+    | Json.Kind.bool:
+        if x = Json.True then Buf.str(b, key); end;
+    | else:
+    end;
+end;
+
+(* What a call of tool name does, from its arguments args, added to
+   the line being laid out as Parts says: its subject in the look of
+   the call's marker, the rest dim. false, and nothing added, if the
+   tool isn't one of Parts' or its arguments are no object. *)
+proc summary(name, args: []const U8): BOOL;
+var v: Json.Value; b: Buf.Buf; i: INT; known: BOOL; l: Look;
+begin
+    v := parsed(args);
+    if Json.kind(SYSTEM.ADR(argDoc), v) # Json.Kind.object then return false; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    known := false;
+    for i := 0 to LEN(Parts) - 1 do
+        if Parts[i].tool = name then
+            l := dim;
+            if not known then l := hunk; end;
+            Buf.reset(b);
+            said(v, Parts[i].key, b);
+            if b.len > 0 then
+                add(Parts[i].pre, l);
+                flat(Buf.bytes(b), l);
+            end;
+            known := true;
+        end;
+    end;
+    return known;
+end;
+
+(* Whether the argument key of a call of tool is shown by the diff its
+   question showed, and so is left out of its arguments opened. *)
+proc inDiff(tool, key: []const U8): BOOL;
+begin
+    return (tool = "edit") and ((key = "old") or (key = "new"));
+end;
+
+(* An argument of an opened call, key and its value x, after Gutter,
+   wrapped at w columns: key: value, a string of several lines under
+   its key, indented, an array or an object as JSON. *)
+proc argument(key: []const U8; x: Json.Value; w: INT);
+var d: ^Json.Doc; s: []const U8; json: Buf.Buf; k: Json.Kind;
+begin
+    d := SYSTEM.ADR(argDoc);
+    k := Json.kind(d, x);
+    s := Json.text(d, x);
+    Buf.init(json, Heap.heap);
+    defer Buf.done(json);
+    if (k # Json.Kind.string) and (k # Json.Kind.number) then
+        Json.write(d, SYSTEM.ADR(json), x, {});
+        s := Buf.bytes(json);
+    end;
+    start();
+    add(key, dim);
+    add(":", dim);
+    if Str.find(s, "\n") >= 0 then
+        wrap(Gutter, dim, w);
+        lines(Str.trimRight(s), ArgLines, dim, plain, w - 2);
+    else
+        add(" ", dim);
+        add(s, plain);
+        wrap(Gutter, dim, w);
+    end;
+end;
+
+(* An opened call's arguments, a line each after Gutter, wrapped at w
+   columns, but those the diff below shows; bad JSON as it came. *)
+proc arguments(const e: Entry; w: INT);
+var d: ^Json.Doc; v: Json.Value; i: INT;
+begin
+    d := SYSTEM.ADR(argDoc);
+    v := parsed(Buf.bytes(e.args));
+    if Json.kind(d, v) # Json.Kind.object then
+        lines(Buf.bytes(e.args), Gutter, dim, dim, w);
+        return;
+    end;
+    for i := 0 to Json.len(d, v) - 1 do
+        if (e.detail.len = 0) or not inDiff(Buf.bytes(e.text), Json.key(d, v, i)) then
+            argument(Json.key(d, v, i), Json.item(d, v, i), w);
+        end;
+    end;
+end;
+
+(* A call's line: open or not, its name and what it does, or its
+   arguments as JSON, cut to leave room for what came of it: running,
+   its result if it is a line, or how many lines came; a failure in
+   red. *)
 proc header(const e: Entry; w: INT);
 var sum: Buf.Buf; res: []const U8; n: INT; l: Look;
 begin
@@ -832,9 +1016,11 @@ begin
     if Str.hasPrefix(res, "error") or Str.hasPrefix(res, "declined") or Str.hasPrefix(res, "not run") then l := red; end;
     start();
     if e.open then add("\u{25BE} ", hunk); else add("\u{25B8} ", hunk); end;
-    add(Buf.bytes(e.text), hunk);
-    add(" ", hunk);
-    flat(Buf.bytes(e.args), hunk);
+    add(Buf.bytes(e.text), strong);
+    if not summary(Buf.bytes(e.text), Buf.bytes(e.args)) then
+        add(" ", hunk);
+        flat(Buf.bytes(e.args), hunk);
+    end;
     n := w - 2 - TuiScreen.columns(Buf.bytes(sum));
     if n < w div 2 then n := w div 2; end;
     fit(n);
@@ -963,7 +1149,7 @@ begin
             start();
             emit("", plain, 0, 0);
         else
-            lines(Buf.bytes(e^.args), Gutter, dim, dim, w - 6);
+            arguments(e^, w - 6);
             if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;
         end;
         s, more := head(Str.trimRight(Buf.bytes(e^.res)), MaxShown);
@@ -1074,24 +1260,38 @@ begin
     reply("**Hi**, a reply long enough to wrap\n");
     reply("# Head\n`x := 1`");
     call("read", `{"path":"a.raz"}`);
-    ok := expect("short, from the top", 24, 16, 0, "  arno\n\n\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"pat  running\u{2026}\n\n\n\n\n\n\n\nback 0\n");
+    ok := expect("short, from the top", 24, 16, 0, "  arno\n\n\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read a.raz  running\u{2026}\n\n\n\n\n\n\n\nback 0\n");
     if (flatten(24) # 9) or (rowText(5) # "enough to wrap") or (rowAt(5).join # ' ') or (rowAt(5).x # 2)
         or (rowText(4) # "Hi, a reply long") or (rowAt(4).join # '\n') then
         Out.str("Aboard: flatten\n");
         ok := false;
     end;
     result("one\ntwo\nthree\n");
-    ok := expect("the last rows", 24, 4, 0, "\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read {\"path  3 lines\nback 0\n") and ok;
+    ok := expect("the last rows", 24, 4, 0, "\u{258C} enough to wrap\n\u{258C} Head\n\u{258C} x := 1\n  \u{25B8} read a.raz  3 lines\nback 0\n") and ok;
     ok := expect("scrolled back", 24, 4, 3, "\u{258C} hello there\n\n\u{258C} Hi, a reply long\n\u{258C} enough to wrap\nback 3\n") and ok;
     ok := expect("scrolled past the top", 24, 4, 50, "  arno\n\n\u{258C} hello there\n\nback 5\n") and ok;
     toggle;
     _ := push(error, "it failed");
-    ok := expect("opened", 30, 6, 0, "  \u{25BE} read {\"path\":\"a.r  3 lines\n    \u{2502} {\"path\":\"a.raz\"}\n    \u{2502} one\n    \u{2502} two\n    \u{2502} three\n  it failed\nback 0\n") and ok;
+    ok := expect("opened", 30, 6, 0, "  \u{25BE} read a.raz  3 lines\n    \u{2502} path: a.raz\n    \u{2502} one\n    \u{2502} two\n    \u{2502} three\n  it failed\nback 0\n") and ok;
     (* a plan apart from its call, as markdown, its arguments not shown *)
     clear;
     call("plan", `{"plan":"# Steps"}`);
     detail("# Steps\n1. **one** thing");
-    ok := expect("a plan", 30, 6, 0, "  \u{25BE} plan {\"plan\":\"#   running\u{2026}\n\n    Steps\n    1. one thing\n\n\nback 0\n") and ok;
+    ok := expect("a plan", 30, 6, 0, "  \u{25BE} plan # Steps  running\u{2026}\n\n    Steps\n    1. one thing\n\n\nback 0\n") and ok;
+    (* a call says what it does: an edit its path, opened its arguments
+       but those its diff shows; a read its range; a string of several
+       lines under its key; an MCP server's tool its JSON *)
+    clear;
+    call("edit", `{"path":"src/Alock.raz","old":"a","new":"b","all":true}`);
+    detail("-a\n+b");
+    result("ok: 1 replaced");
+    ok := expect("an edit", 40, 6, 0, "  \u{25BE} edit src/Alock.raz  ok: 1 replaced\n    \u{2502} path: src/Alock.raz\n    \u{2502} all: true\n    \u{2502} -a\n    \u{2502} +b\n    \u{2502} ok: 1 replaced\nback 0\n") and ok;
+    clear;
+    call("read", `{"path":"src/Aboard.raz","offset":252,"limit":55}`);
+    call("shell", `{"command":"make\nmake check","timeout":60}`);
+    toggle;
+    call("linear_get_issue", `{"id":"A-1"}`);
+    ok := expect("what calls do", 44, 7, 0, "  \u{25B8} read src/Aboard.raz 252\u{2013}306  running\u{2026}\n  \u{25BE} shell make; make check  running\u{2026}\n    \u{2502} command:\n    \u{2502}   make\n    \u{2502}   make check\n    \u{2502} timeout: 60\n  \u{25B8} linear_get_issue {\"id\":\"A-1\"}  running\u{2026}\nback 0\n") and ok;
     (* a quote wrapped, continued lazily, ended by a list's item, and nested *)
     clear;
     reply("> a quote long enough to wrap\nlazily\n- item\n> > deep\n\nafter");
@@ -1115,11 +1315,11 @@ begin
     result("one line");
     speak(0);
     result("reported");
-    ok := expect("all", 30, 4, 0, "  \u{25B8} delegate {}  reported\n  w1 glm\n  \u{2502}   \u{25B8} read {}  one line\n\nback 0\n") and ok;
+    ok := expect("all", 30, 4, 0, "  \u{25B8} delegate  reported\n  w1 glm\n  \u{2502}   \u{25B8} read  one line\n\nback 0\n") and ok;
     choose(0);
-    ok := expect("the lead's", 30, 3, 0, "  \u{25B8} delegate {}  reported\n    w1 glm \u{B7} 1 call \u{B7} read {}\n\nback 0\n") and ok;
+    ok := expect("the lead's", 30, 3, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 1 call \u{B7} read {}\n\nback 0\n") and ok;
     choose(1);
-    if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read {}  one line") or (rowAt(0).x # 2) then
+    if (flatten(30) # 1) or (rowText(0) # "\u{25B8} read  one line") or (rowAt(0).x # 2) then
         Out.str("Aboard: a worker's view\n");
         ok := false;
     end;
@@ -1133,7 +1333,7 @@ begin
     call("read", `{"path":"enterprise/cv.ts","limit":9}`);
     speak(0);
     choose(0);
-    ok := expect("a worker as one line", 50, 2, 0, "  \u{25B8} delegate {}  reported\n    w1 glm \u{B7} 2 calls \u{B7} read enterprise/cv.ts\nback 0\n") and ok;
+    ok := expect("a worker as one line", 50, 2, 0, "  \u{25B8} delegate  reported\n    w1 glm \u{B7} 2 calls \u{B7} read enterprise/cv.ts\nback 0\n") and ok;
     toggle;
     if view # 1 then
         Out.str("Aboard: a worker's line opened\n");
@@ -1164,6 +1364,8 @@ begin
     Lines.init(tableLines, Heap.heap);
     Buf.init(cellText, Heap.heap);
     Buf.init(cellLooks, Heap.heap);
+    if not Json.init(SYSTEM.ADR(argDoc), Heap.heap) then Rt.stop("arno: out of memory"); end;
+    Buf.init(argText, Heap.heap);
     joinNext := '\n';
     view := All;
     Models.init(models, Heap.heap);
