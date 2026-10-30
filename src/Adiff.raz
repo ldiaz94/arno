@@ -1,0 +1,877 @@
+(* Adiff: what changed between two versions of a file, line by line,
+   and word by word within a line that changed. It is huh's Diff
+   (~/r/huh/src/Diff.raz), taken as it was, less what arno has no use
+   for: its whole-file hunk, near, and its main's diff of two files.
+   An edit's question shows its unified text, and the board draws any
+   unified diff with the words that changed in a line marked.
+
+   compute takes the two texts and finds the fewest lines to remove from
+   the first and add to make the second, by Eugene Myers's algorithm
+   ("An O(ND) Difference Algorithm and Its Variations", 1986), in its
+   form that takes memory in proportion to the texts, not to the square
+   of the changes: it finds the middle snake, the run of equal lines
+   that the best path between the two ends crosses in its middle, by
+   going forward from the start and back from the end at once until the
+   two meet; then the halves on either side are diffed the same way.
+   The lines the texts start and end with alike are taken off first,
+   since most changes are small.
+
+   Lines are compared as numbers: each distinct line of either text is
+   given one, by a hash map, so that comparing two lines is comparing
+   two INTs.
+
+   The result is the lines of both texts in order, each the same,
+   removed or added, with its numbers in the old and the new text, and
+   hunks: runs of changes with context lines around them, as git diff
+   shows them, -U3 by default, joined when their context would meet.
+   Each hunk has the heading git gives it: the nearest line before it,
+   in the old text, that starts with a letter, _ or $, as git's default
+   finds a function's name.
+
+   Within a hunk, a run of removed lines followed by a run of added ones
+   is taken line by line, the first removed with the first added and so
+   on, and each pair is diffed again by words, so that the words that
+   changed can be shown: spans gives their bytes in each line. A pair
+   with too little in common has no spans, since the whole line is new.
+
+   Where two diffs are as short, which lines change is a choice: an
+   added line among lines alike could be any of them. compact slides
+   each run of changes as git's xdiff does, so that the hunks are git's,
+   and so GitHub's; huh's test/check.sh holds them against git diff.
+
+   It depends on Buf, Str, Heap, Mem, Vec and Map; on Fmt, Out and Rt for
+   its test. Left out: git's indent heuristic, which slides a change by
+   how its lines are indented, and detecting moved lines. *)
+module Adiff;
+import Buf, Str, Fmt, Heap, Mem, Out, Rt, Lines := Vec(Line), Hunks := Vec(Hunk), Spans := Vec(Span), Ints := Vec(INT),
+    Ids := Map([]const U8, INT, Str.hash, Str.eq);
+import SYSTEM;
+
+const
+    Context* = 3;           (* lines of context around a change, as git's -U3 *)
+    Heading = 80;           (* a hunk's heading's bytes, at most, as git's *)
+
+type
+    (* How a line stands: in both texts, only in the old, only in the new. *)
+    Kind* = (same, removed, added);
+
+    Line* = record
+        kind*: Kind;        (* how it stands *)
+        old*, new*: INT;    (* its numbers in the old and the new text, from 1; 0 where it isn't *)
+        text*: []const U8;        (* its bytes, without the line feed *)
+        spans: INT;         (* its first span in spans *)
+        nspans: INT;        (* and how many it has *)
+    end;
+
+    (* A hunk: a run of changes and its context, as git's @@ line says. *)
+    Hunk* = record
+        oldStart*, oldCount*, newStart*, newCount*: INT;     (* its range in each text, as git writes it *)
+        first*, last*: INT;     (* its lines, lines[first..last] *)
+        heading*: []const U8;   (* the nearest line before it that looks like a function's name *)
+    end;
+
+    (* Bytes of a line that changed within it. *)
+    Span* = record lo*, hi*: INT; end;
+
+    (* The diff of two texts. *)
+    Diff* = record
+        old, new: Buf.Buf;          (* the texts, copied *)
+        lines: Lines.Vec;           (* the lines of both texts, in order *)
+        hunks: Hunks.Vec;           (* the hunks of the lines *)
+        spans: Spans.Vec;           (* the changed words of the lines that have them *)
+        oldEnds*, newEnds*: BOOL;   (* the text ends in a line feed *)
+        added*, removed*: INT;      (* lines *)
+    end;
+
+    (* What the algorithm works on: two runs of line numbers, and which
+       of them it took out. *)
+    Work = record
+        a, b: []INT;                (* each line as the number of its kind *)
+        gone, come: []BOOL;         (* removed from a, added from b *)
+    end;
+
+(* An empty diff. *)
+proc init*(var d: Diff);
+begin
+    Buf.init(d.old, Heap.heap);
+    Buf.init(d.new, Heap.heap);
+    Lines.init(d.lines, Heap.heap);
+    Hunks.init(d.hunks, Heap.heap);
+    Spans.init(d.spans, Heap.heap);
+end;
+
+(* The diff's memory given back. *)
+proc done*(var d: Diff);
+begin
+    Buf.done(d.old);
+    Buf.done(d.new);
+    Lines.done(d.lines);
+    Hunks.done(d.hunks);
+    Spans.done(d.spans);
+end;
+
+(* The lines of both texts, in order. *)
+proc lines*(const d: Diff): []Line;
+begin
+    return Lines.all(d.lines);
+end;
+
+(* The hunks of the lines. *)
+proc hunks*(const d: Diff): []Hunk;
+begin
+    return Hunks.all(d.hunks);
+end;
+
+(* The spans of line i: the bytes that changed within it. *)
+proc spans*(const d: Diff; i: INT): []Span;
+var l: Line;
+begin
+    l := Lines.all(d.lines)[i];
+    return Spans.all(d.spans)[l.spans..l.spans + l.nspans];
+end;
+
+(* text cut into its lines, without their line feeds, pushed onto v;
+   whether it ended in a line feed. An empty text has no lines. *)
+proc split(text: []const U8; var v: Ints.Vec; var starts: Ints.Vec): BOOL;
+var i, start: INT;
+begin
+    start := 0;
+    for i := 0 to LEN(text) - 1 do
+        if text[i] = 10 then
+            Ints.push(starts, start);
+            Ints.push(v, i);
+            start := i + 1;
+        end;
+    end;
+    if start < LEN(text) then
+        Ints.push(starts, start);
+        Ints.push(v, LEN(text));
+        return false;
+    end;
+    return true;
+end;
+
+(* a[a0..a1] against b[b0..b1] diffed, as defined below; bisect calls it
+   for each side of the middle snake. *)
+proc diff(var w: Work; a0, a1, b0, b1: INT); forward;
+
+(* The middle snake of a[a0..a1] and b[b0..b1] found, and each side of
+   it diffed; with no line in common, all of a removed and b added.
+   This is diff-match-patch's bisect, after Myers's paper, on numbers. *)
+proc bisect(var w: Work; a0, a1, b0, b1: INT);
+var n, m, max, offset, size, delta, d, k1, k2, k1start, k1end, k2start, k2end, k1off, k2off, x1, y1, x2, y2, i: INT;
+    v1, v2: ^INT; front: BOOL;
+begin
+    n := a1 - a0;
+    m := b1 - b0;
+    max := (n + m + 1) div 2;
+    offset := max;
+    size := 2 * max + 2;
+    v1 := ^INT(Mem.alloc(Heap.heap, size * SIZE(INT), SIZE(INT)));
+    v2 := ^INT(Mem.alloc(Heap.heap, size * SIZE(INT), SIZE(INT)));
+    if (v1 = nil) or (v2 = nil) then Rt.stop("Adiff: no memory"); end;
+    defer Mem.free(Heap.heap, ^U8(v1));
+    defer Mem.free(Heap.heap, ^U8(v2));
+    for i := 0 to size - 1 do v1[i] := -1; v2[i] := -1; end;
+    v1[offset + 1] := 0;
+    v2[offset + 1] := 0;
+    delta := n - m;
+    front := delta mod 2 # 0;      (* the paths meet going forward if delta is odd *)
+    k1start := 0;
+    k1end := 0;
+    k2start := 0;
+    k2end := 0;
+    for d := 0 to max - 1 do
+        (* forward, from the start *)
+        k1 := -d + k1start;
+        while k1 <= d - k1end do
+            k1off := offset + k1;
+            if (k1 = -d) or (k1 # d) and (v1[k1off - 1] < v1[k1off + 1]) then x1 := v1[k1off + 1];
+            else x1 := v1[k1off - 1] + 1;
+            end;
+            y1 := x1 - k1;
+            while (x1 < n) and (y1 < m) and (w.a[a0 + x1] = w.b[b0 + y1]) do INC(x1); INC(y1); end;
+            v1[k1off] := x1;
+            if x1 > n then k1end := k1end + 2;
+            elsif y1 > m then k1start := k1start + 2;
+            elsif front then
+                k2off := offset + delta - k1;
+                if (k2off >= 0) and (k2off < size) and (v2[k2off] # -1) then
+                    x2 := n - v2[k2off];
+                    if x1 >= x2 then
+                        diff(w, a0, a0 + x1, b0, b0 + y1);
+                        diff(w, a0 + x1, a1, b0 + y1, b1);
+                        return;
+                    end;
+                end;
+            end;
+            k1 := k1 + 2;
+        end;
+        (* back, from the end *)
+        k2 := -d + k2start;
+        while k2 <= d - k2end do
+            k2off := offset + k2;
+            if (k2 = -d) or (k2 # d) and (v2[k2off - 1] < v2[k2off + 1]) then x2 := v2[k2off + 1];
+            else x2 := v2[k2off - 1] + 1;
+            end;
+            y2 := x2 - k2;
+            while (x2 < n) and (y2 < m) and (w.a[a1 - x2 - 1] = w.b[b1 - y2 - 1]) do INC(x2); INC(y2); end;
+            v2[k2off] := x2;
+            if x2 > n then k2end := k2end + 2;
+            elsif y2 > m then k2start := k2start + 2;
+            elsif not front then
+                k1off := offset + delta - k2;
+                if (k1off >= 0) and (k1off < size) and (v1[k1off] # -1) then
+                    x1 := v1[k1off];
+                    y1 := offset + x1 - k1off;
+                    x2 := n - x2;
+                    if x1 >= x2 then
+                        diff(w, a0, a0 + x1, b0, b0 + y1);
+                        diff(w, a0 + x1, a1, b0 + y1, b1);
+                        return;
+                    end;
+                end;
+            end;
+            k2 := k2 + 2;
+        end;
+    end;
+    (* nothing in common *)
+    for i := a0 to a1 - 1 do w.gone[i] := true; end;
+    for i := b0 to b1 - 1 do w.come[i] := true; end;
+end;
+
+(* a[a0..a1] against b[b0..b1]: the ends alike taken off, then what is
+   left given to bisect. *)
+proc diff(var w: Work; a0, a1, b0, b1: INT);
+var i: INT;
+begin
+    while (a0 < a1) and (b0 < b1) and (w.a[a0] = w.b[b0]) do INC(a0); INC(b0); end;
+    while (a0 < a1) and (b0 < b1) and (w.a[a1 - 1] = w.b[b1 - 1]) do DEC(a1); DEC(b1); end;
+    if a0 = a1 then
+        for i := b0 to b1 - 1 do w.come[i] := true; end;
+        return;
+    end;
+    if b0 = b1 then
+        for i := a0 to a1 - 1 do w.gone[i] := true; end;
+        return;
+    end;
+    bisect(w, a0, a1, b0, b1);
+end;
+
+(* The numbers a and b diffed: which of a are gone, which of b come.
+   gone and come have their lengths, and are false. *)
+proc numbers(a, b: []INT; gone, come: []BOOL);
+var w: Work;
+begin
+    w := {a: a, b: b, gone: gone, come: come};
+    diff(w, 0, LEN(a), 0, LEN(b));
+end;
+
+(* Sliding, as git's xdiff does it (xdl_change_compact, without its
+   indent heuristic). Where a run of changed lines could stand higher
+   or lower with the same lines changed, as an added line among lines
+   alike can, git puts it as low as it can go, then back up to line up
+   with a run of changes in the other file, if one is passed on the
+   way. Doing the same gives the hunks git gives, and GitHub, whose
+   diffs are git's.
+
+   A group is a run of changed lines in one file, empty or not, between
+   two unchanged lines; the unchanged lines pair the two files' groups
+   one with one, so moving to the next group in one file is moving to
+   the next in the other. *)
+type Group = record start, stop: INT; end;
+
+(* The group starting at g's start, as far as its changes go. *)
+proc groupEnd(changed: []BOOL; var g: Group);
+begin
+    while (g.stop < LEN(changed)) and changed[g.stop] do INC(g.stop); end;
+end;
+
+(* The group after g; false at the end. *)
+proc groupNext(changed: []BOOL; var g: Group): BOOL;
+begin
+    if g.stop = LEN(changed) then return false; end;
+    g.start := g.stop + 1;
+    g.stop := g.start;
+    groupEnd(changed, g);
+    return true;
+end;
+
+(* The group before g; false at the start. *)
+proc groupPrevious(changed: []BOOL; var g: Group): BOOL;
+begin
+    if g.start = 0 then return false; end;
+    g.stop := g.start - 1;
+    g.start := g.stop;
+    while (g.start > 0) and changed[g.start - 1] do DEC(g.start); end;
+    return true;
+end;
+
+(* g moved a line down, if the line after it is its first line's twin,
+   joining the group after it if they meet; false if it can't move. *)
+proc slideDown(ids: []INT; changed: []BOOL; var g: Group): BOOL;
+begin
+    if (g.stop < LEN(changed)) and (ids[g.start] = ids[g.stop]) then
+        changed[g.start] := false;
+        INC(g.start);
+        changed[g.stop] := true;
+        INC(g.stop);
+        groupEnd(changed, g);
+        return true;
+    end;
+    return false;
+end;
+
+(* g moved a line up, if the line before it is its last line's twin;
+   false if it can't move. *)
+proc slideUp(ids: []INT; changed: []BOOL; var g: Group): BOOL;
+begin
+    if (g.start > 0) and (ids[g.start - 1] = ids[g.stop - 1]) then
+        DEC(g.start);
+        changed[g.start] := true;
+        DEC(g.stop);
+        changed[g.stop] := false;
+        while (g.start > 0) and changed[g.start - 1] do DEC(g.start); end;
+        return true;
+    end;
+    return false;
+end;
+
+(* The changes of one file slid, as git slides them, the other file's
+   groups kept in step. *)
+proc compact(ids: []INT; changed: []BOOL; otherChanged: []BOOL);
+var g, go: Group; size, earliest, matching: INT;
+begin
+    g := {};
+    go := {};
+    groupEnd(changed, g);
+    groupEnd(otherChanged, go);
+    while true do
+        if g.stop # g.start then
+            repeat
+                size := g.stop - g.start;
+                matching := -1;
+                (* as high as it goes, the other file's groups going up with it *)
+                while slideUp(ids, changed, g) do _ := groupPrevious(otherChanged, go); end;
+                earliest := g.stop;
+                if go.stop > go.start then matching := g.stop; end;
+                (* then as low as it goes *)
+                while slideDown(ids, changed, g) do
+                    _ := groupNext(otherChanged, go);
+                    if go.stop > go.start then matching := g.stop; end;
+                end;
+            until size = g.stop - g.start;
+            if (g.stop # earliest) and (matching # -1) then
+                (* back up to line up with the other file's last group of changes *)
+                while go.stop = go.start do
+                    _ := slideUp(ids, changed, g);
+                    _ := groupPrevious(otherChanged, go);
+                end;
+            end;
+        end;
+        if not groupNext(changed, g) then return; end;
+        _ := groupNext(otherChanged, go);
+    end;
+end;
+
+(* An array of n BOOLs, false, from the heap. *)
+proc flags(n: INT): []BOOL;
+var p: ^BOOL; i: INT;
+begin
+    if n = 0 then return p[0..0]; end;
+    p := ^BOOL(Mem.alloc(Heap.heap, n, 1));
+    if p = nil then Rt.stop("Adiff: no memory"); end;
+    for i := 0 to n - 1 do p[i] := false; end;
+    return p[0..n];
+end;
+
+(* The numbers of a's and b's lines, each distinct line one number. *)
+proc number(var ids: Ids.Map; text: []const U8; ends, starts: []INT; var out: Ints.Vec);
+var i, id: INT; ok: BOOL; s: []const U8;
+begin
+    for i := 0 to LEN(ends) - 1 do
+        s := text[starts[i]..ends[i]];
+        id, ok := Ids.get(ids, s);
+        if not ok then
+            id := ids.len;
+            if not Ids.put(ids, s, id) then Rt.stop("Adiff: no memory"); end;
+        end;
+        Ints.push(out, id);
+    end;
+end;
+
+(* The kinds of a byte, for cutting words. *)
+const
+    Blank = 0;      (* a space or tab *)
+    Letter = 1;     (* a letter, digit, _ or any byte past ASCII *)
+    Other = 2;      (* any other byte: a word of its own *)
+
+(* The kind of byte c. *)
+proc wordKind(c: U8): INT;
+begin
+    if (c = ' ') or (c = '\t') then return Blank; end;
+    if (c >= 'a') and (c <= 'z') or (c >= 'A') and (c <= 'Z') or (c >= '0') and (c <= '9') or (c = '_') or (c >= 80H) then
+        return Letter;
+    end;
+    return Other;
+end;
+
+(* The words of s: runs of letters, digits and _ (and anything past
+   ASCII), runs of blanks, and each other byte alone; their ends pushed
+   onto v. *)
+proc words(s: []const U8; var v: Ints.Vec);
+var i, kind: INT;
+begin
+    i := 0;
+    while i < LEN(s) do
+        kind := wordKind(s[i]);
+        INC(i);
+        if kind # Other then
+            while (i < LEN(s)) and (wordKind(s[i]) = kind) do INC(i); end;
+        end;
+        Ints.push(v, i);
+    end;
+end;
+
+(* Line i's spans: its words that changed, ends their ends, joined
+   where they touch. *)
+proc mark(var d: Diff; i: INT; ends: []INT; changed: []BOOL);
+var k, lo, start: INT; l: ^Line; open: BOOL;
+begin
+    l := SYSTEM.ADR(Lines.all(d.lines)[i]);
+    l^.spans := d.spans.len;
+    l^.nspans := 0;
+    lo := 0;
+    open := false;
+    start := 0;
+    for k := 0 to LEN(ends) - 1 do
+        if changed[k] and not open then start := lo; open := true; end;
+        if not changed[k] and open then
+            Spans.push(d.spans, {lo: start, hi: lo});
+            INC(l^.nspans);
+            open := false;
+        end;
+        lo := ends[k];
+    end;
+    if open then
+        Spans.push(d.spans, {lo: start, hi: lo});
+        INC(l^.nspans);
+    end;
+end;
+
+(* The spans of the lines x and y, a removed line and the added one it
+   pairs with: the words of each that the other hasn't, joined where
+   they touch. None if the two have less than half their bytes in
+   common. *)
+proc pair(var d: Diff; x, y: INT);
+var all: []Line; ea, eb, ids: Ints.Vec; map: Ids.Map; a, b: Ints.Vec; gone, come: []BOOL; i, lo, same, total: INT;
+    sa, sb: []const U8; starts: Ints.Vec;
+begin
+    all := Lines.all(d.lines);
+    sa := all[x].text;
+    sb := all[y].text;
+    if (LEN(sa) = 0) or (LEN(sb) = 0) then return; end;
+    Ints.init(ea, Heap.heap);
+    defer Ints.done(ea);
+    Ints.init(eb, Heap.heap);
+    defer Ints.done(eb);
+    Ints.init(a, Heap.heap);
+    defer Ints.done(a);
+    Ints.init(b, Heap.heap);
+    defer Ints.done(b);
+    Ints.init(starts, Heap.heap);
+    defer Ints.done(starts);
+    Ints.init(ids, Heap.heap);
+    defer Ints.done(ids);
+    Ids.init(map, Heap.heap);
+    defer Ids.done(map);
+    words(sa, ea);
+    words(sb, eb);
+    Ints.push(starts, 0);
+    for i := 0 to ea.len - 2 do Ints.push(starts, Ints.all(ea)[i]); end;
+    number(map, sa, Ints.all(ea), Ints.all(starts), a);
+    Ints.reset(starts);
+    Ints.push(starts, 0);
+    for i := 0 to eb.len - 2 do Ints.push(starts, Ints.all(eb)[i]); end;
+    number(map, sb, Ints.all(eb), Ints.all(starts), b);
+    gone := flags(a.len);
+    come := flags(b.len);
+    numbers(Ints.all(a), Ints.all(b), gone, come);
+    (* the bytes in common, of both *)
+    same := 0;
+    lo := 0;
+    for i := 0 to a.len - 1 do
+        if not gone[i] then same := same + Ints.all(ea)[i] - lo; end;
+        lo := Ints.all(ea)[i];
+    end;
+    total := LEN(sa);
+    if LEN(sb) > total then total := LEN(sb); end;
+    if 2 * same >= total then
+        mark(d, x, Ints.all(ea), gone);
+        mark(d, y, Ints.all(eb), come);
+    end;
+    if LEN(gone) > 0 then Mem.free(Heap.heap, ^U8(SYSTEM.ADR(gone[0]))); end;
+    if LEN(come) > 0 then Mem.free(Heap.heap, ^U8(SYSTEM.ADR(come[0]))); end;
+end;
+
+(* The heading of a hunk that starts at line n of the old text, from 1:
+   the nearest line before it that starts with a letter, _ or $. *)
+proc heading(const d: Diff; first: INT): []const U8;
+var all: []Line; i: INT; s: []const U8; c: U8;
+begin
+    all := Lines.all(d.lines);
+    for i := first - 1 to 0 by -1 do
+        if all[i].kind # added then
+            s := all[i].text;
+            if LEN(s) > 0 then
+                c := s[0];
+                if (c >= 'a') and (c <= 'z') or (c >= 'A') and (c <= 'Z') or (c = '_') or (c = '$') then
+                    if LEN(s) > Heading then s := s[0..Heading]; end;
+                    return Str.trimRight(s);
+                end;
+            end;
+        end;
+    end;
+    return "";
+end;
+
+(* The number, in the old text or the new, of the last line before
+   lines[i] that the text has; 0 at the start. *)
+proc lineBefore(all: []Line; i: INT; old: BOOL): INT;
+var j: INT;
+begin
+    for j := i - 1 to 0 by -1 do
+        if old and (all[j].kind # added) then return all[j].old; end;
+        if not old and (all[j].kind # removed) then return all[j].new; end;
+    end;
+    return 0;
+end;
+
+(* The hunks of the lines: runs of changes with context lines around
+   them, joined when their contexts meet or overlap. *)
+proc group(var d: Diff; context: INT);
+var all: []Line; i, n, first, last, j: INT; h: Hunk;
+begin
+    all := Lines.all(d.lines);
+    n := LEN(all);
+    i := 0;
+    while i < n do
+        while (i < n) and (all[i].kind = same) do INC(i); end;
+        if i = n then return; end;
+        first := i - context;
+        if first < 0 then first := 0; end;
+        (* on through changes, and through runs of same lines short enough
+           that the context after one change meets the next's *)
+        last := i;
+        while last < n do
+            while (last < n) and (all[last].kind # same) do INC(last); end;
+            j := last;
+            while (j < n) and (all[j].kind = same) do INC(j); end;
+            if (j < n) and (j - last <= 2 * context) then last := j; else break; end;
+        end;
+        last := last + context;
+        if last > n then last := n; end;
+        h := {first: first, last: last};
+        h.oldStart := 0;
+        h.newStart := 0;
+        for j := first to last - 1 do
+            if all[j].kind # added then
+                if h.oldStart = 0 then h.oldStart := all[j].old; end;
+                INC(h.oldCount);
+            end;
+            if all[j].kind # removed then
+                if h.newStart = 0 then h.newStart := all[j].new; end;
+                INC(h.newCount);
+            end;
+        end;
+        (* an empty side starts, as git writes it, at the line before *)
+        if h.oldCount = 0 then h.oldStart := lineBefore(all, first, true); end;
+        if h.newCount = 0 then h.newStart := lineBefore(all, first, false); end;
+        h.heading := heading(d, first);
+        Hunks.push(d.hunks, h);
+        i := last;
+    end;
+end;
+
+(* The lines of both texts pushed onto d's, in order: at each place the
+   removed first, then the added. gone and come say which of the old
+   text's lines are removed and which of the new's are added; sa, ea
+   and sb, eb are the starts and ends of the lines in a and b. *)
+proc buildLines(var d: Diff; a, b: []const U8; sa, ea, sb, eb: []INT; gone, come: []BOOL);
+var x, y: INT;
+begin
+    x := 0;
+    y := 0;
+    while (x < LEN(sa)) or (y < LEN(sb)) do
+        if (x < LEN(sa)) and gone[x] then
+            Lines.push(d.lines, {kind: removed, old: x + 1, text: a[sa[x]..ea[x]]});
+            INC(x);
+            INC(d.removed);
+        elsif (y < LEN(sb)) and come[y] then
+            Lines.push(d.lines, {kind: added, new: y + 1, text: b[sb[y]..eb[y]]});
+            INC(y);
+            INC(d.added);
+        else
+            Lines.push(d.lines, {kind: same, old: x + 1, new: y + 1, text: b[sb[y]..eb[y]]});
+            INC(x);
+            INC(y);
+        end;
+    end;
+end;
+
+(* Each run of removed lines paired with the run of added lines after
+   it, line by line, and each pair diffed by words. *)
+proc pairRuns(var d: Diff);
+var all: []Line; i, j, k, rx, ry: INT;
+begin
+    all := Lines.all(d.lines);
+    i := 0;
+    while i < LEN(all) do
+        if all[i].kind = removed then
+            j := i;
+            while (j < LEN(all)) and (all[j].kind = removed) do INC(j); end;
+            k := j;
+            while (k < LEN(all)) and (all[k].kind = added) do INC(k); end;
+            rx := i;
+            ry := j;
+            while (rx < j) and (ry < k) do
+                pair(d, rx, ry);
+                all := Lines.all(d.lines);
+                INC(rx);
+                INC(ry);
+            end;
+            i := k;
+        else
+            INC(i);
+        end;
+    end;
+end;
+
+(* The diff of old and new, with context lines of context around each
+   change. *)
+proc compute*(var d: Diff; old, new: []const U8; context: INT);
+var ea, sa, eb, sb, na, nb: Ints.Vec; ids: Ids.Map; gone, come: []BOOL; a, b: []const U8;
+begin
+    Buf.reset(d.old);
+    Buf.reset(d.new);
+    Lines.reset(d.lines);
+    Hunks.reset(d.hunks);
+    Spans.reset(d.spans);
+    d.added := 0;
+    d.removed := 0;
+    Buf.str(d.old, old);
+    Buf.str(d.new, new);
+    a := Buf.bytes(d.old);
+    b := Buf.bytes(d.new);
+    Ints.init(ea, Heap.heap);
+    defer Ints.done(ea);
+    Ints.init(sa, Heap.heap);
+    defer Ints.done(sa);
+    Ints.init(eb, Heap.heap);
+    defer Ints.done(eb);
+    Ints.init(sb, Heap.heap);
+    defer Ints.done(sb);
+    Ints.init(na, Heap.heap);
+    defer Ints.done(na);
+    Ints.init(nb, Heap.heap);
+    defer Ints.done(nb);
+    d.oldEnds := split(a, ea, sa);
+    d.newEnds := split(b, eb, sb);
+    Ids.init(ids, Heap.heap);
+    defer Ids.done(ids);
+    number(ids, a, Ints.all(ea), Ints.all(sa), na);
+    number(ids, b, Ints.all(eb), Ints.all(sb), nb);
+    (* a last line without its line feed isn't the same as one with it *)
+    if not d.oldEnds and (na.len > 0) then Ints.all(na)[na.len - 1] := -1 - na.len; end;
+    if not d.newEnds and (nb.len > 0) then Ints.all(nb)[nb.len - 1] := -2 - nb.len - na.len; end;
+    gone := flags(na.len);
+    come := flags(nb.len);
+    numbers(Ints.all(na), Ints.all(nb), gone, come);
+    compact(Ints.all(na), gone, come);
+    compact(Ints.all(nb), come, gone);
+    buildLines(d, a, b, Ints.all(sa), Ints.all(ea), Ints.all(sb), Ints.all(eb), gone, come);
+    if LEN(gone) > 0 then Mem.free(Heap.heap, ^U8(SYSTEM.ADR(gone[0]))); end;
+    if LEN(come) > 0 then Mem.free(Heap.heap, ^U8(SYSTEM.ADR(come[0]))); end;
+    pairRuns(d);
+    group(d, context);
+end;
+
+(* The number of the old text's last line; 0 if it has none. *)
+proc lastOld(const d: Diff): INT;
+var all: []Line; i: INT;
+begin
+    all := Lines.all(d.lines);
+    for i := LEN(all) - 1 to 0 by -1 do
+        if all[i].kind # added then return all[i].old; end;
+    end;
+    return 0;
+end;
+
+(* The number of the new text's last line, as lastOld gives the old's. *)
+proc lastNew(const d: Diff): INT;
+var all: []Line; i: INT;
+begin
+    all := Lines.all(d.lines);
+    for i := LEN(all) - 1 to 0 by -1 do
+        if all[i].kind # removed then return all[i].new; end;
+    end;
+    return 0;
+end;
+
+(* A hunk's range, as git writes it: start,count, or start alone for a
+   count of 1; added to b. *)
+proc range*(var b: Buf.Buf; start, count: INT);
+var d: [20]U8; k: INT;
+begin
+    d, k := Str.fromInt(start);
+    Buf.str(b, d[0..k]);
+    if count # 1 then
+        Buf.add(b, ',');
+        d, k := Str.fromInt(count);
+        Buf.str(b, d[0..k]);
+    end;
+end;
+
+(* The diff written as git diff writes its hunks, added to b: each
+   hunk's header and its lines, with -, + or a space before each. *)
+proc write*(const d: Diff; var b: Buf.Buf);
+var all: []Line; hs: []Hunk; h, i, lastO, lastN: INT;
+begin
+    all := Lines.all(d.lines);
+    hs := Hunks.all(d.hunks);
+    lastO := lastOld(d);
+    lastN := lastNew(d);
+    for h := 0 to LEN(hs) - 1 do
+        Buf.str(b, "@@ -");
+        range(b, hs[h].oldStart, hs[h].oldCount);
+        Buf.str(b, " +");
+        range(b, hs[h].newStart, hs[h].newCount);
+        Buf.str(b, " @@");
+        if LEN(hs[h].heading) > 0 then
+            Buf.add(b, ' ');
+            Buf.str(b, hs[h].heading);
+        end;
+        Buf.add(b, 10);
+        for i := hs[h].first to hs[h].last - 1 do
+            match all[i].kind of
+            | same: Buf.add(b, ' ');
+            | removed: Buf.add(b, '-');
+            | added: Buf.add(b, '+');
+            end;
+            Buf.str(b, all[i].text);
+            Buf.add(b, 10);
+            if (all[i].kind # added) and not d.oldEnds and (all[i].old = lastO)
+                or (all[i].kind # removed) and not d.newEnds and (all[i].new = lastN) then
+                Buf.str(b, "\\ No newline at end of file\n");
+            end;
+        end;
+    end;
+end;
+
+(* The words that changed between old, a line removed, and new, the
+   line added in its place, as spans of each: none for a pair with too
+   little in common. d is used to find them, and the spans last until
+   it is used again. *)
+proc changed*(var d: Diff; old, new: []const U8): ([]Span, []Span);
+var all: []Line; i: INT; gone, come: []Span;
+begin
+    compute(d, old, new, Context);
+    all := lines(d);
+    for i := 0 to LEN(all) - 1 do
+        if all[i].kind = removed then gone := spans(d, i);
+        elsif all[i].kind = added then come := spans(d, i);
+        end;
+    end;
+    return gone, come;
+end;
+
+(* For the test *)
+
+(* what is being tested failed: got is said, and what was wanted *)
+proc fail(what, got, want: []const U8);
+begin
+    Out.str("Adiff: ");
+    Out.str(what);
+    Out.str(":\n");
+    Out.str(got);
+    Out.str("not\n");
+    Out.str(want);
+    Rt.exit(1);
+end;
+
+(* old against new, written, must be want. *)
+proc expect(what, old, new, want: []const U8);
+var d: Diff; b: Buf.Buf;
+begin
+    init(d);
+    defer done(d);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    compute(d, old, new, Context);
+    write(d, b);
+    if Buf.bytes(b) # want then fail(what, Buf.bytes(b), want); end;
+end;
+
+(* The spans of line i of the diff of old and new, as lo-hi pairs. *)
+proc expectSpans(old, new: []const U8; i: INT; want: []const U8);
+var d: Diff; b: Buf.Buf; s: []Span; k: INT; n: [20]U8; m: INT;
+begin
+    init(d);
+    defer done(d);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    compute(d, old, new, Context);
+    s := spans(d, i);
+    for k := 0 to LEN(s) - 1 do
+        n, m := Str.fromInt(s[k].lo);
+        Buf.str(b, n[0..m]);
+        Buf.add(b, '-');
+        n, m := Str.fromInt(s[k].hi);
+        Buf.str(b, n[0..m]);
+        Buf.add(b, ' ');
+    end;
+    Buf.add(b, 10);
+    if Buf.bytes(b) # want then fail("spans", Buf.bytes(b), want); end;
+end;
+
+(* The words that changed between old and new, as changed gives them, as
+   lo-hi pairs, a line for each. *)
+proc expectWords(old, new, want: []const U8);
+var d: Diff; b: Buf.Buf; gone, come: []Span; k: INT;
+begin
+    init(d);
+    defer done(d);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    gone, come := changed(d, old, new);
+    for k := 0 to LEN(gone) - 1 do Fmt.write(b, "{}-{} ", [Fmt.int(gone[k].lo), Fmt.int(gone[k].hi)]); end;
+    Buf.add(b, 10);
+    for k := 0 to LEN(come) - 1 do Fmt.write(b, "{}-{} ", [Fmt.int(come[k].lo), Fmt.int(come[k].hi)]); end;
+    Buf.add(b, 10);
+    if Buf.bytes(b) # want then fail("words", Buf.bytes(b), want); end;
+end;
+
+proc main*;
+begin
+    expect("nothing changed", "a\nb\n", "a\nb\n", "");
+    expect("a line added", "a\nb\nc\n", "a\nb\nx\nc\n", "@@ -1,3 +1,4 @@\n a\n b\n+x\n c\n");
+    expect("a line removed", "a\nb\nc\n", "a\nc\n", "@@ -1,3 +1,2 @@\n a\n-b\n c\n");
+    expect("a line changed", "one\ntwo\nthree\n", "one\n2\nthree\n", "@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n");
+    expect("a new file", "", "a\nb\n", "@@ -0,0 +1,2 @@\n+a\n+b\n");
+    expect("a file gone", "a\n", "", "@@ -1 +0,0 @@\n-a\n");
+    expect("no line feed at the end", "a\nb", "a\nb\n",
+        "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n");
+    expect("two hunks, and a heading",
+        "proc a;\n1\n2\n3\n4\n5\n6\n7\n8\n9\nproc b;\n10\n11\n12\n13\n14\n",
+        "proc a;\n1\nX\n3\n4\n5\n6\n7\n8\n9\nproc b;\n10\n11\nY\n13\n14\n",
+        "@@ -1,6 +1,6 @@\n proc a;\n 1\n-2\n+X\n 3\n 4\n 5\n@@ -11,6 +11,6 @@ proc a;\n proc b;\n 10\n 11\n-12\n+Y\n 13\n 14\n");
+    expect("hunks that meet are one", "1\n2\n3\n4\n5\n6\n7\n8\n", "1\nX\n3\n4\n5\n6\nY\n8\n",
+        "@@ -1,8 +1,8 @@\n 1\n-2\n+X\n 3\n 4\n 5\n 6\n-7\n+Y\n 8\n");
+    expectSpans("let total = a + b;", "let total = a - b;", 0, "14-15 \n");
+    expectSpans("let total = a + b;", "let total = a - b;", 1, "14-15 \n");
+    expectSpans("abc", "xyz", 0, "\n");
+    expectWords("let total = a + b;", "let total = a - b;", "14-15 \n14-15 \n");
+    expectWords("x := 1;", "", "\n\n");
+end;
+
+end Adiff.

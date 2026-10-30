@@ -855,7 +855,8 @@ Options that would write files, run external diff or textconv
 programs, or compare files outside the repository are refused.
 .It Ic edit
 An exact, unique replacement, or a new file.
-Its diff is shown and needs your yes.
+Its diff is shown and needs your yes: a unified diff of the file before
+and after, with three lines of context and the file's line numbers.
 If
 .Cm lsp. Ns Ar ext
 names a language server for the file's type, the result ends with what

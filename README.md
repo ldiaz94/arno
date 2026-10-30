@@ -266,7 +266,9 @@ without asking: the project, a directory with a mark, at most two
 levels up. `Afind` finds, searches and outlines files; `Arun` runs a
 program to its end and catches what it writes; `Ahtml` turns a page to
 text; `Aattach` makes the `@paths`. `Atools` lists the tools and runs
-a call, asking when it must. `Alsp` asks the language server config
+a call, asking when it must. `Adiff`, huh's Myers diff, gives an edit
+the unified diff it is shown as, and the screen the words that changed
+within a line. `Alsp` asks the language server config
 names for a file's type (`lsp.ts = ...`, on rlsp) what it finds wrong
 with a file just edited, for the edit's result, and where a name is
 defined and used, for `def` and `refs`.
