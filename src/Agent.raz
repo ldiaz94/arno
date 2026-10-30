@@ -134,6 +134,7 @@ type
         talk: Thread.Mutex;   (* the lead's: held by the worker telling its front *)
         stopAt: F64;          (* spent at which the lead's turn has used its budget; 0 for no limit *)
         allowance: F64;       (* dollars a worker may spend; 0 for no limit *)
+        request: []U8;        (* the human's message that began the lead's turn, as typed, from Heap; "" before one *)
         reports: Strs.Vec;    (* what the turn's workers reported, each its task and its report, from Heap *)
         forks: INT;           (* the number of the last worker given a copy of its own *)
         kept: INT;            (* the number of the last report kept in the scratch *)
@@ -210,6 +211,7 @@ const
     MaxFan = 4;
     MaxReports = 4;     (* earlier reports a brief carries, the newest *)
     MaxReport = 4000;   (* bytes of each *)
+    MaxRequest = 4000;   (* bytes of the human's message a brief carries *)
     Repeated = "not run: this exact call was already made in this turn and its result " +
         "is above. Use that result, or try something different.";
     Interrupted = "not run: interrupted by the human";
@@ -466,9 +468,18 @@ end;
 
 proc turn*(var a: Agent; var c: Astore.Conv; var why: Buf.Buf): ERROR; forward;
 
+(* s cut to n bytes at most, back to where a character starts. *)
+proc cut(s: []const U8; n: INT): []const U8;
+begin
+    if LEN(s) <= n then return s; end;
+    while (n > 0) and (s[n] & 0C0H = 80H) do DEC(n); end;   (* inside a character *)
+    return s[0..n];
+end;
+
 (* The brief of a worker, from delegate's arguments p, added to b: the
    task, the files, when it is done, its role's instructions (role, ""
-   for none), and what earlier workers of the turn reported. *)
+   for none), the human's message that began the turn, as context, and
+   what earlier workers of the turn reported. *)
 proc brief(const a: Agent; const p: Atools.Args; task, role: []const U8; var b: Buf.Buf);
 var files: [][]const U8; reports: [][]U8; i: INT;
 begin
@@ -480,6 +491,12 @@ begin
         Fmt.write(b, "\n\nDone when: {}", [Fmt.str(Str.trim(Atools.str(p, "done_when")))]);
     end;
     if LEN(role) > 0 then Fmt.write(b, "\n\nYour role, standing instructions for this kind of work:\n{}", [Fmt.str(role)]); end;
+    (* the lead may have narrowed the human's question in its task, and
+       the worker, not seeing it, answers the narrower one *)
+    if LEN(a.request) > 0 then
+        Buf.str(b, "\n\nThe human's request that began this work, for context (your task is the one above):\n");
+        Buf.str(b, cut(a.request, MaxRequest));
+    end;
     (* what earlier workers of this turn found goes along, so that the
        next one needn't find it again: a worker blind to a survey's
        findings wrote its own rule for what a unit already did *)
@@ -1125,6 +1142,8 @@ begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     if not a.working then
+        Str.free(Heap.heap, a.request);
+        a.request := Amsg.keep(Msgs.all(c.msgs)[c.msgs.len - 1].text);
         if a.prefetch then attach(a, c); end;
         for i := 0 to a.reports.len - 1 do Str.free(Heap.heap, Strs.all(a.reports)[i]); end;
         Strs.reset(a.reports);
@@ -1251,6 +1270,37 @@ begin
     return true;
 end;
 
+(* A brief carries the human's message, cut on a character. *)
+proc testBrief(): BOOL;
+var a: Agent; p: Awire.Prov; args: Atools.Args; doc: Json.Doc; b: Buf.Buf; i: INT;
+begin
+    init(a, SYSTEM.ADR(p), {});
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    if not Json.init(SYSTEM.ADR(doc), SYSTEM.ADR(a.mem.base)) then return false; end;
+    defer Json.done(SYSTEM.ADR(doc));
+    if not Atools.parse(SYSTEM.ADR(doc), SYSTEM.ADR(a.mem.base), "{}", args) then return false; end;
+    a.request := Amsg.keep("can a user reach data that isn't theirs?");
+    brief(a, args, "t", "", b);
+    if Str.find(Buf.bytes(b), "your task is the one above):\ncan a user reach data that isn't theirs?") < 0 then
+        Out.str("Agent: a brief holds the request\n");
+        return false;
+    end;
+    (* one byte, then two-byte characters: the cut at MaxRequest falls inside one *)
+    Str.free(Heap.heap, a.request);
+    Buf.reset(b);
+    Buf.str(b, "a");
+    for i := 1 to MaxRequest do Buf.str(b, "\xC3\xA9"); end;
+    a.request := Amsg.keep(Buf.bytes(b));
+    Buf.reset(b);
+    brief(a, args, "t", "", b);
+    if Str.hasSuffix(Buf.bytes(b), "\xC3") or (LEN(Buf.bytes(b)) > MaxRequest + 300) then
+        Out.str("Agent: a brief cuts a long request on a character\n");
+        return false;
+    end;
+    return true;
+end;
+
 proc main*: INT;
 var a: Agent; p: Awire.Prov; c: Astore.Conv; m: ^Amsg.Msg; long: Buf.Buf; i: INT; t: []const U8;
 begin
@@ -1294,7 +1344,7 @@ begin
         Out.str("Agent: prune, a report\n");
         return 1;
     end;
-    if not testPlan() or not testModel() then return 1; end;
+    if not testPlan() or not testModel() or not testBrief() then return 1; end;
     return 0;
 end;
 

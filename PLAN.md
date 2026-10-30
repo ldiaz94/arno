@@ -495,7 +495,7 @@ one or more commits that build with `-Werror`.
      the tool names in its text (Claude Code's `mcp__linear-server__...`
      for arno's `linear_...`), and claude.ai's synced skills, built on its
      own tools.
-   - [ ] The human's words in every brief. An audit's lead turned "can a
+   - [x] The human's words in every brief. An audit's lead turned "can a
      user reach data that isn't theirs" into briefs about "procedures
      that take an ID", and its workers, given the profile and sign-up
      routers, missed a user making themselves admin: the question had

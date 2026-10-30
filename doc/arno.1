@@ -897,7 +897,9 @@ conversation of its own on the model the step's
 names, one of
 .Cm workers ,
 or the first of them,
-with the brief, the reports of earlier workers of the turn (the
+with the brief, the human's message that began the turn, as context
+(its first 4000 bytes: a task narrowed in the delegating cannot hide
+what the work is for), the reports of earlier workers of the turn (the
 newest four) and the tools of the session less
 .Ic delegate
 and
