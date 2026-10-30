@@ -185,16 +185,17 @@ var
 
 (* A job's side: what it is told, put in the queue *)
 
-(* An event of sort s, with texts a, b and c, put in the queue, and the
-   loop woken to take it. *)
-proc post(s: Sort; a, b, c: []const U8; going: BOOL);
+(* An event of sort s said by who, with texts a, b and c, put in the
+   queue, and the loop woken to take it: a worker's question, which
+   comes while another may speak. *)
+proc postBy(who: INT; s: Sort; a, b, c: []const U8; going: BOOL);
 var e: ^Event;
 begin
     Thread.lock(mutex);
     e := Events.add(events);
     e^.sort := s;
     e^.going := going;
-    e^.who := speaking;
+    e^.who := who;
     Buf.init(e^.a, Heap.heap);
     Buf.init(e^.b, Heap.heap);
     Buf.init(e^.c, Heap.heap);
@@ -203,6 +204,16 @@ begin
     Buf.str(e^.c, c);
     Thread.unlock(mutex);
     TuiLoop.wake;
+end;
+
+(* An event of sort s, as postBy, said by who speaks now. *)
+proc post(s: Sort; a, b, c: []const U8; going: BOOL);
+var who: INT;
+begin
+    Thread.lock(mutex);
+    who := speaking;
+    Thread.unlock(mutex);
+    postBy(who, s, a, b, c, going);
 end;
 
 proc text(s: []const U8; _arg: ^U8);
@@ -283,10 +294,10 @@ begin
 end;
 
 (* The human asked question, after detail: one of keys. *)
-proc ask(q, detail, k: []const U8): U8;
+proc ask(who: INT; q, detail, k: []const U8): U8;
 begin
     if gone() then return 0; end;
-    post(asked, q, detail, k, false);
+    postBy(who, asked, q, detail, k, false);
     return answer();
 end;
 

@@ -348,7 +348,7 @@ begin
     if kept = "yes" then return true; end;
     if kept = "" then
         key := 0;
-        if h.ask # nil then key := h.ask("read them into every request?", "", "yn"); end;
+        if h.ask # nil then key := h.ask(h.who, "read them into every request?", "", "yn"); end;
         if key = 'y' then _ := Astore.setKeyed(ContextKept, Afence.root, "yes"); return true; end;
         if key # 0 then
             _ := Astore.setKeyed(ContextKept, Afence.root, "no");
@@ -549,12 +549,12 @@ begin
 end;
 
 (* The human who answers yes. *)
-proc yes(_question, _detail, _keys: []const U8): U8;
+proc yes(_who: INT; _question, _detail, _keys: []const U8): U8;
 begin
     return 'y';
 end;
 
-proc no(_question, _detail, _keys: []const U8): U8;
+proc no(_who: INT; _question, _detail, _keys: []const U8): U8;
 begin
     return 'n';
 end;

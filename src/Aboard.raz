@@ -355,18 +355,17 @@ begin
     e^.done := true;
 end;
 
-(* The diff a question about the newest call still running shows,
-   which opens it: the call that asks, whoever spoke since. *)
+(* The diff a question about the speaker's call running shows, which
+   opens it: the call that asks, as running finds it, whoever spoke
+   since; another worker's call is not the one. *)
 proc detail*(d: []const U8);
-var e: []Entry; i: INT;
+var e: ^Entry;
 begin
-    e := all();
-    i := LEN(e) - 1;
-    while (i >= 0) and ((e[i].kind # tool) or e[i].done) do DEC(i); end;
-    if i < 0 then return; end;
-    Buf.reset(e[i].detail);
-    Buf.str(e[i].detail, d);
-    e[i].open := true;
+    e := running();
+    if e = nil then return; end;
+    Buf.reset(e^.detail);
+    Buf.str(e^.detail, d);
+    e^.open := true;
 end;
 
 (* Every entry dropped. *)
@@ -1782,6 +1781,20 @@ begin
     reply(" a4");
     speak(0);
     ok := expectReplies("replies side by side", "1 a1 a2|2 b1 b2|1 a3 a4|2 b3|") and ok;
+    (* a worker's question opens its own call, not the newer call of
+       another worker waiting its turn *)
+    clear;
+    speak(1);
+    call("edit", "{}");
+    speak(2);
+    call("edit", "{}");
+    speak(1);
+    detail("-a\n+b");
+    speak(0);
+    if not all()[0].open or all()[1].open then
+        Out.str("Aboard: a worker's question opened another's call\n");
+        ok := false;
+    end;
     (* a diff: one line of ten changed, with its context, side by side
        when wide, one above the other when narrow, copied as its text *)
     ok := expectDiff("a diff, side by side", Ten, TenChanged, 160, 4, 90,

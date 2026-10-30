@@ -78,8 +78,8 @@ import SYSTEM;
 type
     (* What the human answers to question, shown detail first (a diff;
        "" for none): one of the bytes of keys, or 0 if there is nobody
-       to ask. *)
-    Ask* = proc(question, detail, keys: []const U8): U8;
+       to ask; who asks, 0 the lead or N worker N. *)
+    Ask* = proc(who: INT; question, detail, keys: []const U8): U8;
     (* After a no, why: a line, "" for none; good until the next call. *)
     Why* = proc(): []const U8;
 
@@ -89,6 +89,7 @@ type
         ask*: Ask;
         why*: Why;
         stopped*: proc: BOOL;   (* whether the human said to stop; or nil *)
+        who*: INT;              (* who asks: 0 the lead, N worker N *)
         arg*: ^U8;
     end;
 
@@ -551,7 +552,7 @@ begin
         Buf.str(out, ", and there is nobody to ask");
         return false;
     end;
-    match h.ask(Buf.bytes(q), "", "yna") of
+    match h.ask(h.who, Buf.bytes(q), "", "yna") of
     | 'y': return true;
     | 'a': Afence.grant(Buf.bytes(room)); return true;
     | else:
@@ -1141,7 +1142,7 @@ begin
         else
             Fmt.write(q, "run these {} commands? (a: always {})", [Fmt.int(LEN(c)), Fmt.str(x)]);
         end;
-        answer := h.ask(Buf.bytes(q), Buf.bytes(lines), "yna");
+        answer := h.ask(h.who, Buf.bytes(q), Buf.bytes(lines), "yna");
         if answer = 'a' then
             Buf.str(trust, x);
             Buf.add(trust, ' ');
@@ -1337,7 +1338,7 @@ begin
         Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
         return false;
     end;
-    if h.ask(question, detail, "yn") = 'y' then return true; end;
+    if h.ask(h.who, question, detail, "yn") = 'y' then return true; end;
     declined(h, "Nothing was changed: the file is as it was before.", out);
     return false;
 end;
@@ -2290,7 +2291,7 @@ begin
         Buf.init(shown, a.mem);
         Fmt.write(q, "run {}? (a: always {})", [Fmt.str(name), Fmt.str(name)]);
         Amsg.compact(a.d, a.v, shown);
-        answer := h.ask(Buf.bytes(q), cutAt(Buf.bytes(shown), MaxAsked), "yna");
+        answer := h.ask(h.who, Buf.bytes(q), cutAt(Buf.bytes(shown), MaxAsked), "yna");
         if answer = 'a' then
             Buf.add(trustTools, ' ');
             Buf.str(trustTools, name);
@@ -2584,7 +2585,7 @@ begin
     failed := true;
 end;
 
-proc human(_question, detail, _keys: []const U8): U8;
+proc human(_who: INT; _question, detail, _keys: []const U8): U8;
 begin
     INC(asked);
     shown := keep(detail);

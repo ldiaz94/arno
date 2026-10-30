@@ -248,7 +248,7 @@ end;
 
 (* The human's answer to question, after detail: one of keys, the first
    byte of a line of standard input; 'n' for any other, 0 at its end. *)
-proc asked(question, detail, keys: []const U8): U8;
+proc asked(_who: INT; question, detail, keys: []const U8): U8;
 var s: []const U8; more: BOOL;
 begin
     breakLine;

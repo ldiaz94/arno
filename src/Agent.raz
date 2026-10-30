@@ -823,9 +823,11 @@ begin
         w.n := n;
         w.agent.copy := SYSTEM.ADR(w.copy);
         w.agent.who := n;
+        w.agent.human.who := n;
     else
         INC(a.forks);   (* in the lead's zone it is still a worker, and has a number *)
         w.agent.who := a.forks;
+        w.agent.human.who := a.forks;
     end;
     Buf.reset(b);
     Fmt.write(b, "worker {}: {}", [Fmt.str(w.model), Fmt.str(w.task[0..min(LEN(w.task), 120)])]);
@@ -958,7 +960,7 @@ begin
     keys := "yn";
     if a.front.edit # nil then keys := "yne"; end;
     edited := false;
-    answer := a.human.ask("carry out this plan?", text, keys);
+    answer := a.human.ask(a.who, "carry out this plan?", text, keys);
     while answer = 'e' do
         mine, ok := a.front.edit(text);
         if ok and (LEN(Str.trim(mine)) > 0) and (Str.trim(mine) # text) then
@@ -967,7 +969,7 @@ begin
             text := Buf.bytes(revised);
             edited := true;
         end;
-        answer := a.human.ask("carry out this plan?", text, keys);
+        answer := a.human.ask(a.who, "carry out this plan?", text, keys);
     end;
     if (answer = 'y') and edited then
         Fmt.write(out, "{} the human edited the plan, then approved it; carry out their version, not yours:\n\n{}",
@@ -1221,12 +1223,12 @@ end;
 (* The module's test: prune, and build mode's plan. *)
 
 (* The human's answers to plan, in the test: yes, and no. *)
-proc yes(_question, _detail, _keys: []const U8): U8;
+proc yes(_who: INT; _question, _detail, _keys: []const U8): U8;
 begin
     return 'y';
 end;
 
-proc no(_question, _detail, _keys: []const U8): U8;
+proc no(_who: INT; _question, _detail, _keys: []const U8): U8;
 begin
     return 'n';
 end;

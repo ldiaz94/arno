@@ -262,7 +262,7 @@ end;
    asked; the refusal, the first key that isn't y, is what a cancel or
    an answer that is none of keys mean. A host gone, or that can't be
    asked, is nobody there: 0, which no answer kept takes for one. *)
-proc ask(question, detail, keys: []const U8): U8;
+proc ask(_who: INT; question, detail, keys: []const U8): U8;
 var no: U8; i: INT;
 begin
     no := 'n';

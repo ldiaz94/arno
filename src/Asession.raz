@@ -448,7 +448,7 @@ begin
     Fmt.write(s.out, "apply these changes to {} file(s) in {}?", [Fmt.int(n), Fmt.str(Afence.root)]);
     answer := 0;
     if s.agent.front.ask # nil then
-        answer := s.agent.front.ask(Buf.bytes(s.out), Buf.bytes(shown), "yn");
+        answer := s.agent.front.ask(0, Buf.bytes(s.out), Buf.bytes(shown), "yn");
     end;
     Buf.reset(s.out);
     if answer # 'y' then
