@@ -90,6 +90,7 @@ type
         why*: Why;
         stopped*: proc: BOOL;   (* whether the human said to stop; or nil *)
         who*: INT;              (* who asks: 0 the lead, N worker N *)
+        edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it in their editor; nil if they can't *)
         arg*: ^U8;
     end;
 
@@ -1399,6 +1400,37 @@ begin
     if LEN(rest) > 0 then Fmt.write(b, "[{} more lines]\n", [Fmt.int(lines(rest))]); end;
 end;
 
+(* Whether the human approves the change of a file from before to
+   after, asked question with its diff shown, as approve asks; with an
+   editor, e opens after in it, and what they leave there is after,
+   shown and asked about again. edited says they changed it. *)
+proc review(const h: Human; question, before: []const U8; var after, diff: Buf.Buf; var edited: BOOL;
+    var out: Buf.Buf): BOOL;
+var keys, mine: []const U8; answer: U8; ok: BOOL;
+begin
+    if h.ask = nil then
+        Buf.str(out, "declined: there is nobody to approve the change. Nothing was changed.");
+        return false;
+    end;
+    keys := "yn";
+    if h.edit # nil then keys := "yne"; end;
+    answer := h.ask(h.who, question, Buf.bytes(diff), keys);
+    while answer = 'e' do
+        mine, ok := h.edit(Buf.bytes(after));
+        if ok and (mine # Buf.bytes(after)) then
+            Buf.reset(after);
+            Buf.str(after, mine);
+            Buf.reset(diff);
+            unified(diff, before, mine);
+            edited := true;
+        end;
+        answer := h.ask(h.who, question, Buf.bytes(diff), keys);
+    end;
+    if answer = 'y' then return true; end;
+    declined(h, "Nothing was changed: the file is as it was before.", out);
+    return false;
+end;
+
 (* The times sub occurs in s, none overlapping. *)
 proc count(s, sub: []const U8): INT;
 var n, i, at: INT;
@@ -1501,7 +1533,7 @@ end;
    all; or, with old empty, the file made, holding new. Written in
    place, so that the file's mode and its links survive. *)
 proc edit(const a: Args; const h: Human; mem: ^Mem.Allocator; var out: Buf.Buf);
-var p, old, new, s: []const U8; text, diff, q, b: Buf.Buf; i: Sys.Info; e, n, at: INT; all: BOOL;
+var p, old, new, s: []const U8; text, diff, q, b, proposed: Buf.Buf; i: Sys.Info; e, n, at: INT; all, edited: BOOL;
 begin
     p := path(a, "path");
     old := str(a, "old");
@@ -1566,8 +1598,12 @@ begin
         Buf.str(b, s[at + LEN(old)..LEN(s)]);
     end;
     unified(diff, s, Buf.bytes(b));
-    if not Afence.ours(p) and not approve(h, Buf.bytes(q), Buf.bytes(diff), out) then return; end;
-    if Apeer.reachable() and not Afence.ours(p) and throughEditor(p, old, new, all, h, out) then return; end;
+    Buf.init(proposed, mem);
+    Buf.str(proposed, Buf.bytes(b));
+    edited := false;
+    if not Afence.ours(p) and not review(h, Buf.bytes(q), s, b, diff, edited, out) then return; end;
+    (* the human's own text is written here: old for new no longer says it *)
+    if not edited and Apeer.reachable() and not Afence.ours(p) and throughEditor(p, old, new, all, h, out) then return; end;
     if (LEN(old) = 0) and not makeDirs(p) then
         Fmt.write(out, "error: cannot make the directory of {}", [Fmt.str(p)]);
         return;
@@ -1579,6 +1615,11 @@ begin
         Fmt.write(out, "ok: created {}", [Fmt.str(p)]);
     else
         Fmt.write(out, "ok: {} replaced", [Fmt.int(n)]);
+    end;
+    if edited then
+        Buf.str(out, "; the human changed your edit in their editor before it was written, as this diff from " +
+            "yours shows. Read the file again before you change it further:\n");
+        unified(out, Buf.bytes(proposed), Buf.bytes(b));
     end;
     Alsp.diagnose(p, Buf.bytes(b), out);
 end;
@@ -2592,6 +2633,22 @@ begin
     return answer;
 end;
 
+const Edited = "1\n2\n3\n4\n5\n6\n7\nEIGHT\n9\n10\n";   (* ten, as the human leaves it in their editor *)
+
+(* A human who answers e at first, then y, and whose editor leaves Edited. *)
+proc editing(_who: INT; _question, detail, keys: []const U8): U8;
+begin
+    INC(asked);
+    shown := keep(detail);
+    if (asked = 1) and (keys = "yne") then return 'e'; end;
+    return 'y';
+end;
+
+proc yours(_text: []const U8): ([]const U8, BOOL);
+begin
+    return Edited, true;
+end;
+
 proc reason(): []const U8;
 begin
     return because;
@@ -2611,14 +2668,21 @@ begin
     return Buf.bytes(hostSaid);
 end;
 
-proc run(name, args: []const U8; ask: Ask): []const U8;
+(* The result of the tool name, called with args, the human asked by
+   ask and edit their editor, nil for none. *)
+proc runWith(name, args: []const U8; ask: Ask; edit: proc(text: []const U8): ([]const U8, BOOL)): []const U8;
 var b: Buf.Buf; h: Human;
 begin
     Buf.init(b, Heap.heap);
-    h := {ask: ask, why: reason};
+    h := {ask: ask, why: reason, edit: edit};
     call(name, args, h, SYSTEM.ADR(mem.base), b);
     Arena.reset(mem);
     return Buf.bytes(b);
+end;
+
+proc run(name, args: []const U8; ask: Ask): []const U8;
+begin
+    return runWith(name, args, ask, nil);
 end;
 
 proc holds(path, want: []const U8);
@@ -2872,6 +2936,14 @@ begin
     _ := Files.write("ten", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
     expect("edit, deep", run("edit", `{"path":"ten","old":"8\n","new":"eight\n"}`, human), "ok: 1 replaced");
     expect("edit, deep, shown", shown, "@@ -5,6 +5,6 @@\n 5\n 6\n 7\n-8\n+eight\n 9\n 10\n");
+    (* e: the change rewritten in the editor, written as the human left
+       it, asked about again, and the model told what they changed *)
+    asked := 0;
+    expect("edited", runWith("edit", `{"path":"ten","old":"eight\n","new":"ate\n"}`, editing, yours),
+        "ok: 1 replaced; the human changed your edit in their editor before it was written, as this diff from " +
+        "yours shows. Read the file again before you change it further:\n@@ -5,6 +5,6 @@\n 5\n 6\n 7\n-ate\n+EIGHT\n 9\n 10\n");
+    expect("edited, shown", shown, "@@ -5,6 +5,6 @@\n 5\n 6\n 7\n-eight\n+EIGHT\n 9\n 10\n");
+    holds("ten", Edited);
     _ := Files.write("twice", "x\n  y\nx\n");
     expect("twice", run("edit", `{"path":"twice","old":"x","new":"z"}`, human),
         "error: old text occurs 2 times in twice; add surrounding lines to old to make it unique, or set all to " +

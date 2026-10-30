@@ -226,7 +226,7 @@ proc init*(var a: Agent; prov: ^Awire.Prov; front: Front);
 begin
     a := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true, buildSteps: BuildSteps,
         buildBudget: BuildBudget,
-        human: {ask: front.ask, why: front.why, stopped: front.stopped, arg: front.arg}};
+        human: {ask: front.ask, why: front.why, stopped: front.stopped, edit: front.edit, arg: front.arg}};
     Strs.init(a.reports, Heap.heap);
     Awire.initClient(a.client);
     if not Arena.init(a.mem, CallMemory) then Rt.stop("arno: out of memory"); end;

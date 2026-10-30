@@ -876,6 +876,15 @@ programs, or compare files outside the repository are refused.
 An exact, unique replacement, or a new file.
 Its diff is shown and needs your yes: a unified diff of the file before
 and after, with three lines of context and the file's line numbers.
+In the terminal,
+.Ic e
+opens the file as it would be in
+.Ev VISUAL
+or
+.Ev EDITOR ,
+as C-x C-e does the input, and it is asked again as you left it; what
+you approve is written as you left it, and the model told how you
+changed its edit.
 If
 .Cm lsp. Ns Ar ext
 names a language server for the file's type, the result ends with what
@@ -1668,7 +1677,12 @@ is made on;
 an
 .Ic edit ,
 once you approve it, is made by the editor, in front of you, as one of your own
-undo steps, and the file saved if it had no other unsaved changes;
+undo steps, and the file saved if it had no other unsaved changes
+(one you changed with
+.Ic e
+is written by
+.Nm
+itself);
 .It
 .Ic move
 and

@@ -176,6 +176,7 @@ Directories and images work too, if the model takes images.
 | C-p, C-n; M-p, M-n | input history; by prefix |
 | C-r | search the history |
 | C-x C-e | edit the input in your editor |
+| e at an edit's question | rework the change in your editor before it is written |
 | C-v | paste an image from the clipboard |
 | M-v | copy mode: move, select and copy (OSC 52) as in tmux |
 
