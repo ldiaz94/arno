@@ -191,7 +191,8 @@ first line what it is for, read when the work calls for it), `search`, `fetch`,
 `delegate` (when the config names `workers`; each step picks its model, the first by default), `merge` (a staged worker's diff, into the copy or
 dropped), `plan` (in `build` mode), `shell`, and, while a
 text editor is reachable, `editor` and `open`. It reads freely inside the project; outside, it needs a
-grant. Each change to a file shows its diff and asks. `run` is limited
+grant. Each change to a file shows its diff and asks: numbered, the
+words that changed marked, side by side on a wide screen. `run` is limited
 to programs the config allows, and `ls wc head file stat`, which
 only read. `check` runs the test command you set, or a named `check.NAME` one (say
 `check.unit = npx vitest run {}`), the model giving the files that fill the `{}`:
@@ -326,7 +327,7 @@ made by `make cast`, which is not part of the check.
 
 ## Size
 
-15 295 lines of code in 30 modules, with 2 905 of comment, measured
+20 803 lines of code in 33 modules, with 4 194 of comment, measured
 by `make loc`.
 
 ## Left out

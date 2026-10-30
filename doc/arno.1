@@ -132,6 +132,18 @@ then the diff, and its result.
 The rule says what is going on: the model working, a question waiting
 for your key, or copy mode.
 .Pp
+A diff, an edit's or
+.Ic git Ns 's
+or a worker's, is drawn with each line's numbers in the old and the
+new file in a dim gutter, removed lines red and added green, and
+within a changed line the words that changed reversed.
+Each hunk starts with a dim rule giving its range and the line it
+falls under.
+Where the screen is wide enough for 70 columns of text on each side,
+old and new stand side by side, a long line wrapped within its side;
+else the removed lines stand above the added.
+Copy mode copies a diff as its unified text.
+.Pp
 The transcript shows a view: all of it, the lead's entries alone, or
 one worker's; see
 .Ic /view .

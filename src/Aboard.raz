@@ -36,8 +36,20 @@
    Opened, its arguments follow, key: value a line each, a string of
    several lines indented under its key, but those the diff its
    question showed holds, an edit's old and new; then that diff, and
-   its result, 400 lines at most, a diff and git's result coloured as
+   its result, 400 lines at most, a diff and git's result drawn as
    diffs. The newest call stays open while its question is asked.
+
+   A diff is read as git's unified diff and drawn with its lines
+   numbered, old and new, in a dim gutter; removed lines red, added
+   green, and within a removed line and the added line in its place
+   the words that changed reversed, as Adiff finds them; each hunk's
+   head a dim rule with its range and the line it falls under. Where
+   each side has SideCode columns for its text, old and new are side
+   by side, row against row, a long line wrapped within its side;
+   else one above the other. Flatten keeps a diff as its text.
+   Colours are rterm's roles, never RGB, so they turn light and dark
+   with the terminal: there is no tinted background, and the words
+   that changed are reversed instead.
 
    The view says whose entries are drawn: every one, the lead's alone,
    or one worker's. Every entry stays on the board; only what is shown
@@ -70,10 +82,10 @@
    when it is copied, so that a paragraph wrapped over several rows is
    copied as the one line it was.
 
-   Depends on rtui's TuiScreen, rterm's Term, rjson's Json, Buf, Str, Rt and
-   Heap. *)
+   Depends on Adiff, rtui's TuiScreen, rterm's Term, rjson's Json, Buf, Str,
+   Rt and Heap. *)
 module Aboard;
-import TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Json, Rt, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf),
+import Adiff, TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Json, Rt, Entries := Vec(Entry), Rows := Vec(Row), Lines := Vec([]const U8), Models := Vec(Buf.Buf),
     Ints := Vec(INT);
 import SYSTEM;
 
@@ -108,7 +120,24 @@ type
     end;
 
     (* How a piece of text looks: an index into Styles. *)
-    Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk, worker);
+    Look = (plain, strong, mono, heading, block, dim, red, green, typed, hunk, worker, redWord, greenWord);
+
+    (* A hunk's head, as a unified diff writes it. *)
+    Hunk = record
+        oldStart, oldCount, newStart, newCount: INT;   (* its range in the old text and the new *)
+        range: []const U8;     (* the range as the head writes it, -a,b +c,d *)
+        heading: []const U8;   (* the line it falls under, git's function name; "" if none *)
+    end;
+
+    (* A line of a diff as one side lays it out, row by row. *)
+    Half = record
+        text, looks: Buf.Buf;   (* its text, tabs made blanks, and the Look of each byte *)
+        at: INT;                (* the bytes of text laid out so far *)
+        begun: BOOL;            (* its first row laid out *)
+        old, new: INT;          (* its numbers in the old text and the new; 0 where it has none *)
+        sign: U8;               (* -, + or a blank, before its first row *)
+        look: Look;             (* the sign's *)
+    end;
 
 const
     MaxShown = 400;     (* lines of a result an open call shows *)
@@ -153,6 +182,7 @@ const
         {tool: "delegate", key: "task", pre: " "},
         {tool: "plan", key: "plan", pre: " "},
         {tool: "merge", key: "worker", pre: " worker "}, {tool: "merge", key: "apply", pre: " "}];
+    SideCode = 70;   (* the columns of text each side of a diff needs for it to be drawn side by side *)
 
 var
     speaker*: INT;      (* who the entries pushed now are said by, as Entry.speaker; set by speak *)
@@ -161,7 +191,7 @@ var
     models: Models.Vec;   (* worker N's model at N; empty where none was named *)
     starts: Ints.Vec;     (* at N, the index of the lead's delegate that started worker N: -1 if
                              none, Unseen if N has said nothing, as past the end *)
-    styles: [11]TuiScreen.Style;   (* each Look's *)
+    styles: [13]TuiScreen.Style;   (* each Look's *)
     (* the line being laid out: its text, and the Look of each byte *)
     text, looks: Buf.Buf;
     (* where a draw puts the rows: the screen, the part of it, the row
@@ -183,6 +213,13 @@ var
        text it is parsed in, as parsing rewrites it *)
     argDoc: Json.Doc;
     argText: Buf.Buf;
+    (* a diff: the halves of a row, a run of removed lines and the added
+       after it, the words that changed in a pair of them, and the
+       columns of a line number *)
+    left, right: Half;
+    gone, come: Lines.Vec;
+    words: Adiff.Diff;
+    numberWidth: INT;
 
 (* The entries, oldest first, until one is added. *)
 proc all*: []Entry;
@@ -524,22 +561,354 @@ begin
     until not ok;
 end;
 
-(* Each line of s wrapped after pre, coloured as a diff's: added lines
-   green, taken lines red, a hunk's head in its own, the rest dim. *)
-proc diff(s, pre: []const U8; w: INT);
-var line: []const U8; l: Look; ok: BOOL;
+(* Diffs. A unified diff, git's or an edit's, is drawn with its lines
+   numbered: each hunk's lines side by side, the old on the left and
+   the new on the right, where each side has SideCode columns for its
+   text, else one above the other. A removed line is paired with the
+   added line in its place, and the words that changed between them
+   are marked. A line that isn't the diff's, git's own or a commit's,
+   is coloured by its first character, as it always was. *)
+
+(* The digits of n. *)
+proc digits(n: INT): INT;
+var k: INT;
+begin
+    k := 1;
+    while n >= 10 do
+        n := n div 10;
+        INC(k);
+    end;
+    return k;
+end;
+
+(* The number s starts with, and what follows it; -1 if it starts with
+   no digit. *)
+proc number(s: []const U8): (INT, []const U8);
+var n, i: INT;
+begin
+    if (LEN(s) = 0) or not Str.isDigit(s[0]) then return -1, s; end;
+    n := 0;
+    i := 0;
+    while (i < LEN(s)) and Str.isDigit(s[i]) do
+        n := 10 * n + INT(s[i] - '0');
+        INC(i);
+    end;
+    return n, s[i..LEN(s)];
+end;
+
+(* A hunk's range as git writes it, start,count or start alone for a
+   count of 1, at the start of s: start, count and what follows it;
+   start -1 if s has none. *)
+proc span(s: []const U8): (INT, INT, []const U8);
+var start, count: INT;
+begin
+    start, s := number(s);
+    count := 1;
+    if (start >= 0) and Str.hasPrefix(s, ",") then count, s := number(s[1..LEN(s)]); end;
+    if count < 0 then start := -1; end;
+    return start, count, s;
+end;
+
+(* line read as a hunk's head, "@@ -a,b +c,d @@ heading": its old
+   range, its new, and its heading; false if it is no head. *)
+proc hunkHead(line: []const U8): (Hunk, BOOL);
+var h: Hunk; s: []const U8;
+begin
+    h := {};
+    if not Str.hasPrefix(line, "@@ -") then return h, false; end;
+    h.oldStart, h.oldCount, s := span(line[4..LEN(line)]);
+    if (h.oldStart < 0) or not Str.hasPrefix(s, " +") then return h, false; end;
+    h.newStart, h.newCount, s := span(s[2..LEN(s)]);
+    if (h.newStart < 0) or not Str.hasPrefix(s, " @@") then return h, false; end;
+    h.range := line[3..LEN(line) - LEN(s)];
+    h.heading := Str.trim(s[3..LEN(s)]);
+    return h, true;
+end;
+
+(* The widest line number the hunks' heads in s give: the width of the
+   numbers before each line. *)
+proc widest(s: []const U8): INT;
+var line: []const U8; h: Hunk; ok, more: BOOL; most: INT;
+begin
+    most := 0;
+    repeat
+        line, s, more := Str.cut(s, "\n");
+        h, ok := hunkHead(line);
+        if ok and (h.oldStart + h.oldCount > most) then most := h.oldStart + h.oldCount; end;
+        if ok and (h.newStart + h.newCount > most) then most := h.newStart + h.newCount; end;
+    until not more;
+    return digits(most);
+end;
+
+(* The half h set to show line, its numbers in the old and the new text
+   old and new (0 where it has none), after sign, in look base, the
+   bytes of spans in look marked; a tab as four blanks. *)
+proc fillHalf(var h: Half; line: []const U8; old, new: INT; sign: U8; base, marked: Look; spans: []Adiff.Span);
+var i, k, j: INT; l: Look;
+begin
+    Buf.reset(h.text);
+    Buf.reset(h.looks);
+    h.at := 0;
+    h.begun := false;
+    h.old := old;
+    h.new := new;
+    h.sign := sign;
+    h.look := base;
+    k := 0;
+    for i := 0 to LEN(line) - 1 do
+        while (k < LEN(spans)) and (spans[k].hi <= i) do INC(k); end;
+        l := base;
+        if (k < LEN(spans)) and (spans[k].lo <= i) then l := marked; end;
+        if line[i] = '\t' then
+            for j := 1 to 4 do
+                Buf.add(h.text, ' ');
+                Buf.add(h.looks, U8(l));
+            end;
+        else
+            Buf.add(h.text, line[i]);
+            Buf.add(h.looks, U8(l));
+        end;
+    end;
+end;
+
+(* A line number n, right-aligned in numberWidth columns, dim; blanks
+   for 0. *)
+proc lineNumber(n: INT);
+var d: [20]U8; k, i: INT;
+begin
+    d, k := Str.fromInt(n);
+    if n = 0 then k := 0; end;
+    for i := k + 1 to numberWidth do add(" ", dim); end;
+    add(d[0..k], dim);
+end;
+
+(* The next piece of h added to the line being laid out: its numbers,
+   both if two, else the one it has, and its sign, on its first row
+   only; then as much of its text as fits in w columns, padded to w if
+   pad. *)
+proc piece(var h: Half; w: INT; pad, two: BOOL);
+var s, l: []const U8; i, n, cols, blank, blankCols: INT; c: I32;
+begin
+    if h.begun then
+        lineNumber(0);
+        if two then add(" ", dim); lineNumber(0); end;
+        add("   ", dim);
+    else
+        if two then
+            lineNumber(h.old);
+            add(" ", dim);
+            lineNumber(h.new);
+        else
+            lineNumber(h.old + h.new);
+        end;
+        add(" ", dim);
+        Buf.add(text, h.sign);
+        Buf.add(looks, U8(h.look));
+        add(" ", dim);
+    end;
+    s := Buf.bytes(h.text);
+    l := Buf.bytes(h.looks);
+    (* as much as fits, broken after a blank if there is one to break at *)
+    i := h.at;
+    cols := 0;
+    blank := -1;
+    while i < LEN(s) do
+        c, n := Str.decode(s[i..LEN(s)]);
+        if n < 1 then n := 1; end;
+        if (cols + TuiScreen.width(c) > w) and (i > h.at) then break; end;
+        cols := cols + TuiScreen.width(c);
+        i := i + n;
+        if c = ' ' then blank := i; blankCols := cols; end;
+    end;
+    if (i < LEN(s)) and (blank > h.at) then
+        i := blank;
+        cols := blankCols;
+    end;
+    Buf.str(text, s[h.at..i]);
+    Buf.str(looks, l[h.at..i]);
+    h.at := i;
+    h.begun := true;
+    if pad then
+        while cols < w do
+            add(" ", plain);
+            INC(cols);
+        end;
+    end;
+end;
+
+(* The line in the halves laid out, one above the other: left alone,
+   its text wrapped at w columns, under both its numbers. *)
+proc unifiedLine(pre: []const U8; w: INT);
 begin
     repeat
-        line, s, ok := Str.cut(s, "\n");
-        l := dim;
-        if Str.hasPrefix(line, "+") then l := green;
-        elsif Str.hasPrefix(line, "-") then l := red;
-        elsif Str.hasPrefix(line, "@") then l := hunk;
-        end;
         start();
-        add(line, l);
-        wrap(pre, dim, w);
-    until not ok;
+        piece(left, w, false, true);
+        emit(pre, dim, 0, text.len);
+    until left.at >= left.text.len;
+end;
+
+(* The line in the halves laid out side by side, left and right, each
+   wrapped at w columns, on as many rows as the longer takes. *)
+proc sideLine(pre: []const U8; w: INT);
+begin
+    repeat
+        start();
+        piece(left, w, true, false);
+        add(" \u{2502} ", dim);
+        piece(right, w, false, false);
+        emit(pre, dim, 0, text.len);
+    until (left.at >= left.text.len) and (right.at >= right.text.len);
+end;
+
+(* The spans of the words that changed between gone[i] and come[i], the
+   i-th removed line of a run and the added line in its place; none
+   where either has no such line. *)
+proc pairOf(i: INT): ([]Adiff.Span, []Adiff.Span);
+var none: []Adiff.Span;
+begin
+    if (i >= gone.len) or (i >= come.len) then return none, none; end;
+    return Adiff.changed(words, Lines.all(gone)[i], Lines.all(come)[i]);
+end;
+
+(* A run of removed lines, gone, and the added lines after it, come, the
+   first numbered old and new, laid out at w columns: side by side, or
+   the removed above the added. *)
+proc changes(pre: []const U8; w, old, new: INT; side: BOOL);
+var i: INT; a, b: []Adiff.Span; none: []Adiff.Span;
+begin
+    if side then
+        i := 0;
+        while (i < gone.len) or (i < come.len) do
+            a, b := pairOf(i);
+            fillHalf(left, "", 0, 0, ' ', plain, plain, none);
+            fillHalf(right, "", 0, 0, ' ', plain, plain, none);
+            if i < gone.len then fillHalf(left, Lines.all(gone)[i], old + i, 0, '-', red, redWord, a); end;
+            if i < come.len then fillHalf(right, Lines.all(come)[i], 0, new + i, '+', green, greenWord, b); end;
+            sideLine(pre, w);
+            INC(i);
+        end;
+        return;
+    end;
+    for i := 0 to gone.len - 1 do
+        a, _ := pairOf(i);
+        fillHalf(left, Lines.all(gone)[i], old + i, 0, '-', red, redWord, a);
+        unifiedLine(pre, w);
+    end;
+    for i := 0 to come.len - 1 do
+        _, b := pairOf(i);
+        fillHalf(left, Lines.all(come)[i], 0, new + i, '+', green, greenWord, b);
+        unifiedLine(pre, w);
+    end;
+end;
+
+(* A hunk's head laid out at w columns: a dim rule, with its range as
+   git writes it and its heading, the line it falls under. *)
+proc rule(const h: Hunk; pre: []const U8; w: INT);
+begin
+    start();
+    add("\u{2500}\u{2500}\u{2500} ", dim);
+    add(h.range, dim);
+    if LEN(h.heading) > 0 then
+        add(" ", dim);
+        add(h.heading, hunk);
+    end;
+    add(" ", dim);
+    while TuiScreen.columns(Buf.bytes(text)) < w do add("\u{2500}", dim); end;
+    wrap(pre, dim, w);
+end;
+
+(* A line of s that isn't in a hunk, a file's name or a commit's say,
+   coloured by its first character as a diff's lines are. *)
+proc other(line, pre: []const U8; w: INT);
+var l: Look;
+begin
+    l := dim;
+    if Str.hasPrefix(line, "+++ ") or Str.hasPrefix(line, "--- ") or Str.hasPrefix(line, "diff ") then l := strong;
+    elsif Str.hasPrefix(line, "+") then l := green;
+    elsif Str.hasPrefix(line, "-") then l := red;
+    elsif Str.hasPrefix(line, "@") then l := hunk;
+    end;
+    start();
+    add(line, l);
+    wrap(pre, dim, w);
+end;
+
+(* s, a unified diff, laid out after pre at w columns, as the comment
+   above Diffs says. In flatten, its lines are kept as they are, so
+   that copying a diff copies its text. *)
+proc diff(s, pre: []const U8; w: INT);
+var line, next, after: []const U8; more, more2, side, ok: BOOL; h: Hunk; old, new, oldLeft, newLeft, cw: INT;
+    none: []Adiff.Span;
+begin
+    if keeping then
+        lines(s, pre, dim, dim, w);
+        return;
+    end;
+    numberWidth := widest(s);
+    cw := (w - 3) div 2 - numberWidth - 3;
+    side := cw >= SideCode;
+    if not side then cw := w - 2 * numberWidth - 4; end;
+    if cw < 8 then cw := 8; end;
+    old := 0;
+    new := 0;
+    oldLeft := 0;
+    newLeft := 0;
+    repeat
+        line, s, more := Str.cut(s, "\n");
+        h, ok := hunkHead(line);
+        if (oldLeft > 0) and Str.hasPrefix(line, "-") or (newLeft > 0) and Str.hasPrefix(line, "+") then
+            (* the run of removed lines and the added after it, from this one on *)
+            Lines.reset(gone);
+            Lines.reset(come);
+            while true do
+                if Str.hasPrefix(line, "-") then
+                    Lines.push(gone, line[1..LEN(line)]);
+                    DEC(oldLeft);
+                else
+                    Lines.push(come, line[1..LEN(line)]);
+                    DEC(newLeft);
+                end;
+                if not more then break; end;
+                next, after, more2 := Str.cut(s, "\n");
+                if not ((oldLeft > 0) and (come.len = 0) and Str.hasPrefix(next, "-")
+                    or (newLeft > 0) and Str.hasPrefix(next, "+")) then
+                    break;
+                end;
+                line := next;
+                s := after;
+                more := more2;
+            end;
+            changes(pre, cw, old, new, side);
+            old := old + gone.len;
+            new := new + come.len;
+        elsif (oldLeft > 0) and (newLeft > 0) and (Str.hasPrefix(line, " ") or (LEN(line) = 0)) then
+            if LEN(line) > 0 then line := line[1..LEN(line)]; end;
+            if side then
+                fillHalf(left, line, old, 0, ' ', plain, plain, none);
+                fillHalf(right, line, 0, new, ' ', plain, plain, none);
+                sideLine(pre, cw);
+            else
+                fillHalf(left, line, old, new, ' ', plain, plain, none);
+                unifiedLine(pre, cw);
+            end;
+            INC(old);
+            INC(new);
+            DEC(oldLeft);
+            DEC(newLeft);
+        elsif Str.hasPrefix(line, "\\") then
+            other(line, pre, w);
+        elsif ok then
+            old := h.oldStart;
+            new := h.newStart;
+            oldLeft := h.oldCount;
+            newLeft := h.newCount;
+            rule(h, pre, w);
+        else
+            oldLeft := 0;
+            newLeft := 0;
+            other(line, pre, w);
+        end;
+    until not more;
 end;
 
 (* s added in look l, but **bold** and `code`, styled, their marks
@@ -874,7 +1243,7 @@ end;
 
 (* The argument key of v as a number, from a number or a string that
    holds one, as models send both; def if it is neither. *)
-proc number(v: Json.Value; key: []const U8; def: INT): INT;
+proc argNumber(v: Json.Value; key: []const U8; def: INT): INT;
 var n: I64; ok: BOOL;
 begin
     n, ok := Str.toInt(Json.text(SYSTEM.ADR(argDoc), Json.member(SYSTEM.ADR(argDoc), v, key)));
@@ -891,8 +1260,8 @@ var d: ^Json.Doc; x: Json.Value; i, from, n: INT;
 begin
     d := SYSTEM.ADR(argDoc);
     if key = LineRange then
-        from := number(v, "offset", 1);
-        n := number(v, "limit", 0);
+        from := argNumber(v, "offset", 1);
+        n := argNumber(v, "limit", 0);
         if (from = 1) and (n <= 0) then return; end;
         Fmt.write(b, "{}\u{2013}", [Fmt.int(from)]);
         if n > 0 then Fmt.write(b, "{}", [Fmt.int(from + n - 1)]); end;
@@ -1252,8 +1621,49 @@ begin
     return false;
 end;
 
+(* The diff of old and new, as an edit shows it, drawn alone at cols
+   columns, as text, matched with want, whose first row, the hunk's
+   rule, need only start the row drawn; and the cell at row r, column c
+   marked as a word that changed, the one two before it not. False,
+   and what differs said, if not. *)
+proc expectDiff(what, old, new: []const U8; cols, r, c: INT; want: []const U8): BOOL;
+var s: TuiScreen.Screen; b, u: Buf.Buf; d: Adiff.Diff; got, gotRest, head, rest: []const U8;
+begin
+    Buf.init(u, Heap.heap);
+    defer Buf.done(u);
+    Adiff.init(d);
+    defer Adiff.done(d);
+    Adiff.compute(d, old, new, Adiff.Context);
+    Adiff.write(d, u);
+    TuiScreen.init(SYSTEM.ADR(s), cols, 12);
+    defer TuiScreen.done(SYSTEM.ADR(s));
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    screen := SYSTEM.ADR(s);
+    area := {row: 0, col: 0, rows: 12, cols: cols};
+    top := 0;
+    row := 0;
+    gutter := "";
+    diff(Str.trimRight(Buf.bytes(u)), "", cols);
+    screen := nil;
+    if not (TuiScreen.Attr.reverse in TuiScreen.styleAt(SYSTEM.ADR(s), r, c).attrs)
+        or (TuiScreen.Attr.reverse in TuiScreen.styleAt(SYSTEM.ADR(s), r, c - 2).attrs) then
+        Fmt.print("Aboard: {}: the word that changed not marked\n", [Fmt.str(what)]);
+        return false;
+    end;
+    TuiScreen.plain(SYSTEM.ADR(s), SYSTEM.ADR(b));
+    got, gotRest, _ := Str.cut(Buf.bytes(b), "\n");
+    head, rest, _ := Str.cut(want, "\n");
+    if Str.hasPrefix(got, head) and (gotRest = rest) then return true; end;
+    Fmt.print("Aboard: {}: got\n{}want\n{}", [Fmt.str(what), Fmt.str(Buf.bytes(b)), Fmt.str(want)]);
+    return false;
+end;
+
 proc main*: INT;
-var ok: BOOL;
+const
+    Ten = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n";
+    TenChanged = "line 1\nline 2\nline 3\nline 4\nline five\nline 6\nline 7\nline 8\nline 9\nline 10\n";
+var ok: BOOL; i, n: INT;
 begin
     _ := push(info, "arno");
     _ := push(user, "hello there");
@@ -1350,6 +1760,32 @@ begin
         Out.str("Aboard: a worker linked to its delegate\n");
         ok := false;
     end;
+    (* a diff: one line of ten changed, with its context, side by side
+       when wide, one above the other when narrow, copied as its text *)
+    ok := expectDiff("a diff, side by side", Ten, TenChanged, 160, 4, 90,
+        "\u{2500}\u{2500}\u{2500} -2,7 +2,7 line 1 \u{2500}\n" +
+        "2   line 2                                                                     \u{2502} 2   line 2\n" +
+        "3   line 3                                                                     \u{2502} 3   line 3\n" +
+        "4   line 4                                                                     \u{2502} 4   line 4\n" +
+        "5 - line 5                                                                     \u{2502} 5 + line five\n" +
+        "6   line 6                                                                     \u{2502} 6   line 6\n" +
+        "7   line 7                                                                     \u{2502} 7   line 7\n" +
+        "8   line 8                                                                     \u{2502} 8   line 8\n" +
+        "\n\n\n\n") and ok;
+    ok := expectDiff("a diff, one above the other", Ten, TenChanged, 60, 4, 11,
+        "\u{2500}\u{2500}\u{2500} -2,7 +2,7 line 1 \u{2500}\n2 2   line 2\n3 3   line 3\n4 4   line 4\n5   - line 5\n" +
+        "  5 + line five\n6 6   line 6\n7 7   line 7\n8 8   line 8\n\n\n\n") and ok;
+    clear;
+    choose(All);
+    call("edit", "{}");
+    detail("@@ -2,7 +2,7 @@\n line 2\n line 3\n line 4\n-line 5\n+line five\n line 6\n line 7\n line 8\n");
+    i := 0;
+    n := flatten(60);
+    while (i < n) and (rowText(i) # "@@ -2,7 +2,7 @@") do INC(i); end;
+    if (i + 5 >= n) or (rowText(i + 4) # "-line 5") or (rowText(i + 5) # "+line five") then
+        Out.str("Aboard: a diff copied\n");
+        ok := false;
+    end;
     if ok then return 0; end;
     return 1;
 end;
@@ -1374,7 +1810,15 @@ begin
         TuiScreen.style(Term.strong, {TuiScreen.Attr.underline}), TuiScreen.style(Term.warn, {}),
         TuiScreen.style(Term.dim, {}), TuiScreen.style(Term.bad, {}), TuiScreen.style(Term.good, {}),
         TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}), TuiScreen.style(Term.info, {}),
-        TuiScreen.style(Term.good, {})];
+        TuiScreen.style(Term.good, {}), TuiScreen.style(Term.bad, {TuiScreen.Attr.reverse}),
+        TuiScreen.style(Term.good, {TuiScreen.Attr.reverse})];
+    Buf.init(left.text, Heap.heap);
+    Buf.init(left.looks, Heap.heap);
+    Buf.init(right.text, Heap.heap);
+    Buf.init(right.looks, Heap.heap);
+    Lines.init(gone, Heap.heap);
+    Lines.init(come, Heap.heap);
+    Adiff.init(words);
 end;
 
 begin
