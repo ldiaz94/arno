@@ -239,9 +239,15 @@ question comes.
 More text for entry
 .Ar n ,
 the reply streaming.
+It is not always the last entry: workers side by side each stream into a
+reply of their own, between each other's entries, so a host adds the
+text to entry
+.Ar n ,
+never simply to the last.
 .It Cm done Ar n text
 The result of tool call
-.Ar n .
+.Ar n ,
+which, with workers side by side, need not be the last.
 .It Cm reset
 The transcript is empty again, after
 .Ic /new ,

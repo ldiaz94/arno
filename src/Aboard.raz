@@ -1643,6 +1643,22 @@ begin
     return false;
 end;
 
+(* Whether the replies on the board are want, each its speaker's number,
+   a blank, its text and a bar, in order; said if not. *)
+proc expectReplies(what, want: []const U8): BOOL;
+var e: []Entry; b: Buf.Buf; i: INT;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    e := all();
+    for i := 0 to LEN(e) - 1 do
+        if e[i].kind = Kind.reply then Fmt.write(b, "{} {}|", [Fmt.int(e[i].speaker), Fmt.str(Buf.bytes(e[i].text))]); end;
+    end;
+    if Buf.bytes(b) = want then return true; end;
+    Fmt.print("Aboard: {}: got {}, want {}\n", [Fmt.str(what), Fmt.str(Buf.bytes(b)), Fmt.str(want)]);
+    return false;
+end;
+
 proc main*: INT;
 const
     Ten = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n";
@@ -1744,6 +1760,28 @@ begin
         Out.str("Aboard: a worker linked to its delegate\n");
         ok := false;
     end;
+    (* two workers side by side: each one's text goes on in its own
+       reply, and after a call of its own starts a new one *)
+    speak(1);
+    reply("a1 ");
+    speak(2);
+    reply("b1 ");
+    speak(1);
+    reply("a2");
+    call("read", "{}");
+    speak(2);
+    reply("b2");
+    speak(1);
+    result("x");
+    reply("a3");
+    speak(2);
+    call("read", "{}");
+    result("y");
+    reply("b3");
+    speak(1);
+    reply(" a4");
+    speak(0);
+    ok := expectReplies("replies side by side", "1 a1 a2|2 b1 b2|1 a3 a4|2 b3|") and ok;
     (* a diff: one line of ten changed, with its context, side by side
        when wide, one above the other when narrow, copied as its text *)
     ok := expectDiff("a diff, side by side", Ten, TenChanged, 160, 4, 90,
