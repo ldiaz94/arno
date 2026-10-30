@@ -675,8 +675,9 @@ end;
 (* What worker w, numbered n, 0 for one in the lead's zone, reported,
    added to out, and kept with its task for the next workers' briefs.
    One that stopped at its cap, its steps used, is said to have. false
-   if there was no report. The report line names the worker's model. *)
-proc told(var a: Agent; const w: Worker; var out: Buf.Buf): BOOL;
+   if there was no report. The report line names the worker's model
+   and, if its conversation was kept, at convo ("" if not). *)
+proc told(var a: Agent; const w: Worker; convo: []const U8; var out: Buf.Buf): BOOL;
 var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf; cost, allowance: F64;
 begin
     msgs := Msgs.all(w.conv.msgs);
@@ -703,8 +704,7 @@ begin
     Buf.init(path, Heap.heap);
     defer Buf.done(path);
     if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
-    (* a worker with no number, in the lead's zone, keeps no conversation *)
-    if (w.n > 0) and keepWorker(w.n, w.conv, path) then Fmt.write(out, ", conversation in {}", [Fmt.str(Buf.bytes(path))]); end;
+    if LEN(convo) > 0 then Fmt.write(out, ", conversation in {}", [Fmt.str(convo)]); end;
     Fmt.write(out, ":\n{}", [Fmt.str(report)]);
     return true;
 end;
@@ -838,11 +838,19 @@ begin
 end;
 
 (* Worker w's work over: its report, or why there is none, added to
-   out, and what it changed in its copy handed in. *)
+   out, and what it changed in its copy handed in. A staged worker's
+   conversation is kept either way: with no report it is all there is
+   to read. A worker with no number, in the lead's zone, keeps none. *)
 proc finish(var a: Agent; var w: Worker; var out: Buf.Buf);
+var path: Buf.Buf; convo: []const U8;
 begin
-    if not told(a, w, out) then
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    convo := "";
+    if (w.n > 0) and keepWorker(w.n, w.conv, path) then convo := Buf.bytes(path); end;
+    if not told(a, w, convo, out) then
         Fmt.write(out, "error: the worker ended without a report, after {} steps", [Fmt.int(steps(w.conv))]);
+        if LEN(convo) > 0 then Fmt.write(out, ", conversation in {}", [Fmt.str(convo)]); end;
         if w.err = Awire.Failed then Fmt.write(out, ": {}", [Fmt.str(Buf.bytes(w.why))]); end;
     end;
     if w.n > 0 then handIn(w.n, w.copy, out); end;
