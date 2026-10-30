@@ -610,7 +610,7 @@ one or more commits that build with `-Werror`.
    - [x] `outline` and `def` know `const f = () =>` and `= function`:
      at any indentation, with async, generics and a type after the
      parameters; a call holding an arrow is not one.
-   - [ ] rlsp, done in dwa: `LspWire`, `LspServer` and `LspText` made a
+   - [x] rlsp, done in dwa: `LspWire`, `LspServer` and `LspText` made a
      library of their own, dwa unchanged in what it does.
    - [x] `Alsp`: a profile's language server for a file type; an edit's
      result carries the server's diagnostics. Config's `lsp.EXT`, also
@@ -627,7 +627,7 @@ one or more commits that build with `-Werror`.
      jailed server stays in the terminal's session.
    - [ ] `def` and `refs` by name through the server, the rule of thumb
      kept where there is none.
-   - [ ] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as
+   - [x] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as
      concha-lsp is.
    Left out: an index of the code (the map, notes, memory and context
    files are there; the context files did not arrive), and raz's tools
