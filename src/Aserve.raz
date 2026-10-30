@@ -35,7 +35,9 @@
    it as ask or call, and the job waits on a second pipe for the host's
    answer or result, which the loop writes there; a cancel or the
    host's going gives it a refusal at once. A line that comes while a
-   job runs waits for it, host's or viewer's.
+   job runs waits for it in the session's queue (Aview), host's and
+   viewers' in the order they came, and every viewer is shown the
+   queue. It is never held here: the host, a program, says what runs.
 
    Seven requests are answered at once, even mid-turn: recent, paste,
    forget, and rename, system and setsystem of a saved conversation.
@@ -55,7 +57,7 @@
    any session. *)
 module Aserve;
 import Aframe, Aview, Apeer, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Amsg, Json, Thread, Sys,
-    Buf, Str, Fmt, Heap, Rt, Strs := Vec([]U8), Fields := Vec([]const U8), Polls := Vec(Sys.Poll),
+    Buf, Str, Fmt, Heap, Rt, Fields := Vec([]const U8), Polls := Vec(Sys.Poll),
     Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item);
 import SYSTEM;
 
@@ -92,7 +94,6 @@ var
     greeted: BOOL;        (* hello has come *)
     started: BOOL;        (* and the session made *)
     quit: BOOL;           (* the host said bye, or went away, or a viewer's /quit *)
-    queue: Strs.Vec;      (* lines that came while a job ran, from the host *)
     held: Buf.Buf;        (* requests that wait for the job to end, as messages *)
     current: Buf.Buf;     (* the id of the conversation, as the loop last heard *)
     out: Buf.Buf;         (* the message being made, and JSON for one *)
@@ -331,15 +332,6 @@ begin
 end;
 
 (* The loop's side *)
-
-(* s copied into memory of its own, from Heap. *)
-proc keep(s: []const U8): []U8;
-var c: []U8; ok: BOOL;
-begin
-    c, ok := Str.copy(Heap.heap, s);
-    if not ok then Rt.stop("arno: out of memory"); end;
-    return c;
-end;
 
 (* Whether the host's id names the current conversation: an empty one
    does, since a host can't know the current id after a /new or /load. *)
@@ -695,7 +687,7 @@ begin
     end;
     if not greeted then fault("hello first"); return; end;
     match v of
-    | "line": Strs.push(queue, keep(f[1]));
+    | "line": Aview.enqueue(f[1]);
     | "cancel": cancel();
     | "answer", "result":
         n, ok := Str.toInt(f[1]);
@@ -871,33 +863,26 @@ begin
     Events.reset(batch);
 end;
 
-(* The next line to run, the host's before a viewer's, into line. *)
-proc nextLine(var line: Buf.Buf): BOOL;
-var s: []U8;
-begin
-    if queue.len > 0 then
-        s := Strs.all(queue)[0];
-        Strs.remove(queue, 0, 1);
-        Buf.reset(line);
-        Buf.str(line, s);
-        Str.free(Heap.heap, s);
-        return true;
-    end;
-    return Aview.heard(line);
-end;
-
-(* With no job running, the next line, if there is one, started. *)
+(* With no job running, the next line of the queue, if there is one,
+   started; then the queue as it is now told. *)
 proc startNext;
-var line: Buf.Buf; text: []const U8;
+var line: Buf.Buf;
 begin
     Buf.init(line, Heap.heap);
     defer Buf.done(line);
-    while (thread = nil) and not quit and nextLine(line) do
-        text := Str.trim(Buf.bytes(line));
-        if LEN(text) = 0 then continue; end;
-        Aview.typed(text);
-        start(text);
+    while (thread = nil) and not quit and Aview.heard(line) do
+        Aview.typed(Buf.bytes(line));
+        start(Buf.bytes(line));
     end;
+    Aview.settle;
+end;
+
+(* A viewer said cancel: the turn stopped, as the host's cancel does;
+   with none running, or one stopping already, the queue emptied, as a
+   second C-c on the screen empties it. *)
+proc viewerCancel;
+begin
+    if (thread # nil) and not stopped() then cancel(); else Aview.clearQueue; end;
 end;
 
 (* The bytes the wake pipe holds, all of them, taken: a byte comes for
@@ -928,7 +913,7 @@ begin
             Apeer.service(p[i].fd, thread # nil);
         end;
     end;
-    if Aview.cancelled() then cancel(); end;
+    if Aview.cancelled() then viewerCancel(); end;
 end;
 
 (* The owner's copy of what is told goes to the host. *)
@@ -1011,7 +996,6 @@ proc init;
 begin
     Events.init(events, Heap.heap);
     Events.init(batch, Heap.heap);
-    Strs.init(queue, Heap.heap);
     Fields.init(fields, Heap.heap);
     Buf.init(inbox, Heap.heap);
     Buf.init(hostName, Heap.heap);

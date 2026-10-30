@@ -165,8 +165,9 @@ Directories and images work too, if the model takes images.
 
 | Key (full screen) | What it does |
 |---|---|
-| RET, M-RET | send; a new line in the input |
-| C-c, C-d | stop the turn; quit |
+| RET, M-RET | send, or queue while a turn runs; a new line in the input |
+| C-c, C-d | stop the turn, keeping the queue (twice: empty it); quit |
+| C-p on an empty input | take the last queued line back |
 | C-z | stop arno as a shell does; `fg` brings it back |
 | S-Tab | change mode |
 | TAB, C-o | toggle a tool entry, all of them; TAB on a worker's `delegate`, in the lead's view, shows the worker's |

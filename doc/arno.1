@@ -155,12 +155,17 @@ A view other than all comes next, in yellow:
 .Ql "view lead"
 or
 .Ql "view w2" .
+Lines queued come next,
+.Ql "2 queued" ,
+in yellow with
+.Ql ", held"
+when they wait for RET.
 Then come the model and its provider, the context as a bar of eight
 cells and a percentage, green, yellow from 60%, red from 85%, the
 tokens and cost, and the title, cut to the room left.
 On a narrow terminal the hints go first, then the title, the tokens
 and cost, the provider, the context and the model; the mode, safety,
-plan and view stay.
+plan, view and queue stay.
 A change of mode or safety is said on the rule for two seconds.
 .Pp
 A message is a turn, run on a thread of its own, so the screen stays
@@ -168,17 +173,29 @@ live while the model works.
 A turn stops at the next read of the reply after you say so, not in
 the middle of a wait for the server.
 .Pp
+What you send while a turn runs is queued: shown dim above the input, a
+line each, counted on the status line, and run in order, each as a turn
+of its own, as the one before ends.
+A command waits its place in the queue too, except
+.Ic /view ,
+which acts at once.
+C-p on an empty input takes the last queued line back to edit.
+C-c stops the turn and keeps the queue; a second C-c empties it.
+A turn that ends on an error or a stop holds the queue, as the rule
+says, until RET, with or without a line typed; C-c then empties it.
+.Pp
 The keys are emacs's.
 The input is edited with the usual emacs keys for moving, deleting,
 killing and yanking, and grows to eight rows as you type.
 .Bl -tag -width "PgUp / PgDn" -compact
 .It RET
-Send.
+Send; while a turn runs, queue.
 .It M-RET
 A new line in the input.
 Pasted text keeps its newlines.
 .It C-c
-Stop the turn; with none running, empty the input.
+Stop the turn, keeping the queue; a second empties the queue; with no
+turn running, empty the input and the queue.
 .It C-d
 Quit, when the input is empty.
 .It C-z
@@ -206,7 +223,8 @@ input's lines first.
 .It C-l
 Redraw.
 .It C-p
-Recall the earlier input, on the input's first line.
+Recall the earlier input, on the input's first line; on an empty one
+with lines queued, take the last back first.
 What you were typing waits at the bottom.
 .It C-n
 Recall the later input, on its last line.
@@ -1620,6 +1638,9 @@ shows one in this terminal: the transcript so far, then everything as it
 happens, on the same screen with copy mode and all.
 What you type goes to the session as if typed there, and C-c stops its
 turn.
+The queue is the session's, the same on every screen: a line you send
+while a turn runs waits there in order with the others', Up takes back
+your last if it is still the last, and a second C-c empties it.
 Questions stay with the session's owner, its terminal or the program
 driving it; while one waits, the status line here says so, and the answer
 shows in the tool call's result.

@@ -17,7 +17,16 @@
    job that asks the human, a path outside the project or a change to
    a file, puts its question in the queue and waits on a pipe for the
    answer, which the loop writes there when a key gives it. Only one
-   job runs at a time: while one runs, Enter types nothing to send.
+   job runs at a time.
+
+   A line sent while one runs is queued (Aview's queue, which viewers
+   share): shown dim above the input, counted on the status line, and
+   run in order, each a job of its own, as the one before ends; a
+   command waits its place too, but /view, the screen's own, acts at
+   once. Up on an empty input takes the last back to be edited. C-c
+   stops the turn and keeps the queue; a second, or one with no turn,
+   empties it. A job that ends on an error or a stop holds the queue
+   until RET.
 
    The keys are emacs's, over rtui's editor (TuiEdit): RET sends, M-RET
    breaks the line, C-c stops the turn or, with none, empties the
@@ -79,7 +88,7 @@ type
     Sort = (said, called, answered, told, shown, failed, typed, cleared, asked, why, revise, status, named, ended);
 
     (* The parts of the status line a narrow row leaves out, in the
-       order it leaves them out; the mode, safety, plan and view always show. *)
+       order it leaves them out; the mode, safety, plan, view and queue always show. *)
     Part = (hints, title, usage, provider, context, model);
     Parts = set of Part;
 
@@ -93,6 +102,7 @@ type
 const
     MaxInput = 8;   (* rows the input grows to *)
     MaxMenu = 8;    (* rows of completions shown *)
+    MaxQueued = 4;  (* rows of the queue shown, the first lines to run *)
     Hints = "^O tools \u{B7} M-v copy \u{B7} S-Tab mode \u{B7} /help";
     Gap = 3;          (* columns between the status line's parts *)
     Near = 2;         (* columns between the safety and the plan *)
@@ -130,6 +140,7 @@ var
 
     (* the loop's own *)
     thread: ^Thread.Thread;   (* the job running, or nil *)
+    troubled: BOOL;           (* the job's last word was an error: the queue is held after it *)
     toRevise: Buf.Buf;        (* the text a job asked to have edited, edited once the queue is let go *)
     revising: BOOL;           (* whether it waits *)
     editor: TuiEdit.Editor;   (* the input *)
@@ -358,6 +369,7 @@ begin
     Buf.reset(job);
     Buf.str(job, line);
     stopping := false;
+    troubled := false;
     Aview.busied(true);
     thread, err := Thread.spawn(work, nil);
     if err # nil then
@@ -399,26 +411,36 @@ begin
     back := 0;
 end;
 
-(* What viewers of the session typed, run as the human's: a cancel
-   stops the turn, a line starts one, if no job has the session. *)
-proc takeViewers;
-var line: Buf.Buf; text: []const U8;
+(* C-c, or a viewer's cancel: the turn stopped, the queue kept; with
+   the turn stopping already, or none running, the queue emptied. *)
+proc interrupt;
 begin
-    if Aview.cancelled() and (thread # nil) then
+    if (thread # nil) and not stopped() then
         Thread.lock(mutex);
         stopping := true;
         Thread.unlock(mutex);
         Buf.str(flash, "stopping");
+    elsif LEN(Aview.queue()) > 0 then
+        Aview.clearQueue;
+        Buf.str(flash, "queue emptied");
     end;
+end;
+
+(* The queue, the human's lines and the viewers', run: a viewer's
+   cancel heard, then, with no job and no hold, the next line started;
+   then the queue as it is now told. *)
+proc runQueue;
+var line: Buf.Buf;
+begin
+    if Aview.cancelled() then interrupt(); end;
     Buf.init(line, Heap.heap);
     defer Buf.done(line);
-    while (thread = nil) and Aview.heard(line) do
-        text := Str.trim(Buf.bytes(line));
-        if LEN(text) = 0 then continue; end;
-        Aview.typed(text);
+    while (thread = nil) and not Aview.held() and Aview.heard(line) do
+        Aview.typed(Buf.bytes(line));
         back := 0;
-        start(text);
+        start(Buf.bytes(line));
     end;
+    Aview.settle;
 end;
 
 (* The ask a is put in the input, as a reference to its lines, after
@@ -461,7 +483,7 @@ proc viewReady;
 begin
     Aview.serviceAll();
     Apeer.serviceAll(thread # nil);
-    takeViewers();
+    runQueue();
     takeAsks();
 end;
 
@@ -535,11 +557,11 @@ begin
     for i := 0 to LEN(e) - 1 do
         Aboard.speak(e[i].who);
         match e[i].sort of
-        | said: Aview.said(Buf.bytes(e[i].a));
-        | called: Aview.called(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0;
-        | answered: Aview.answered(Buf.bytes(e[i].a));
+        | said: Aview.said(Buf.bytes(e[i].a)); troubled := false;
+        | called: Aview.called(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0; troubled := false;
+        | answered: Aview.answered(Buf.bytes(e[i].a)); troubled := false;
         | told, shown: Aview.noted(Aboard.info, Buf.bytes(e[i].a)); back := 0;
-        | failed: Aview.noted(Aboard.error, Buf.bytes(e[i].a)); back := 0;
+        | failed: Aview.noted(Aboard.error, Buf.bytes(e[i].a)); back := 0; troubled := true;
         | typed: Aview.typed(Buf.bytes(e[i].a));
         | cleared: Aview.cleared(); back := 0;
         | asked: pose(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
@@ -579,14 +601,16 @@ begin
             Apeer.free(editorAsk);
             asking := false;
         end;
-        takeViewers();
-        takeAsks();
         if mode >= 0 then
             session^.agent.mode := Aprompt.Mode(mode);
             mode := -1;
             remade();
         end;
         prepared := true;
+        (* a job that ended on a stop or an error holds the queue until RET *)
+        Aview.hold(stopping or troubled);
+        runQueue();
+        takeAsks();
     end;
 end;
 
@@ -650,29 +674,42 @@ begin
         TuiEdit.setText(SYSTEM.ADR(editor), "");
         return;
     end;
-    if thread # nil then return; end;
-    if LEN(s) = 0 then return; end;
+    if LEN(s) = 0 then
+        (* RET on an empty input lets a held queue go, here or where the session runs *)
+        if viewing and not viewBusy and (LEN(Aview.queue()) > 0) then tellSession(["line", ""]); end;
+        if not viewing and Aview.held() then Aview.enqueue(""); runQueue(); end;
+        return;
+    end;
     Ahistory.add(s);
     back := 0;
-    if not viewing then
+    if viewing and ((s = "/quit") or (s = "/exit")) then
+        TuiLoop.stop;
+    elsif viewing then
+        tellSession(["line", s]);
+    elsif (thread = nil) and (LEN(Aview.queue()) = 0) then
         Aview.typed(s);
         start(s);
-    elsif (s = "/quit") or (s = "/exit") then
-        TuiLoop.stop;
     else
-        tellSession(["line", s]);
+        Aview.enqueue(s);
+        runQueue();
     end;
     TuiEdit.setText(SYSTEM.ADR(editor), "");
 end;
 
+(* C-c: the turn stopped, or the queue emptied (interrupt); with no turn,
+   the input emptied too. Attached, the session is told to. *)
 proc stop(_n: INT);
 begin
-    if viewing and viewBusy then tellSession(["cancel"]); Buf.str(flash, "stopping"); return; end;
-    if thread = nil then TuiEdit.setText(SYSTEM.ADR(editor), ""); Ahistory.reset; return; end;
-    Thread.lock(mutex);
-    stopping := true;
-    Thread.unlock(mutex);
-    Buf.str(flash, "stopping");
+    if viewing then
+        if viewBusy or (LEN(Aview.queue()) > 0) then tellSession(["cancel"]); end;
+        if viewBusy then Buf.str(flash, "stopping"); return; end;
+    else
+        interrupt();
+        Aview.settle;
+        if thread # nil then return; end;
+    end;
+    TuiEdit.setText(SYSTEM.ADR(editor), "");
+    Ahistory.reset;
 end;
 
 proc quit(n: INT);
@@ -768,12 +805,35 @@ begin
     return TuiText.lineOf(SYSTEM.ADR(editor.text), editor.point), TuiText.lines(SYSTEM.ADR(editor.text));
 end;
 
-(* The line before, on the input's first line; else a line up. *)
+(* On an empty input with lines queued, the last of them taken back
+   into the input, to be edited, and true; false if not. Attached, the
+   session is told to take it out of its queue. *)
+proc takeBack: BOOL;
+var q: [][]U8; line: Buf.Buf;
+begin
+    q := Aview.queue();
+    if (LEN(TuiEdit.text(SYSTEM.ADR(editor))) > 0) or (LEN(q) = 0) then return false; end;
+    Buf.init(line, Heap.heap);
+    defer Buf.done(line);
+    if viewing then
+        Buf.str(line, q[LEN(q) - 1]);
+        tellSession(["unqueue", Buf.bytes(line)]);
+    else
+        _ := Aview.unqueue(line);
+        Aview.settle;
+    end;
+    fill(Buf.bytes(line), line.len);
+    return true;
+end;
+
+(* The line before, on the input's first line, or the last queued, on
+   an empty input; else a line up. *)
 proc historyBack(n: INT);
 var s: []const U8; l, _lines: INT; ok: BOOL;
 begin
     l, _lines := lineOf();
     if l > 0 then _ := TuiMap.run("edit-previous-line", n); return; end;
+    if takeBack() then return; end;
     s, ok := Ahistory.back(TuiEdit.text(SYSTEM.ADR(editor)));
     if ok then fill(s, LEN(s)); end;
 end;
@@ -788,8 +848,9 @@ begin
     if ok then fill(s, LEN(s)); end;
 end;
 
-(* <up>: a line up in the input; on its first line, the transcript
-   scrolled back a line, as the wheel sends it. *)
+(* <up>: a line up in the input; else, on its first line, the
+   transcript scrolled back a line, as the wheel sends it: never a
+   queued line taken back, which the wheel would do unasked. *)
 proc arrowUp(n: INT);
 var l, _lines: INT;
 begin
@@ -1202,6 +1263,9 @@ begin
         col := said(s, r, right, Buf.bytes(flash), TuiScreen.style(Term.good, {TuiScreen.Attr.bold}));
     elsif notice.len > 0 then
         col := said(s, r, right, Buf.bytes(notice), noticeStyle);
+    elsif Aview.held() and (thread = nil) and not viewBusy then
+        col := TuiScreen.putTo(s, r, 0, right, " queue held \u{B7} RET runs it \u{B7} ^C empties it ",
+            TuiScreen.style(Term.warn, {}));
     elsif (thread # nil) or viewBusy then
         col := TuiScreen.putTo(s, r, 0, right, " \u{25CF} working \u{B7} ^C stops ", TuiScreen.style(Term.info, {}));
     end;
@@ -1281,8 +1345,22 @@ begin
     return piece(s, col + Near, Buf.bytes(b), TuiScreen.style(Term.warn, {TuiScreen.Attr.bold}));
 end;
 
+(* The count of lines queued from col, if any are, held or not: the
+   column after. *)
+proc queued(s: ^TuiScreen.Screen; col: INT): INT;
+var b: Buf.Buf; role: Term.Role;
+begin
+    if LEN(Aview.queue()) = 0 then return col; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, "{} queued", [Fmt.int(LEN(Aview.queue()))]);
+    role := Term.info;
+    if Aview.held() then Buf.str(b, ", held"); role := Term.warn; end;
+    return piece(s, col + Near, Buf.bytes(b), TuiScreen.style(role, {TuiScreen.Attr.bold}));
+end;
+
 (* The status line's parts but the hints, those in shown and the mode,
-   safety, plan and view always, Gap apart from column 0, the title ending by
+   safety, plan, view and queue always, Gap apart from column 0, the title ending by
    limit: the column after them. With s nil, only measured. *)
 proc parts(s: ^TuiScreen.Screen; shown: Parts; limit: INT): INT;
 var col: INT; dim: TuiScreen.Style;
@@ -1300,6 +1378,7 @@ begin
         col := piece(s, col + Near, "plan ?", TuiScreen.style(Term.warn, {}));
     end;
     col := viewed(s, col);
+    col := queued(s, col);
     if Part.model in shown then
         col := piece(s, col + Gap, Buf.bytes(facts.model), TuiScreen.style(Term.strong, {}));
         if Part.provider in shown then col := piece(s, col, " @ ", dim); col := piece(s, col, Buf.bytes(facts.provider), dim); end;
@@ -1328,6 +1407,7 @@ begin
     if viewing then
         col := piece(s, 0, " ATTACHED ", TuiScreen.style(Term.strong, {TuiScreen.Attr.bold, TuiScreen.Attr.reverse}));
         col := viewed(s, col);
+        col := queued(s, col);
         col := piece(s, col + 1, Buf.bytes(viewStatus), TuiScreen.Plain);
         if col + Gap + w < s^.cols then _ := piece(s, s^.cols - w - 1, Hints, TuiScreen.style(Term.dim, {})); end;
         return;
@@ -1347,12 +1427,30 @@ begin
     _ := parts(s, shown, limit);
 end;
 
+(* The queue on the rows from r, q of them, dim, a line each, under
+   the prompt as the input is: the first of each line, cut to the row. *)
+proc drawQueue(s: ^TuiScreen.Screen; r, q: INT);
+var lines: [][]U8; i: INT; first: []const U8; dim: TuiScreen.Style;
+begin
+    lines := Aview.queue();
+    dim := TuiScreen.style(Term.dim, {});
+    for i := 0 to q - 1 do
+        first, _, _ := Str.cut(lines[i], "\n");
+        _ := TuiScreen.put(s, r + i, 0, Prompt, dim);
+        _ := TuiScreen.putTo(s, r + i, 2, s^.cols, first, dim);
+    end;
+end;
+
 proc draw(s: ^TuiScreen.Screen);
-var n, v: INT;
+var n, q, v: INT;
 begin
     n := TuiEdit.rows(SYSTEM.ADR(editor), s^.cols - 2);
     if n > MaxInput then n := MaxInput; end;
-    v := s^.rows - n - 2;
+    q := LEN(Aview.queue());
+    if q > MaxQueued then q := MaxQueued; end;
+    if q > s^.rows - n - 3 then q := s^.rows - n - 3; end;
+    if q < 0 then q := 0; end;
+    v := s^.rows - n - q - 2;
     if v < 1 then v := 1; end;
     view := v;
     if Acopy.active() then
@@ -1362,8 +1460,9 @@ begin
     end;
     if offered() then drawMenu(s, v); end;
     rule(s, v);
-    _ := TuiScreen.put(s, v + 1, 0, Prompt, TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}));
-    TuiEdit.draw(SYSTEM.ADR(editor), s, {row: v + 1, col: 2, rows: n, cols: s^.cols - 2},
+    drawQueue(s, v + 1, q);
+    _ := TuiScreen.put(s, v + q + 1, 0, Prompt, TuiScreen.style(Term.accent, {TuiScreen.Attr.bold}));
+    TuiEdit.draw(SYSTEM.ADR(editor), s, {row: v + q + 1, col: 2, rows: n, cols: s^.cols - 2},
         (question.len = 0) and not why.open and not Acopy.active());
     bottom(s);
 end;

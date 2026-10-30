@@ -26,6 +26,8 @@
        reset              the transcript was cleared
        status TEXT        the status line
        busy 0|1           a turn ended or started
+       queue H LINE...    the lines that wait for the turn, in order;
+                          H is 1 when they wait for an Enter too
 
    Whoever keeps a copy of the transcript appends what it is told, in
    order, and has the same numbers; apply is that, for a viewer. These
@@ -37,7 +39,8 @@
    only its user can enter; a connection from another user is dropped
    as well. A viewer opens with the netstring 6:attach, and keeps the
    connection: it is sent a reset, the transcript so far, the status
-   line and busy, then every change; it may send line and cancel. A
+   line, busy and the queue, then every change; it may send line,
+   cancel and unqueue. A
    connection that sends 3:who, is answered with one message, ok, the
    owner, the project root and the title, and closed: that is how
    sessions are listed and found. A question is never sent to a
@@ -49,6 +52,15 @@
    The viewers' sockets are read by the session's own loop: it
    watches listenFd, and the fds of viewers, tells service when one is
    ready, and takes what viewers typed with heard and cancelled.
+
+   The session's queue is here, one for every screen: the lines the
+   owner's human and the viewers type while a turn runs wait in it, in
+   the order typed, and the owner takes them with heard, a turn each.
+   After a turn that stopped or failed the owner may hold it until an
+   Enter: any line typed, an empty one too, lets it go. A viewer's
+   unqueue TEXT takes the last line back, if it is still TEXT, to be
+   edited. A change is told when the owner settles, after taking what
+   it can, so that a line that runs at once is never told as waiting.
 
    Depends on Aboard, Aframe, Astore and Sys. Leaves out the editors'
    protocol of arno-peer(5), which has a socket of its own. *)
@@ -90,7 +102,9 @@ var
     listener: INT;            (* the session's socket, -1 for none *)
     path: Buf.Buf;            (* its path *)
     out: Buf.Buf;             (* the message being made *)
-    heardLines: Strs.Vec;     (* lines viewers typed, not yet taken *)
+    queued: Strs.Vec;         (* the queue: lines typed during a turn, the owner's and viewers', in order *)
+    holding: BOOL;            (* the queue waits for an Enter, after a turn that stopped or failed *)
+    queueTold: Buf.Buf;       (* the queue's message as last told *)
     cancelling: BOOL;         (* a viewer said cancel *)
     owner, root, title: Buf.Buf;   (* what who answers *)
     status: Buf.Buf;          (* the status line last told *)
@@ -203,8 +217,98 @@ begin
     tell(Buf.bytes(out));
 end;
 
+(* The queue *)
+
+(* s copied onto the end of the queue. *)
+proc push(s: []const U8);
+var c: []U8; ok: BOOL;
+begin
+    c, ok := Str.copy(Heap.heap, s);
+    if not ok then Rt.stop("arno: out of memory"); end;
+    Strs.push(queued, c);
+end;
+
+(* Line i of the queue taken out of it. *)
+proc forget(i: INT);
+begin
+    Str.free(Heap.heap, Strs.all(queued)[i]);
+    Strs.remove(queued, i, 1);
+end;
+
+(* s, typed while a turn runs, put at the end of the queue; any line
+   typed, an empty one too, which is not kept, lets go of a hold. *)
+proc enqueue*(s: []const U8);
+begin
+    holding := false;
+    s := Str.trim(s);
+    if LEN(s) > 0 then push(s); end;
+end;
+
+(* The lines that wait, in order: the owner's queue, or, on a viewer,
+   the session's as last told. *)
+proc queue*: [][]U8;
+begin
+    return Strs.all(queued);
+end;
+
+(* Whether the queue waits for an Enter. *)
+proc held*: BOOL;
+begin
+    return holding and (queued.len > 0);
+end;
+
+(* The queue held until an Enter, or not. *)
+proc hold*(yes: BOOL);
+begin
+    holding := yes;
+end;
+
+(* The last line of the queue taken back, into line; false if there is
+   none. *)
+proc unqueue*(var line: Buf.Buf): BOOL;
+begin
+    if queued.len = 0 then return false; end;
+    Buf.reset(line);
+    Buf.str(line, Strs.all(queued)[queued.len - 1]);
+    forget(queued.len - 1);
+    return true;
+end;
+
+(* The queue emptied. *)
+proc clearQueue*;
+begin
+    while queued.len > 0 do forget(queued.len - 1); end;
+    holding := false;
+end;
+
+(* The queue's message appended to b. *)
+proc packQueue(var b: Buf.Buf);
+var f: Fields.Vec; i: INT;
+begin
+    Fields.init(f, Heap.heap);
+    defer Fields.done(f);
+    Fields.push(f, "queue");
+    if held() then Fields.push(f, "1"); else Fields.push(f, "0"); end;
+    for i := 0 to queued.len - 1 do Fields.push(f, Strs.all(queued)[i]); end;
+    Aframe.pack(b, Fields.all(f));
+end;
+
+(* The queue told, if it changed since it was last told. *)
+proc settle*;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    packQueue(b);
+    if Buf.bytes(b) = Buf.bytes(queueTold) then return; end;
+    Buf.reset(queueTold);
+    Buf.str(queueTold, Buf.bytes(b));
+    tell(Buf.bytes(b));
+end;
+
 (* What a viewer that arrives is told: the transcript so far, a reply
-   still streaming as far as it has got, then the status line and busy. *)
+   still streaming as far as it has got, then the status line, busy,
+   and the queue if anything waits. *)
 proc snapshot(var b: Buf.Buf);
 var i: INT;
 begin
@@ -212,6 +316,7 @@ begin
     for i := 0 to LEN(Aboard.all()) - 1 do entry(i, b); end;
     Aframe.pack(b, ["status", Buf.bytes(status)]);
     if busy then Aframe.pack(b, ["busy", "1"]); else Aframe.pack(b, ["busy", "0"]); end;
+    if queued.len > 0 then packQueue(b); end;
 end;
 
 (* The snapshot for the owner, a host that starts listening late: the
@@ -429,10 +534,10 @@ begin
 end;
 
 (* Viewer i's inbox read as far as it makes whole messages: a hail
-   or a who first, then lines and cancels. false if it sent what is no
+   or a who first, then lines, cancels and unqueues. false if it sent what is no
    message, or a who is answered, and it is to be dropped. *)
 proc read(i: INT): BOOL;
-var v: ^Viewer; f: Fields.Vec; one: []const U8; used: INT; s: []U8; ok: BOOL;
+var v: ^Viewer; f: Fields.Vec; one: []const U8; used: INT;
 begin
     v := SYSTEM.ADR(Viewers.all(viewers)[i]);
     Fields.init(f, Heap.heap);
@@ -451,11 +556,14 @@ begin
             used := Aframe.take(Buf.bytes(v^.inbox), f);
             if used <= 0 then return used = 0; end;
             if f.len > 0 then
-                if (Fields.all(f)[0] = "line") and (f.len >= 2) then
-                    s, ok := Str.copy(Heap.heap, Fields.all(f)[1]);
-                    if ok then Strs.push(heardLines, s); end;
-                elsif Fields.all(f)[0] = "cancel" then
+                one := Fields.all(f)[0];
+                if (one = "line") and (f.len >= 2) then
+                    enqueue(Fields.all(f)[1]);
+                elsif one = "cancel" then
                     cancelling := true;
+                elsif (one = "unqueue") and (f.len >= 2) and (queued.len > 0) and
+                    (Strs.all(queued)[queued.len - 1] = Fields.all(f)[1]) then
+                    forget(queued.len - 1);
                 end;
             end;
         end;
@@ -504,16 +612,14 @@ begin
     end;
 end;
 
-(* The next line a viewer typed, into line; false if there is none. *)
+(* The next line of the queue taken, into line; false if there is
+   none. *)
 proc heard*(var line: Buf.Buf): BOOL;
-var s: []U8;
 begin
-    if heardLines.len = 0 then return false; end;
-    s := Strs.all(heardLines)[0];
-    Strs.remove(heardLines, 0, 1);
+    if queued.len = 0 then return false; end;
     Buf.reset(line);
-    Buf.str(line, s);
-    Str.free(Heap.heap, s);
+    Buf.str(line, Strs.all(queued)[0]);
+    forget(0);
     return true;
 end;
 
@@ -554,10 +660,11 @@ begin
 end;
 
 (* One message of the session applied to the Board here: status is
-   the status line it set, busy whether a turn runs. A message that is
+   the status line it set, busy whether a turn runs; queue is kept as
+   this one's queue, to be shown. A message that is
    not understood, or an entry that isn't there, is left out. *)
 proc apply*(f: [][]const U8; var statusLine: Buf.Buf; var running: BOOL);
-var n: I64; ok: BOOL; e: []Aboard.Entry;
+var n: I64; ok: BOOL; e: []Aboard.Entry; i: INT;
 begin
     if LEN(f) = 0 then return; end;
     n := -1;
@@ -578,6 +685,10 @@ begin
         end;
     | "status": if LEN(f) >= 2 then Buf.reset(statusLine); Buf.str(statusLine, f[1]); end;
     | "busy": if LEN(f) >= 2 then running := f[1] = "1"; end;
+    | "queue":
+        clearQueue();
+        holding := (LEN(f) >= 2) and (f[1] = "1");
+        for i := 2 to LEN(f) - 1 do push(f[i]); end;
     | else:
     end;
     Aboard.speak(0);
@@ -797,7 +908,7 @@ begin
 end;
 
 proc main*: INT;
-var got, line: Buf.Buf; fd, k: INT; pid: [20]U8;
+var got, line: Buf.Buf; fd, k: INT; pid: [20]U8; ok: BOOL;
 begin
     Buf.init(told, Heap.heap);
     Buf.init(got, Heap.heap);
@@ -843,12 +954,38 @@ begin
     (* what the viewer types *)
     Buf.reset(line);
     Aframe.pack(line, ["line", "hello"]);
+    Aframe.pack(line, ["line", "a"]);
+    Aframe.pack(line, ["line", "b"]);
+    Aframe.pack(line, ["unqueue", "b"]);
+    Aframe.pack(line, ["unqueue", "c"]);
     Aframe.pack(line, ["cancel"]);
     _ := Sys.send(fd, Buf.bytes(line));
     serviceAll();
+    settle();
+    received(fd, got);
+    expect("the queue, the last taken back", Buf.bytes(got), "queue|0|hello|a\n");
     if not heard(line) then failed := true; Out.str("Aview: no line\n"); end;
     expect("the line", Buf.bytes(line), "hello");
     if not cancelled() or cancelled() then failed := true; Out.str("Aview: cancel\n"); end;
+    hold(true);
+    settle();
+    received(fd, got);
+    expect("the queue held", Buf.bytes(got), "queue|1|a\n");
+    Buf.reset(line);
+    Aframe.pack(line, ["line", ""]);
+    _ := Sys.send(fd, Buf.bytes(line));
+    serviceAll();
+    settle();
+    settle();
+    received(fd, got);
+    expect("an empty line lets it go", Buf.bytes(got), "queue|0|a\n");
+    clearQueue();
+    settle();
+    received(fd, got);
+    expect("the queue emptied", Buf.bytes(got), "queue|0\n");
+    apply(["queue", "1", "x"], line, ok);
+    if not held() or (LEN(queue()) # 1) then failed := true; Out.str("Aview: a queue told\n"); end;
+    clearQueue();
     Sys.close(fd);
     serviceAll();
 
@@ -872,7 +1009,9 @@ begin
     kinds := ["user", "asst", "tool", "info", "err"];
     listener := -1;
     Viewers.init(viewers, Heap.heap);
-    Strs.init(heardLines, Heap.heap);
+    Strs.init(queued, Heap.heap);
+    Buf.init(queueTold, Heap.heap);
+    packQueue(queueTold);
     Buf.init(path, Heap.heap);
     Buf.init(out, Heap.heap);
     Buf.init(owner, Heap.heap);

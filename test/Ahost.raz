@@ -21,8 +21,13 @@
        the order they came, those of a running turn after it, and says
        error to the verbs and fields it can't take, to a protocol it
        doesn't speak and to bytes that are no message;
+     - queues a line that comes during a turn, tells it as queue, and
+       runs it after the turn;
      - shows a viewer on its session socket the transcript, and runs
        the line the viewer types;
+     - on a terminal, queues what is typed during a turn, holds the
+       queue after C-c until RET, gives the last back to C-p, and
+       empties it at a second C-c, as a viewer is told;
      - ends at bye, with status 0, even with a question waiting.
 
    Depends on Aframe, with which arno writes its messages too. *)
@@ -243,6 +248,72 @@ begin
     Sys.close(pty);
 end;
 
+(* The messages to a viewer, on fd, read until one holds text, which is
+   then in last; the terminal's screen, on pty, read meanwhile, so that
+   arno never waits to draw it. Every message read is kept in seen. *)
+proc watch(pty, fd: INT; var buf: Buf.Buf; text: []const U8): BOOL;
+var chunk: [4096]U8; i, n: INT;
+begin
+    for i := 1 to Patience div 10 do
+        while Aframe.take(Buf.bytes(buf), fields) > 0 do
+            _ := read(fd, buf, last);
+            Buf.str(seen, Buf.bytes(last));
+            Buf.add(seen, '\n');
+            if Str.find(Buf.bytes(last), text) >= 0 then return true; end;
+        end;
+        while Sys.ready(pty, 0) and (Sys.read(pty, chunk) > 0) do end;
+        if Sys.ready(fd, 10) then
+            n := Sys.read(fd, chunk);
+            if n <= 0 then break; end;
+            Buf.str(buf, chunk[0..n]);
+        end;
+    end;
+    fail("a viewer waiting for", text);
+    Out.str(Buf.bytes(seen));
+    return false;
+end;
+
+(* The queue of a terminal's arno, typed on its pty and seen by a
+   viewer on fd: a line typed during a turn waits; C-c stops the turn
+   and holds the queue, and RET runs it; C-p takes the last line back;
+   a second C-c empties the queue. *)
+proc queueing(pty, fd: INT; var buf: Buf.Buf);
+begin
+    clear();
+    _ := Sys.write(pty, `always read {"path":"Makefile"}` + "\r");
+    _ := watch(pty, fd, buf, "busy|1");
+    _ := Sys.write(pty, "first queued\r");
+    _ := watch(pty, fd, buf, "queue|");
+    is("a line typed during a turn is queued", "queue|0|first queued");
+    _ := Sys.write(pty, "\x03");
+    _ := watch(pty, fd, buf, "queue|");
+    is("a stop holds the queue", "queue|1|first queued");
+    mustNotHave("a held line doesn't run", "|user|first queued");
+    _ := Sys.write(pty, "\r");
+    _ := watch(pty, fd, buf, "busy|0");
+    mustHave("RET runs the queue", "|user|first queued");
+
+    clear();
+    _ := Sys.write(pty, `always read {"path":"Makefile"}` + "\r");
+    _ := watch(pty, fd, buf, "busy|1");
+    _ := Sys.write(pty, "second queued\rthird\r");
+    _ := watch(pty, fd, buf, "queue|0|second queued|third");
+    _ := Sys.write(pty, "\x10");   (* C-p: Up is the wheel, and leaves the queue be *)
+    _ := watch(pty, fd, buf, "queue|");
+    is("C-p takes the last back", "queue|0|second queued");
+    _ := Sys.write(pty, "\r");
+    _ := watch(pty, fd, buf, "queue|0|second queued|third");
+    _ := Sys.write(pty, "\x03\x03");
+    _ := watch(pty, fd, buf, "queue|0");
+    is("a second C-c empties the queue", "queue|0");
+    if not has("busy|0") then _ := watch(pty, fd, buf, "busy|0"); end;
+    _ := Sys.write(pty, "after\r");
+    _ := watch(pty, fd, buf, "|user|after");
+    mustNotHave("a second C-c empties the queue", "|user|second queued");
+    mustNotHave("a second C-c empties the queue", "|user|third");
+    _ := watch(pty, fd, buf, "busy|0");
+end;
+
 (* arno on a terminal is a session too: a viewer on its socket is
    shown its transcript, and what it types is run there. *)
 proc terminal(arno: []const U8);
@@ -282,6 +353,7 @@ begin
     ok := read(fd, buf, got);
     while ok and (Str.find(Buf.bytes(got), "/new") < 0) do ok := read(fd, buf, got); end;
     if not ok then fail("a viewer's command is run on the terminal", Buf.bytes(got)); end;
+    queueing(pty, fd, buf);
     Sys.close(fd);
     _ := Sys.write(pty, "\x04");
     while Sys.ready(pty, 500) do
@@ -434,6 +506,27 @@ begin
     idle();
     mustHave("a cancel refuses a call waiting", "interrupted by user");
     mustHave("a cancelled turn says it was interrupted", "|err|interrupted");
+end;
+
+(* A line sent while a turn runs waits in the queue, which the host is
+   told, and runs after the turn. *)
+proc queued;
+var id: Buf.Buf;
+begin
+    Buf.init(id, Heap.heap);
+    defer Buf.done(id);
+    clear();
+    line(`call doc_read {"n":3}`);
+    _ := await("call|");
+    Buf.str(id, idOf());
+    line("queued line");
+    _ := await("queue|");
+    is("a line during a turn is queued", "queue|0|queued line");
+    send(["result", Buf.bytes(id), "fine"]);
+    _ := await("queue|");
+    is("and taken when the turn ends", "queue|0");
+    idle();
+    mustHave("the queued line runs", "|user|queued line");
 end;
 
 (* A question refused with a reason, which is in the result; a question
@@ -617,6 +710,7 @@ begin
     turn();
     command();
     hostTool();
+    queued();
     questions();
     requests();
     order();

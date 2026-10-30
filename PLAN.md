@@ -537,11 +537,11 @@ one or more commits that build with `-Werror`.
      · $0.04 · read enterprise/cv.ts`. Opening it shows its view. The
      shape parallel workers need, and may wait for them.
    - [x] Workers in parallel.
-   - [ ] Queued prompts. Enter while a turn runs does nothing now, so the
+   - [x] Queued prompts. Enter while a turn runs does nothing now, so the
      human waits to say the next thing. It is queued instead: shown above
      the input, dim, with a count on the status line, and run in order,
      each as its own turn, as the last ends; a slash command takes its
-     place in the line. Up takes the last back to edit; ^C stops the turn
+     place in the line. C-p takes the last back to edit (not Up, the wheel); ^C stops the turn
      and keeps the queue, a second ^C clears it. A turn that ends on an
      error or a stop holds the queue until Enter. An attached viewer
      queues on the host, so every screen shows the same queue.

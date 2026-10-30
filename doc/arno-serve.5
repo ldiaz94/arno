@@ -136,8 +136,9 @@ The tools of MCP servers are not affected.
 .It Cm line Ar text
 A line of input, as typed: a message to the model, or a command that starts
 with a slash.
-Lines that come while a turn runs wait for it to end, the host's before a
-viewer's.
+Lines that come while a turn runs wait for it to end, in the session's
+queue, the host's and viewers' in the order they came; see
+.Cm queue .
 An empty line is ignored.
 .Ic /quit
 and
@@ -293,6 +294,19 @@ If a cancel comes, or the host goes, the call's result is
 .Ql "interrupted by user" ,
 or
 .Ql "error: NAME has gone away" .
+.It Cm queue Ar held Op Ar line ...
+The lines that wait for the turn running, in the order they will run,
+each its own field; none when the queue is empty.
+It comes when the queue changes, once arno has started what it can, so a
+line that runs at once is never told as waiting.
+.Ar held
+is 1 when a terminal's
+.Nm arno
+holds the queue after a turn that ended on an error or a stop, until an
+Enter; else 0.
+With
+.Fl \-serve
+it is always 0: the host says what runs.
 .It Cm error Ar text
 What arno made of the host's last message: see above; or, to a request, why it
 cannot be done.
@@ -443,14 +457,30 @@ and
 a reply that is still streaming as far as it has got; the
 .Cm status ;
 and
-.Cm busy .
+.Cm busy ;
+and
+.Cm queue ,
+if lines wait.
 From then on it gets every change, in the host's own messages
-.Pq Cm push , tool , append , done , reset , status , busy .
+.Pq Cm push , tool , append , done , reset , status , busy , queue .
 .Pp
 It may send
 .Cm line ,
-as the host does, and
-.Cm cancel .
+as the host does, which joins the queue while a turn runs;
+.Cm cancel ;
+and
+.Cm unqueue Ar text .
+An empty
+.Cm line
+lets go of a held queue.
+A viewer's
+.Cm cancel
+stops the turn, as the host's does; with none running, or one stopping
+already, it empties the queue, as a second C-c does.
+.Cm unqueue
+takes the last line out of the queue, if it is still
+.Ar text ,
+for the viewer to edit.
 Anything else it sends is ignored.
 A viewer is never sent
 .Cm ask ,
