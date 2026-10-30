@@ -10,8 +10,16 @@
        silent   tells nothing, so that a client waits in vain
        die      ends as soon as it is told a text
 
+   It knows names, in the last text it was told: a line "let NAME"
+   defines NAME, and a line that starts with # is a comment. Asked for
+   the definition of a name in that text, it names the line that
+   defines it, or none if asked on that line itself, as raz-lsp does;
+   asked for its references, every line not a comment that holds it,
+   though only with no argument: with pull it offers none.
+
    Depends on rlsp's LspWire and LspText, and rjson's Json. Leaves out
-   every other request, which it lets pass without an answer. *)
+   every other request, which it lets pass without an answer, and a
+   name defined in another file. *)
 module Alspstub;
 import LspWire, LspText, Json, Buf, Heap, Sys, Str, Files, Fmt, Rt;
 import SYSTEM;
@@ -114,6 +122,63 @@ begin
     send(Buf.bytes(b));
 end;
 
+(* Line number n, from 0, of text; "" past the last. *)
+proc lineAt(n: INT): []const U8;
+var line, rest: []const U8; more: BOOL;
+begin
+    rest := Buf.bytes(text);
+    more := true;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if n = 0 then return line; end;
+        DEC(n);
+    end;
+    return "";
+end;
+
+(* The place of line n, its first character, as a JSON Location in the
+   text's file, added to b after a comma unless it is the first. *)
+proc location(var b: Buf.Buf; n: INT; var first: BOOL);
+begin
+    if not first then Buf.add(b, ','); end;
+    first := false;
+    Buf.str(b, "{\"uri\":");
+    Json.quote(SYSTEM.ADR(b), Buf.bytes(uri));
+    Fmt.write(b, ",\"range\":{{\"start\":{{\"line\":{},\"character\":0}},\"end\":{{\"line\":{},\"character\":0}}}}}}",
+        [Fmt.int(n), Fmt.int(n)]);
+end;
+
+(* The answer to the request in value, at a place in the text: the
+   definition of the word there, or if refs its references, added to b
+   as JSON. *)
+proc places(var b: Buf.Buf; refs: BOOL);
+var d: ^Json.Doc; line, rest, name: []const U8; n, c: I64; at, m: INT; more, first: BOOL;
+begin
+    d := SYSTEM.ADR(doc);
+    n, _ := Json.toInt(d, Json.get(d, value, "params.position.line"));
+    c, _ := Json.toInt(d, Json.get(d, value, "params.position.character"));
+    line := lineAt(INT(n));
+    at := LspText.column(line, INT(c));
+    m := at;
+    while (m < LEN(line)) and Str.isLetter(line[m]) do INC(m); end;
+    name := line[at..m];
+    first := true;
+    Buf.add(b, '[');
+    rest := Buf.bytes(text);
+    more := LEN(rest) > 0;
+    m := 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if refs then
+            if (Str.find(line, name) >= 0) and not Str.hasPrefix(line, "#") then location(b, m, first); end;
+        elsif (m # n) and Str.hasPrefix(line, "let ") and (Str.trim(line[4..LEN(line)]) = name) then
+            location(b, m, first);
+        end;
+        INC(m);
+    end;
+    Buf.add(b, ']');
+end;
+
 (* The message in value answered: whether to go on. *)
 proc handle: BOOL;
 var d: ^Json.Doc; method: []const U8; id: I64; b: Buf.Buf;
@@ -124,9 +189,10 @@ begin
     match method of
     | "initialize":
         if mode = "pull" then
-            reply(id, "{\"capabilities\":{\"textDocumentSync\":1,\"diagnosticProvider\":{\"interFileDependencies\":false}}}");
+            reply(id, "{\"capabilities\":{\"textDocumentSync\":1,\"definitionProvider\":true," +
+                "\"diagnosticProvider\":{\"interFileDependencies\":false}}}");
         else
-            reply(id, "{\"capabilities\":{\"textDocumentSync\":1}}");
+            reply(id, "{\"capabilities\":{\"textDocumentSync\":1,\"definitionProvider\":true,\"referencesProvider\":true}}");
         end;
     | "textDocument/didOpen": told("params.textDocument.text", "params.textDocument.version");
     | "textDocument/didChange": told("params.contentChanges[0].text", "params.textDocument.version");
@@ -137,6 +203,13 @@ begin
         faults(b);
         Buf.add(b, '}');
         reply(id, Buf.bytes(b));
+    | "textDocument/definition", "textDocument/references":
+        if mode # "silent" then
+            Buf.init(b, Heap.heap);
+            defer Buf.done(b);
+            places(b, method = "textDocument/references");
+            reply(id, Buf.bytes(b));
+        end;
     | "shutdown": reply(id, "null");
     | "exit": return false;
     | else:

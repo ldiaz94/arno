@@ -184,7 +184,7 @@ keys, the copy-mode keys, and the config keys.
 
 ### What the model may do
 
-The model has tools: `read`, `find`, `grep`, `def`, `outline`, `git`,
+The model has tools: `read`, `find`, `grep`, `def`, `refs`, `outline`, `git`,
 `run`, `check`, `edit`, `move`, `remove`, `note`, `skill` (your how-to for a kind of work, from
 `~/.config/arno/skills/NAME.md` or the project's Claude Code skills, its
 first line what it is for, read when the work calls for it), `search`, `fetch`,
@@ -268,7 +268,8 @@ program to its end and catches what it writes; `Ahtml` turns a page to
 text; `Aattach` makes the `@paths`. `Atools` lists the tools and runs
 a call, asking when it must. `Alsp` asks the language server config
 names for a file's type (`lsp.ts = ...`, on rlsp) what it finds wrong
-with a file just edited, for the edit's result.
+with a file just edited, for the edit's result, and where a name is
+defined and used, for `def` and `refs`.
 
 **3. The stage and the jail.** `Astage` is the copy of the project the
 model works on, and the diff of what it did. `Ajail` is the sandbox
@@ -317,7 +318,7 @@ over a pseudo-terminal with an editor in miniature (`test/Apeerhost.raz`),
 which asks, is answered, is called, and tries every forged ask. It was
 also tried against the real dwa. `Alsp`'s test talks to a language
 server in miniature (`test/Alspstub.raz`), pushed, pulled, silent, dying
-and missing, and in the jail; it was tried by hand against raz-lsp,
+and missing, and in the jail, and answering `def` and `refs`; it was tried by hand against raz-lsp,
 concha-lsp and typescript-language-server, in the jail and out. The README's recording is
 made by `make cast`, which is not part of the check.
 

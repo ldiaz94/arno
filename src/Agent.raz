@@ -86,7 +86,7 @@
 
    Each turn begins by asking Apeer whether an editor is reachable, which
    decides whether its tools are offered, and ends by stopping the
-   language servers its edits started (Alsp).
+   language servers its edits, defs and refs started (Alsp).
 
    Depends on Aprompt (the system prompt), Aahead, Aprice, Atools, Alsp, Apeer,
    Afence, Astage (a worker's copy), Awire, Amsg, Astore and Thread.

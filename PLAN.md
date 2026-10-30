@@ -625,7 +625,7 @@ one or more commits that build with `-Werror`.
      is said once and not tried again. Left for rlsp: `start` makes the
      server lead a process group, so the helper's setsid fails and a
      jailed server stays in the terminal's session.
-   - [ ] `def` and `refs` by name through the server, the rule of thumb
+   - [x] `def` and `refs` by name through the server, the rule of thumb
      kept where there is none.
    - [x] raz-lsp, done in raz: `raz -q` and a thin server on rlsp, as
      concha-lsp is.

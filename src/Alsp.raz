@@ -1,5 +1,6 @@
 (* Alsp: a language server for a type of file, asked what it finds
-   wrong with a file the model has just edited.
+   wrong with a file the model has just edited, and where a name is
+   defined and used, for def and refs.
 
    Config's lsp.EXT = COMMAND ARGS... names the server for the files
    whose name ends in .EXT, as lsp.ts = typescript-language-server
@@ -18,6 +19,25 @@
 
    or "diagnostics: no errors", or that none came within Wait. A
    column is a byte's, made from the server's UTF-16 one (LspText).
+
+   A server finds a definition by place, not by name, so def NAME
+   (define) asks it at the places NAME stands as a word (Afind.word) in
+   the files under def's path whose type has a server that offers
+   definitions: in each file, one place after another till one is
+   answered with a place, as asked at the declaration itself some
+   servers name nothing (raz-lsp). That finds the definitions of what
+   the files use, the name's overloads among them; workspace/symbol
+   would find them by name, but not every server offers it, raz-lsp
+   among them. refs NAME (refer) asks a server that offers references
+   for those of the first place answered, the declaration included.
+   At most MaxAsks are asked in a call, within Look all told, a
+   server's start among it. What a
+   server answers is shown as the rule of thumb's would be: each
+   definition with its comment and its lines (Afind.defAt), each
+   reference as grep shows a match; a place outside the fence only by
+   its path and line, as read asks for it. Where no server answers,
+   for want of one, of a place or of time, def and refs are left to
+   the rule of thumb (Afind), and nothing is said of it.
 
    A server is started on the first edit of its type in a turn, rooted
    at the zone, the stage's copy while staged, and stopped when the
@@ -44,17 +64,19 @@
    then at most Wait for each edit's diagnostics, and Stop for each to
    shut down at the turn's end, after which it is killed. A server
    that won't start, or breaks, is said once, in that edit's result,
-   and its type is not tried again in the session.
+   and its type is not tried again in the session; one that does so
+   for def or refs is not tried again either, but is said nowhere.
 
    Depends on rlsp (LspServer, LspText), rjson's Json, Aconf (the
-   commands), Afence (the zone) and Arun (the jail). Leaves out every
-   other request (hover, definition), didClose, files changed by other
-   means than edit (no didChangeWatchedFiles), an edit an editor makes
-   (it has servers of its own), info and hints, and a file longer than
+   commands), Afence (the zone), Afind (the walk, and showing what is
+   found) and Arun (the jail). Leaves out every other request (hover,
+   workspace/symbol), didClose, files changed by other means than
+   edit (no didChangeWatchedFiles), an edit an editor makes (it has
+   servers of its own), info and hints, and a file longer than
    MaxText. *)
 module Alsp;
-import LspServer, LspText, Json, Aconf, Afence, Arun, Buf, Str, Sys, Files, Fmt, Heap, Rt, Out, Strs := Vec([]const U8),
-    Docs := Vec(Doc);
+import LspServer, LspText, Json, Aconf, Afence, Afind, Arun, Buf, Str, Sys, Files, Fmt, Heap, Mem, Rt, Out,
+    Strs := Vec([]const U8), Docs := Vec(Doc), Places := Vec(Place);
 import SYSTEM;
 
 type
@@ -72,6 +94,14 @@ type
         lsp: LspServer.Server;   (* the process and its session *)
         docs: Docs.Vec;          (* the files it has been told *)
         next: INT;               (* the id of its next request, from 3 *)
+        defines: BOOL;           (* it offers definitions *)
+        refers: BOOL;            (* it offers references *)
+    end;
+
+    (* A place a server names: a file and a line in it. *)
+    Place = record
+        path: []U8;   (* the file, absolute, from the call's memory *)
+        line: INT;    (* from 0 *)
     end;
 
     (* What an edit waits for: the initialize answered, diagnostics
@@ -88,6 +118,8 @@ const
     Start = 10000;                    (* ms a server may take to start and initialize *)
     Wait = 2000;                      (* ms an edit waits for its diagnostics *)
     Stop = 500;                       (* ms a server has to shut down, before it is killed *)
+    Look = 10000;                     (* ms def or refs waits for the servers' answers, all told *)
+    MaxAsks = 8;                      (* places def or refs asks the servers about *)
     MaxText = 4 * 1024 * 1024;        (* bytes of a file past which it is not told *)
     FirstId = 3;                      (* LspServer keeps 1 and 2 for itself *)
     (* where a jailed server keeps its state and cache, in the jail's /tmp *)
@@ -231,6 +263,16 @@ begin
     return Arun.helped(j, args, env, secs, dirs);
 end;
 
+(* Whether the answer to initialize, s's last message, says the server
+   offers what, one of its capabilities. *)
+proc offers(var s: LspServer.Server; what: []const U8): BOOL;
+var d: ^Json.Doc; v: Json.Value;
+begin
+    d := SYSTEM.ADR(s.doc);
+    v := Json.member(d, Json.get(d, s.value, "result.capabilities"), what);
+    return (v # Json.None) and (v # Json.False) and (v # Json.Null);
+end;
+
 (* servers[i], a free slot, made ext's server, its command started in
    the zone and initialized: whether it was, and if not why. *)
 proc launch(i: INT; ext, command: []const U8; var why: Buf.Buf): BOOL;
@@ -258,7 +300,11 @@ begin
     if nul >= 0 then Sys.close(nul); end;
     got := Outcome.died;
     if ok then got := await(s^, Awaited.initialized, "", 0, 0, Start); end;
-    if got = Outcome.came then return true; end;
+    if got = Outcome.came then
+        s^.defines := offers(s^.lsp, "definitionProvider");
+        s^.refers := offers(s^.lsp, "referencesProvider");
+        return true;
+    end;
     if got = Outcome.late then
         Fmt.write(why, "it did not answer within {} s", [Fmt.int(Start div 1000)]);
     else
@@ -387,21 +433,28 @@ begin
     return got;
 end;
 
-(* After an edit that left the file at path holding text: what its
-   type's language server finds wrong with it added to out, if config
-   names a server for the type and the file is in the zone. *)
-proc diagnose*(path, text: []const U8; var out: Buf.Buf);
-var ext, command: []const U8; key, abs, uri, why: Buf.Buf; i: INT; got: Outcome;
+(* The command of the server for files of type ext, as config names
+   it; "" if it names none, or that server failed this session. *)
+proc commandFor(ext: []const U8): []const U8;
+var key: Buf.Buf;
 begin
-    if conf = nil then return; end;
-    ext := extension(path);
-    if (LEN(ext) = 0) or given(ext) or (LEN(text) > MaxText) then return; end;
+    if (conf = nil) or (LEN(ext) = 0) or given(ext) then return ""; end;
     Buf.init(key, Heap.heap);
     defer Buf.done(key);
     Buf.str(key, "lsp.");
     Buf.str(key, ext);
-    command := Str.trim(Aconf.get(conf^, Buf.bytes(key)));
-    if LEN(command) = 0 then return; end;
+    return Str.trim(Aconf.get(conf^, Buf.bytes(key)));
+end;
+
+(* After an edit that left the file at path holding text: what its
+   type's language server finds wrong with it added to out, if config
+   names a server for the type and the file is in the zone. *)
+proc diagnose*(path, text: []const U8; var out: Buf.Buf);
+var ext, command: []const U8; abs, uri, why: Buf.Buf; i: INT; got: Outcome;
+begin
+    ext := extension(path);
+    command := commandFor(ext);
+    if (LEN(command) = 0) or (LEN(text) > MaxText) then return; end;
     Buf.init(abs, Heap.heap);
     defer Buf.done(abs);
     Buf.init(uri, Heap.heap);
@@ -426,6 +479,227 @@ begin
             [Fmt.str(ext), Fmt.str(MSG(servers[i].lsp.err))]);
         drop(i);
     end;
+end;
+
+(* def and refs *)
+
+(* The place v names, a Location or a LocationLink, added to found,
+   from mem, unless it is there already. *)
+proc place(d: ^Json.Doc; v: Json.Value; mem: ^Mem.Allocator; var found: Places.Vec);
+var uri, start: Json.Value; line: I64; path: Buf.Buf; all: []Place; k: INT; ok: BOOL;
+begin
+    uri := Json.member(d, v, "uri");
+    start := Json.get(d, v, "range.start.line");
+    if uri = Json.None then
+        uri := Json.member(d, v, "targetUri");
+        start := Json.get(d, v, "targetSelectionRange.start.line");
+    end;
+    line, ok := Json.toInt(d, start);
+    Buf.init(path, mem);
+    if not ok or not LspText.path(Json.text(d, uri), path) then return; end;
+    all := Places.all(found);
+    for k := 0 to LEN(all) - 1 do
+        if (all[k].line = INT(line)) and (all[k].path = Buf.bytes(path)) then return; end;
+    end;
+    Places.push(found, {path: Buf.bytes(path), line: INT(line)});
+end;
+
+(* s asked for the definition of what stands at line n, UTF-16
+   character c, of the file at uri, or its references if refs, waiting
+   at most ms: the places it answers added to found, and how the wait
+   ended. *)
+proc query(var s: Server; refs: BOOL; uri: []const U8; n, c, ms: INT; mem: ^Mem.Allocator; var found: Places.Vec): Outcome;
+var params: Buf.Buf; method: []const U8; result: Json.Value; d: ^Json.Doc; id, i: INT; got: Outcome;
+begin
+    Buf.init(params, Heap.heap);
+    defer Buf.done(params);
+    document(params, uri);
+    Fmt.write(params, "}},\"position\":{{\"line\":{},\"character\":{}}}", [Fmt.int(n), Fmt.int(c)]);
+    method := "textDocument/definition";
+    if refs then
+        method := "textDocument/references";
+        Buf.str(params, ",\"context\":{\"includeDeclaration\":true}");
+    end;
+    Buf.add(params, '}');
+    id := s.next;
+    INC(s.next);
+    if not LspServer.request(s.lsp, id, method, Buf.bytes(params)) then return Outcome.died; end;
+    got := await(s, Awaited.answered, "", 0, id, ms);
+    if got # Outcome.came then return got; end;
+    d := SYSTEM.ADR(s.lsp.doc);
+    result := Json.member(d, s.lsp.value, "result");
+    if Json.kind(d, result) = Json.object then
+        place(d, result, mem, found);
+    elsif Json.kind(d, result) = Json.array then
+        for i := 0 to Json.len(d, result) - 1 do place(d, Json.item(d, result, i), mem, found); end;
+    end;
+    return got;
+end;
+
+(* The slot of the server that answers for the file at path, with its
+   text in text and its URI in uri, if name is in it; or -1 if none
+   would: the type has no server, or one that doesn't offer what is
+   asked (references if refs, else definitions), or the file lies
+   outside the zone, or is longer than MaxText. A server that won't
+   start is not tried again. *)
+proc opened(path, name: []const U8; refs: BOOL; var text, uri: Buf.Buf): INT;
+var ext, command: []const U8; abs, why: Buf.Buf; info: Sys.Info; i, e: INT;
+begin
+    ext := extension(path);
+    command := commandFor(ext);
+    if LEN(command) = 0 then return -1; end;
+    info, e := Sys.info(path);
+    if (e # 0) or (info.size > MaxText) then return -1; end;
+    Buf.reset(text);
+    if (Files.load(path, text) # 0) or (Str.find(Buf.bytes(text), name) < 0) then return -1; end;
+    Buf.init(abs, Heap.heap);
+    defer Buf.done(abs);
+    Afence.resolve(path, abs);
+    if not Afence.within(Buf.bytes(abs), Afence.zone) or not LspText.uri(Buf.bytes(abs), uri) then return -1; end;
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    i := running(ext, command, why);
+    if i < 0 then
+        Strs.push(failed, keep(ext));
+        return -1;
+    end;
+    if refs and not servers[i].refers or not refs and not servers[i].defines then return -1; end;
+    return i;
+end;
+
+(* s told text, the file at uri, and asked about each place name stands
+   as a word in it, till one is answered with a place, asks reaches
+   MaxAsks, or the deadline passes, which ends it as late; what it
+   answers added to found. *)
+proc askIn(var s: Server; refs: BOOL; uri, ext, text, name: []const U8; deadline: I64; var asks: INT; mem: ^Mem.Allocator;
+        var found: Places.Vec): Outcome;
+var line, rest: []const U8; n, at, last, before: INT; more: BOOL; got: Outcome;
+begin
+    if tell(s, uri, ext, text) = 0 then return Outcome.died; end;
+    before := found.len;
+    last := Str.findLast(name, ".") + 1;   (* a dotted name is asked about at its last part *)
+    rest := text;
+    more := true;
+    n := 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        at := Afind.word(line, name, 0);
+        while at >= 0 do
+            if Sys.clock() >= deadline then return Outcome.late; end;
+            if asks >= MaxAsks then return Outcome.came; end;
+            INC(asks);
+            got := query(s, refs, uri, n, LspText.units(line, at + last), INT((deadline - Sys.clock()) div 1000000), mem, found);
+            if (got # Outcome.came) or (found.len > before) then return got; end;
+            at := Afind.word(line, name, at + 1);
+        end;
+        INC(n);
+    end;
+    return Outcome.came;
+end;
+
+(* The places the servers of the files under dir, or of the file dir,
+   name for name: its definitions, or the references of the first of
+   them a server answers for if refs; added to found, from mem. *)
+proc gather(dir, name: []const U8; refs: BOOL; mem: ^Mem.Allocator; var found: Places.Vec);
+var w: Afind.Walk; p: []const U8; text, uri: Buf.Buf; i, asks: INT; deadline: I64; got: Outcome; ok: BOOL;
+begin
+    if (conf = nil) or (LEN(name) = 0) then return; end;
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(uri, Heap.heap);
+    defer Buf.done(uri);
+    asks := 0;
+    deadline := Sys.clock() + I64(Look) * 1000000;
+    Afind.open(w, dir);
+    defer Afind.close(w);
+    p, ok := Afind.next(w);
+    (* the walk is bounded by the deadline too: a large tree may hold few files of the type *)
+    while ok and (asks < MaxAsks) and not (refs and (found.len > 0)) and (Sys.clock() < deadline) do
+        i := opened(p, name, refs, text, uri);
+        if i >= 0 then
+            got := askIn(servers[i], refs, Buf.bytes(uri), servers[i].ext, Buf.bytes(text), name, deadline, asks, mem, found);
+            if got = Outcome.late then return; end;
+            if got = Outcome.died then
+                Strs.push(failed, keep(servers[i].ext));
+                drop(i);
+                return;
+            end;
+        end;
+        p, ok := Afind.next(w);
+    end;
+end;
+
+(* path, absolute, as the tools show it: under the working directory
+   cwd, from there. *)
+proc relative(path, cwd: []const U8): []const U8;
+begin
+    if cwd = "/" then return path[1..LEN(path)]; end;
+    if Afence.within(path, cwd) and (path # cwd) then return path[LEN(cwd) + 1..LEN(path)]; end;
+    return path;
+end;
+
+(* The working directory, resolved, made what cwd holds. *)
+proc workDir(var cwd: Buf.Buf);
+var d: []const U8;
+begin
+    d, _ := Sys.workDir();
+    Afence.resolve(d, cwd);
+end;
+
+(* Where name is defined, as the language servers of the files under
+   dir, or the file dir, say: each definition as def shows one
+   (Afind.defAt), at most Afind.MaxDefs, added to out; false, and out
+   as it was, if none said, for the rule of thumb to answer. *)
+proc define*(dir, name: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf): BOOL;
+var found: Places.Vec; all: []Place; cwd: Buf.Buf; p: []const U8; k: INT;
+begin
+    Places.init(found, mem);
+    gather(dir, name, false, mem, found);
+    all := Places.all(found);
+    Buf.init(cwd, mem);
+    workDir(cwd);
+    for k := 0 to LEN(all) - 1 do
+        if k = Afind.MaxDefs then
+            Fmt.write(out, "[stopped at {} definitions; give a path]", [Fmt.int(Afind.MaxDefs)]);
+            break;
+        end;
+        p := relative(all[k].path, Buf.bytes(cwd));
+        if not Afence.inside(p) or not Afind.defAt(p, all[k].line, mem, out) then
+            Fmt.write(out, "{}:{}\n", [Fmt.str(p), Fmt.int(all[k].line + 1)]);
+        end;
+    end;
+    return LEN(all) > 0;
+end;
+
+(* Where name is used, as the language server of the first file under
+   dir, or the file dir, that answers says: each line as grep shows a
+   match, at most Afind.MaxHits, added to out; false, and out as it
+   was, if none said, for the rule of thumb to answer. A line outside
+   the fence is shown without its text. *)
+proc refer*(dir, name: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf): BOOL;
+var found: Places.Vec; all: []Place; cwd, text: Buf.Buf; p, last: []const U8; k: INT;
+begin
+    Places.init(found, mem);
+    gather(dir, name, true, mem, found);
+    all := Places.all(found);
+    Buf.init(cwd, mem);
+    workDir(cwd);
+    Buf.init(text, mem);
+    last := "";
+    for k := 0 to LEN(all) - 1 do
+        if (k = Afind.MaxHits) or (out.len >= Afind.MaxResult) then
+            Fmt.write(out, "[stopped at {} references; give a path]", [Fmt.int(k)]);
+            break;
+        end;
+        p := relative(all[k].path, Buf.bytes(cwd));
+        if p # last then
+            Buf.reset(text);
+            if Afence.inside(p) and (Files.load(p, text) # 0) then Buf.reset(text); end;
+            last := p;
+        end;
+        Afind.show(out, p, all[k].line + 1, ':', lineAt(Buf.bytes(text), all[k].line));
+    end;
+    return LEN(all) > 0;
 end;
 
 (* The test, against test/Alspstub.raz, built as build/lspstub, which
@@ -453,6 +727,18 @@ begin
     Buf.reset(out);
     if not Files.write(path, text) then expect("written", path, "a file"); end;
     diagnose(path, text, out);
+    return Buf.bytes(out);
+end;
+
+(* What define, or refer if refs, says of name in the file path, which
+   holds text; "the rule of thumb" if it leaves name to that. *)
+proc looked(path, text, name: []const U8; refs: BOOL; var out: Buf.Buf): []const U8;
+var ok: BOOL;
+begin
+    Buf.reset(out);
+    if not Files.write(path, text) then expect("written", path, "a file"); end;
+    if refs then ok := refer(path, name, Heap.heap, out); else ok := define(path, name, Heap.heap, out); end;
+    if not ok then return "the rule of thumb"; end;
     return Buf.bytes(out);
 end;
 
@@ -489,6 +775,17 @@ begin
     expect("no such server, said once", edited("build/alsp/a.w", "bad\n", out), "");
     expect("a server that dies", edited("build/alsp/a.v", "bad\n", out),
         "\n\ndiagnostics: the language server for .v broke: language server pipe failed; it is not tried again this session");
+    (* asked at the declaration, the stub names nothing; at the use after it, the declaration *)
+    expect("def", looked("build/alsp/d.x", "let foo\nprint foo\n# foo, said\n", "foo", false, out),
+        "build/alsp/d.x:1-1\n    1\tlet foo\n");
+    expect("refs", looked("build/alsp/d.x", "let foo\nprint foo\n# foo, said\n", "foo", true, out),
+        "build/alsp/d.x:1: let foo\nbuild/alsp/d.x:2: print foo\n");
+    expect("def, a server with no references", looked("build/alsp/d.y", "let foo\nprint foo\n", "foo", false, out),
+        "build/alsp/d.y:1-1\n    1\tlet foo\n");
+    expect("refs, a server with no references", looked("build/alsp/d.y", "let foo\nprint foo\n", "foo", true, out),
+        "the rule of thumb");
+    expect("def, a type with no server", looked("build/alsp/d.q", "let foo\nprint foo\n", "foo", false, out),
+        "the rule of thumb");
     stop();
     if Arun.jails() then
         Afence.useStage(Afence.zone);

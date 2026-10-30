@@ -1,5 +1,5 @@
 (* Afind: the tools that go through the project's files: find, grep,
-   outline and def.
+   outline, def and refs.
 
    Each takes a path, a file or a directory, and goes through the files
    under it as rwalk walks them: depth first, by name, leaving out
@@ -26,6 +26,11 @@
    expression is known), and the tools' descriptions say to grep when
    they miss.
 
+   refs, the rule of thumb for a name's references, is a grep for the
+   name as a whole word. Where a language server knows the file's type,
+   def and refs ask it first (Alsp), which shows what it answers with
+   defAt, word and show.
+
    Depends on Afence, rwalk's Rwalk and Rwglob, Buf, Str, Sys and
    Files. Leaves out regular expressions, until rrem matches them;
    ripgrep and fd, which the Pascal arno ran when config named them;
@@ -36,10 +41,10 @@ import SYSTEM;
 
 const
     MaxFiles = 500;        (* files find lists *)
-    MaxHits = 200;         (* lines grep finds *)
+    MaxHits* = 200;        (* lines grep finds, and refs *)
     MaxContext* = 10;      (* lines of context grep shows around a match *)
     MaxLine = 200;         (* bytes of a line grep shows *)
-    MaxResult = 20000;     (* bytes of matches grep shows: about 5K tokens, so one call can't flood the context *)
+    MaxResult* = 20000;    (* bytes of matches grep shows: about 5K tokens, so one call can't flood the context *)
     MaxDecl = 160;         (* bytes of a line outline shows *)
     MaxDefs* = 10;         (* definitions def shows *)
     MaxBody = 300;         (* lines of each *)
@@ -254,9 +259,9 @@ type
         starts: Ints.Vec;   (* where each line of the file starts, and its end after the last *)
     end;
 
-(* Line n of the file at path, from 1, as grep shows it: path, sep, n,
-   sep, a blank and the line, cut at MaxLine. *)
-proc show(var out: Buf.Buf; path: []const U8; const s: Source; n: INT; sep: U8);
+(* text, line n of the file at path, from 1, as grep shows it: path,
+   sep, n, sep, a blank and the line, cut at MaxLine. *)
+proc show*(var out: Buf.Buf; path: []const U8; n: INT; sep: U8; text: []const U8);
 var line: []const U8; cutShort: BOOL;
 begin
     Buf.str(out, path);
@@ -264,7 +269,7 @@ begin
     int(out, n);
     Buf.add(out, sep);
     Buf.add(out, ' ');
-    line, cutShort := cut(Lines.all(s.lines)[n - 1], MaxLine);
+    line, cutShort := cut(text, MaxLine);
     Buf.str(out, line);
     if cutShort then Buf.str(out, "\u{2026}"); end;
     Buf.add(out, '\n');
@@ -301,15 +306,15 @@ begin
             if (g.context > 0) and (out.len > 0) and ((last = 0) or (a > last + 1)) then
                 Buf.str(out, "--\n");
             end;
-            for k := a to n - 1 do show(out, path, s, k, '-'); end;
-            show(out, path, s, n, ':');
+            for k := a to n - 1 do show(out, path, k, '-', lines[k - 1]); end;
+            show(out, path, n, ':', lines[n - 1]);
             last := n;
             upto := n + g.context;
             INC(g.hits);
             if g.hits >= MaxHits then more := false; end;
             if out.len >= MaxResult then g.full := true; end;
         elsif n <= upto then
-            show(out, path, s, n, '-');
+            show(out, path, n, '-', lines[n - 1]);
             last := n;
         elsif not more then
             break;
@@ -829,12 +834,40 @@ begin
     return (k > 0) and (declared[k - 1] = '.') and Str.eqFold(declared[k..LEN(declared)], name);
 end;
 
-(* Every definition of name, small, in the file at path, its comment
-   first, numbered as read numbers lines, under "path:first-last"; the
-   count kept in found, which stops at MaxDefs. A file whose text never
-   says the name is passed over before it is cut into lines. *)
+(* The definition declared at l[n], of the file at path, its comment
+   first, numbered as read numbers lines, under "path:first-last". *)
+proc definition(var out: Buf.Buf; path: []const U8; l: [][]const U8; n: INT);
+var a, b, k: INT; md, pas: BOOL;
+begin
+    md := prose(path);
+    pas := pascal(path);
+    a := defStart(l, n, pas, cish(path));
+    b := defEnd(l, n, md, pas);
+    Buf.str(out, path);
+    Buf.add(out, ':');
+    int(out, a + 1);
+    Buf.add(out, '-');
+    int(out, b + 1);
+    Buf.add(out, '\n');
+    for k := a to b do
+        if k - n >= MaxBody then
+            Buf.add(out, '[');
+            int(out, b - k + 1);
+            Buf.str(out, " more lines; read with offset ");
+            int(out, k + 1);
+            Buf.str(out, "]\n");
+            break;
+        end;
+        numbered(out, k + 1, l[k]);
+    end;
+end;
+
+(* Every definition of name, small, in the file at path, as definition
+   shows it; the count kept in found, which stops at MaxDefs. A file
+   whose text never says the name is passed over before it is cut into
+   lines. *)
 proc defsIn(var s: Source; path, name: []const U8; var found: INT; var out: Buf.Buf);
-var l: [][]const U8; n, a, b, k: INT; md, pas, open, inside: BOOL;
+var l: [][]const U8; n: INT; md, pas, open, inside: BOOL;
 begin
     if not load(s, path) or (Str.find(lowered(s), name) < 0) then return; end;
     l := Lines.all(s.lines);
@@ -845,25 +878,7 @@ begin
         inside := open;
         open := not md and after(l[n], open, pas);
         if inside or not names(declName(l, n, md, pas), name) then continue; end;
-        a := defStart(l, n, pas, cish(path));
-        b := defEnd(l, n, md, pas);
-        Buf.str(out, path);
-        Buf.add(out, ':');
-        int(out, a + 1);
-        Buf.add(out, '-');
-        int(out, b + 1);
-        Buf.add(out, '\n');
-        for k := a to b do
-            if k - n >= MaxBody then
-                Buf.add(out, '[');
-                int(out, b - k + 1);
-                Buf.str(out, " more lines; read with offset ");
-                int(out, k + 1);
-                Buf.str(out, "]\n");
-                break;
-            end;
-            numbered(out, k + 1, l[k]);
-        end;
+        definition(out, path, l, n);
         INC(found);
         if found >= MaxDefs then return; end;
     end;
@@ -889,6 +904,72 @@ begin
         p, ok := next(w);
     end;
     return found;
+end;
+
+(* The definition declared at line n, from 0, of the file at path, as
+   def shows one: where a language server says it is. False if the file
+   can't be read or has no line n. *)
+proc defAt*(path: []const U8; n: INT; mem: ^Mem.Allocator; var out: Buf.Buf): BOOL;
+var s: Source;
+begin
+    init(s, mem);
+    if not load(s, path) or (n < 0) or (n >= s.lines.len) then return false; end;
+    definition(out, path, Lines.all(s.lines), n);
+    return true;
+end;
+
+(* refs *)
+
+(* Whether c is part of a word: an identifier's, without the dot. *)
+proc wordChar(c: U8): BOOL;
+begin
+    return identChar(c) and (c # '.');
+end;
+
+(* Where name, not "", stands whole in line, at or after from: not
+   part of a longer word, though a dot may come before it (Buf.init
+   holds init); -1 if nowhere. *)
+proc word*(line, name: []const U8; from: INT): INT;
+var at, past: INT;
+begin
+    while from < LEN(line) do
+        at := Str.find(line[from..LEN(line)], name);
+        if at < 0 then return -1; end;
+        INC(at, from);
+        past := at + LEN(name);
+        if ((at = 0) or not wordChar(line[at - 1])) and ((past = LEN(line)) or not wordChar(line[past])) then
+            return at;
+        end;
+        from := at + 1;
+    end;
+    return -1;
+end;
+
+(* Every line of the files under dir, or of the file dir, where name
+   stands as a word, as grep shows a match: the rule of thumb for
+   name's references, where no language server says them. *)
+proc refs*(dir, name: []const U8; mem: ^Mem.Allocator; var out: Buf.Buf);
+var s: Source; w: Walk; p: []const U8; l: [][]const U8; n, hits: INT; ok: BOOL;
+begin
+    hits := 0;
+    init(s, mem);
+    open(w, dir);
+    defer close(w);
+    p, ok := next(w);
+    while ok and (hits < MaxHits) and (out.len < MaxResult) do
+        if load(s, p) and (Str.find(Buf.bytes(s.text), name) >= 0) then
+            l := Lines.all(s.lines);
+            for n := 0 to LEN(l) - 1 do
+                if (hits = MaxHits) or (out.len >= MaxResult) then break; end;
+                if word(l[n], name, 0) >= 0 then
+                    show(out, p, n + 1, ':', l[n]);
+                    INC(hits);
+                end;
+            end;
+        end;
+        p, ok := next(w);
+    end;
+    if (hits = MaxHits) or (out.len >= MaxResult) then Buf.str(out, "[stopped at 200 references; give a path]"); end;
 end;
 
 (* The module's test, in build/find, which it makes. *)
@@ -1029,6 +1110,10 @@ begin
     expect("def", result(b), "src/a.c:1-5\n    1\tint\n    2\tadd(int a, int b)\n    3\t{\n" +
         "    4\t    return a + b;\n    5\t}\nsrc/feature/x.py:1-2\n    1\tdef add(a):\n    2\t    return a\n");
     if n # 2 then Out.str("Afind: def counts wrong\n"); failed := true; end;
+    _ := Files.write("src/w.c", "x.add(1); address(2);\nmadd(add);\n");
+    refs("src/w.c", "add", SYSTEM.ADR(mem.base), b);
+    expect("refs, whole words", result(b), "src/w.c:1: x.add(1); address(2);\nsrc/w.c:2: madd(add);\n");
+    _ := Sys.remove("src/w.c");   (* the other tests, run again, would find it *)
     _ := Sys.setWorkDir(dir);
     if failed then return 1; end;
     return 0;

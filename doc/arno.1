@@ -757,7 +757,7 @@ session.
 The model can call these on its own.
 Each call shows in the transcript, and TAB opens it.
 Calls of
-.Ic read , find , grep , def , outline , git , search
+.Ic read , find , grep , def , refs , outline , git , search
 and
 .Ic fetch
 that repeat one already made in the same turn, arguments and all, are
@@ -789,6 +789,10 @@ Where a name is defined, and the whole definition with the comment above
 it, numbered as
 .Ic read
 numbers lines; at most ten, over a file or a tree.
+.It Ic refs
+Where a name is used, a line each, as
+.Ic grep
+shows a match; at most 200, over a file or a tree.
 .It Ic outline
 The declarations of a file or a tree, a numbered line each; in Markdown,
 the headings.
@@ -809,6 +813,24 @@ holding an arrow function or a function expression.
 A definition ends where the indentation comes back to its own.
 A shape outside these goes unseen, and the model is told to grep
 instead.
+Without a language server,
+.Ic refs
+takes each line where the name stands as a whole word.
+.Pp
+Where
+.Cm lsp. Ns Ar ext
+names a language server for the files' type,
+.Ic def
+and
+.Ic refs
+ask it first.
+A server finds a definition by place, not by name, so it is asked at
+the places the name stands in those files, in each file till one is
+answered, eight places at most and ten seconds in all;
+.Ic refs
+asks for the references of the first answered.
+A definition outside the project is shown only by its path and line.
+Where no server answers, the rule of thumb does.
 .It Ic git
 Read-only
 .Cm status , diff , log , show , blame ,
@@ -1079,7 +1101,7 @@ named on its first line.
 .Sh THE PATH FENCE
 The file tools
 .Po
-.Ic read , find , grep , def , outline , edit , move , remove ,
+.Ic read , find , grep , def , refs , outline , edit , move , remove ,
 and paths given to
 .Ic git
 or
@@ -1843,7 +1865,11 @@ as
 .Ql lsp.raz = raz-lsp
 or
 .Ql lsp.cn = concha-lsp .
-It is started on the first edit of such a file in a turn, rooted at
+It is started on the first edit of such a file in a turn, or the first
+.Ic def
+or
+.Ic refs
+over one, rooted at
 the project (the copy while staged), and stopped when the turn ends.
 After each edit it is told the file's whole new text, and its
 diagnostics end the edit's result; it is waited for up to 10 seconds

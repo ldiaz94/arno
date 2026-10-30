@@ -42,8 +42,9 @@
    command that runs past its timeout is killed, and so is one that
    writes past 4 MB.
 
-   Depends on Afence, Afind (find, grep, outline and def), Arun (git,
-   run and check), Alsp (an edit's diagnostics), Astore (tests.json),
+   Depends on Afence, Afind (find, grep, outline, def and refs), Arun (git,
+   run and check), Alsp (an edit's diagnostics; def and refs where a
+   language server knows the type), Astore (tests.json),
    Aahead (note), Ahtml (fetch), Awire (for Tool), Amcp (the MCP servers' tools), Apeer (the editor),
    rnet's Http (search and fetch), rjson's Json.
    Delegate and plan are the agent's, which runs the worker and keeps
@@ -172,6 +173,15 @@ const
             "declarations, not every one: if it finds nothing, grep for the name.",
          params: `{"type":"object","properties":` +
             `{"name":{"type":"string","description":"the name defined"},` +
+            `"path":{"type":"string","description":"file or directory to look in; default ."}},` +
+            `"required":["name"]}`},
+        {name: "refs",
+         description: "Find where something is used: give a function, class, type, method or " +
+            "variable name and get each line that refers to it, as \"path:line: text\", like " +
+            "grep. Where the project has a language server for the files, it answers, and " +
+            "knows the name's real uses; else each line where the name stands as a whole word.",
+         params: `{"type":"object","properties":` +
+            `{"name":{"type":"string","description":"the name used"},` +
             `"path":{"type":"string","description":"file or directory to look in; default ."}},` +
             `"required":["name"]}`},
         {name: "outline",
@@ -369,7 +379,7 @@ end;
 proc readOnly*(name: []const U8): BOOL;
 begin
     match name of
-    | "read", "find", "grep", "def", "outline", "git", "skill": return true;
+    | "read", "find", "grep", "def", "refs", "outline", "git", "skill": return true;
     | else: return false;
     end;
 end;
@@ -684,11 +694,14 @@ begin
     if out.len = 0 then Buf.str(out, "(empty)"); end;
 end;
 
-(* find, grep, def or outline, the tool name, run with a. *)
+(* find, grep, def, refs or outline, the tool name, run with a: def
+   and refs through a language server where there is one (Alsp), else
+   by the rule of thumb (Afind). *)
 proc look(name: []const U8; const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
-var d, s: []const U8;
+var d, s, n: []const U8;
 begin
     d := dir(a, "path");
+    n := Str.trim(str(a, "name"));
     if name = "find" then
         s := str(a, "name");
         if LEN(s) = 0 then s := "*"; end;
@@ -697,8 +710,13 @@ begin
         Afind.grep(d, str(a, "pattern"), str(a, "glob"), flag(a, "ignore_case"), int(a, "context", 0), mem, out);
     elsif name = "outline" then
         Afind.outline(d, MaxOut, mem, out);
-    elsif LEN(Str.trim(str(a, "name"))) = 0 then
+    elsif LEN(n) = 0 then
         Buf.str(out, "error: give the name to look up");
+    elsif name = "refs" then
+        if not Alsp.refer(d, n, mem, out) then Afind.refs(d, n, mem, out); end;
+        if out.len = 0 then Fmt.write(out, "no uses of {} found in {}", [Fmt.str(n), Fmt.str(d)]); end;
+    elsif Alsp.define(d, n, mem, out) then
+        (* the server's answer *)
     elsif Afind.defs(d, str(a, "name"), mem, out) >= Afind.MaxDefs then
         Buf.str(out, "[stopped at 10 definitions; give a path]");
     elsif out.len = 0 then
@@ -2396,7 +2414,7 @@ begin
     match name of
     | "read", "edit", "remove": return fence(name, path(a, "path"), h, out);
     | "move": return fence(name, path(a, "path"), h, out) and fence(name, path(a, "to"), h, out);
-    | "find", "grep", "def", "outline": return fence(name, dir(a, "path"), h, out);
+    | "find", "grep", "def", "refs", "outline": return fence(name, dir(a, "path"), h, out);
     | "git":
         args := list(a, "args");
         for i := 1 to LEN(args) - 1 do
@@ -2471,7 +2489,7 @@ begin
         editor(h, res);
     elsif name = "open" then
         open(a, h, res);
-    elsif (name = "find") or (name = "grep") or (name = "def") or (name = "outline") then
+    elsif (name = "find") or (name = "grep") or (name = "def") or (name = "refs") or (name = "outline") then
         look(name, a, mem, res);
     elsif name = "git" then
         git(a, res);
@@ -2733,11 +2751,13 @@ begin
     expect("no object", run("read", `[1]`, nil),
         "error: the arguments must be one JSON object, as the tool's schema says; got: [1]");
     expect("no such tool", run("write", "", nil),
-        "error: there is no tool named \"write\". The tools are: read find grep def outline git run check shell edit move remove note " +
+        "error: there is no tool named \"write\". The tools are: read find grep def refs outline git run check shell edit move remove note " +
         "search fetch delegate plan merge");
     expect("find", run("find", `{"name":"f*","path":"./"}`, nil), "f\n");
     expect("grep", run("grep", `{"pattern":"TWO","ignore_case":"true"}`, nil), "f:2: two\n");
     expect("def, no name", run("def", `{"name":" "}`, nil), "error: give the name to look up");
+    expect("refs", run("refs", `{"name":"two","path":"f"}`, nil), "f:2: two\n");
+    expect("refs, none", run("refs", `{"name":"tw","path":"f"}`, nil), "no uses of tw found in f");
     expect("outline, none", run("outline", `{"path":"f"}`, nil),
         "no declarations found in f; find lists its files, grep searches them");
     expect("git, a verb refused", run("git", `{"args":"[\"push\",\"origin\"]"}`, nil),
