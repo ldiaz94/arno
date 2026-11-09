@@ -279,8 +279,9 @@ const
         {name: "search",
          description: "Search the web. Use it for things outside this project: a library's API, an error " +
             "message, current events. Not for finding code, which find, grep and read do better. Returns " +
-            "titles, urls and snippets only, and a snippet is not evidence: read the pages with fetch before " +
-            "you answer from them.",
+            "titles, urls and snippets only, each with its source id, [1], [2] and on through the turn; a " +
+            "snippet is not evidence: read the pages with fetch before you answer from them. Cite what a " +
+            "source says by its id, as [2] after the claim, and only ids that search gave.",
          params: `{"type":"object","properties":` +
             `{"query":{"type":"string","description":"what to search for, as you would type it into a search engine"}},` +
             `"required":["query"]}`},
@@ -289,8 +290,8 @@ const
             "without markup, scripts or styles; a plain-text, JSON or Markdown body comes back as it is. Use it " +
             "after search to read the pages found, not just the first hit: snippets are not evidence. When the " +
             "answer matters, read two or three sources, and prefer primary ones - official documentation, the " +
-            "project's own repository, a man page - to pages that retell them. Say in your answer which URLs " +
-            "you relied on. http and https only. A long page comes back in parts, " +
+            "project's own repository, a man page - to pages that retell them. Cite a page search found by " +
+            "its id, [n]; one it did not, by its URL. http and https only. A long page comes back in parts, " +
             "each ending with the offset to read on from.",
          params: `{"type":"object","properties":` +
             `{"url":{"type":"string","description":"the page's URL, http:// or https://, as search gave it"},` +
@@ -1866,6 +1867,7 @@ end;
 
 var
     searx: []U8;       (* the SearXNG search goes through, as config's searxng says; "" for none *)
+    cited: INT;        (* the id of the turn's last search result, which the model cites it by, [n] *)
     web: Http.Client;  (* search's and fetch's, made at the first *)
     webbed: BOOL;      (* web is made *)
     offer: Tools.Vec;  (* what offered gives *)
@@ -1882,6 +1884,13 @@ begin
     Str.free(Heap.heap, searx);
     searx := keep(url);
     while Str.hasSuffix(searx, "/") do searx := searx[0..LEN(searx) - 1]; end;
+end;
+
+(* A new turn: search's ids count from 1 again, as a host's sources do
+   (Aserve). *)
+proc newTurn*;
+begin
+    cited := 0;
 end;
 
 (* The models delegate may name, blank-separated in list, def the one
@@ -2198,11 +2207,12 @@ begin
 end;
 
 (* search: the first MaxResults of what SearXNG finds for the query,
-   each its title, its URL and a snippet, a line each, newlines in them
-   made blanks, and a blank line after: a host makes its sources from
-   them (Aserve). *)
+   each its id and title, "[3] Title", its URL and a snippet, a line
+   each, newlines in them made blanks, and a blank line after: a host
+   makes its sources from them (Aserve), with the same ids, which the
+   model cites. *)
 proc searchWeb(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
-var url, body: Buf.Buf; d: Json.Doc; v, r, x: Json.Value; i: INT; err: ERROR;
+var url, body: Buf.Buf; d: Json.Doc; v, r, x: Json.Value; site: []const U8; i: INT; err: ERROR;
 begin
     Buf.init(url, mem);
     Buf.init(body, mem);
@@ -2229,8 +2239,12 @@ begin
     for i := 0 to Json.len(SYSTEM.ADR(d), r) - 1 do
         if i = MaxResults then break; end;
         x := Json.item(SYSTEM.ADR(d), r, i);
+        site := Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "url"));
+        if LEN(site) = 0 then continue; end;   (* nothing to cite *)
+        INC(cited);
+        Fmt.write(out, "[{}] ", [Fmt.int(cited)]);
         oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "title")));
-        oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "url")));
+        oneLine(out, site);
         oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "content")));
         Buf.add(out, '\n');
     end;

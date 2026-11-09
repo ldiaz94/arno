@@ -185,7 +185,7 @@ expect(['call', 'fetch', '{"url":"' + page + '"}'], 0, 'out', 'the tool said: A 
 holds('a page', 'out', 'Its text.')
 expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'there is no tool named "search"')
 configure(["searxng = http://127.0.0.1:$(port)"])
-expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'the tool said: Found')
+expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'the tool said: [1] Found')
 holds('a search', 'out', 'a%20b')
 
 // a step delegated to a worker, which reports

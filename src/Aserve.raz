@@ -154,7 +154,6 @@ var
     marks: Marks.Vec;         (* the human's messages on the Board, in order *)
     began: I64;               (* Sys.clock as the turn began *)
     before: Sums;             (* and the session's sums *)
-    sourced: INT;             (* the id of the turn's last source *)
 
 (* Telling the host *)
 
@@ -968,12 +967,12 @@ begin
 end;
 
 (* The web pages a search, entry n, found, told: sources N JSON, an
-   array of objects with id, counted on through the turn, url, title,
-   excerpt, and retrievedAt, in milliseconds since 1970. res is the
-   search's result, a page a block of three lines (Atools); an error,
-   or nothing found, tells nothing. *)
+   array of objects with id, url, title, excerpt, and retrievedAt, in
+   milliseconds since 1970. res is the search's result, a page a block
+   of three lines, the first "[ID] title", with the id the model cites
+   it by (Atools); an error, or nothing found, tells nothing. *)
 proc sources(n: INT; res: []const U8);
-var rest, block, title, url, excerpt: []const U8; more: BOOL; at: I64; d: [20]U8; first: BOOL;
+var rest, block, title, url, excerpt, id: []const U8; more, ok: BOOL; cite, at: I64; d: [20]U8; first: BOOL;
 begin
     if Str.hasPrefix(res, "error:") then return; end;
     at := Sys.now() div NsPerMs;
@@ -986,11 +985,13 @@ begin
         block, rest, more := Str.cut(rest, "\n\n");
         title, block, _ := Str.cut(block, "\n");
         url, excerpt, _ := Str.cut(block, "\n");
-        if LEN(url) = 0 then continue; end;
+        id, title, _ := Str.cut(title, "] ");
+        if (LEN(url) = 0) or not Str.hasPrefix(id, "[") then continue; end;
+        cite, ok := Str.toInt(id[1..LEN(id)]);
+        if not ok then continue; end;
         if not first then Buf.add(scratch, ','); end;
         first := false;
-        INC(sourced);
-        Fmt.write(scratch, `{{"id":{},"url":`, [Fmt.int(sourced)]);
+        Fmt.write(scratch, `{{"id":{},"url":`, [Fmt.int(INT(cite))]);
         quoted(url);
         Buf.str(scratch, `,"title":`);
         quoted(title);
@@ -1016,7 +1017,6 @@ begin
         metered();
         began := Sys.clock();
         before := sums();
-        sourced := 0;
         Aview.busied(true);
     end;
     thread, err := Thread.spawn(work, nil);

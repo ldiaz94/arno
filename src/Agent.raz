@@ -1230,6 +1230,7 @@ begin
         if a.prefetch then attach(a, c); end;
         for i := 0 to a.reports.len - 1 do Str.free(Heap.heap, Strs.all(a.reports)[i]); end;
         Strs.reset(a.reports);
+        Atools.newTurn;
     end;
     (* build mode's lead carries out a whole plan in a turn; a worker is
        bounded by the budget delegate gave it, its steps only a backstop,

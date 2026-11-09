@@ -968,6 +968,19 @@ Offered only inside a project.
 The web, through a SearXNG instance, as titles, URLs and snippets only;
 the model is told to read two or three of the pages with
 .Ic fetch .
+Each result has an id, counted from 1 through the turn, and the model is
+told to cite a page by it:
+.Bd -literal -offset indent
+[1] Rain
+https://example.org/rain
+Water that falls from clouds.
+.Ed
+.Pp
+so that its reply says
+.Ql "Rain is water [1]." ,
+and a host shows the page of id 1, as
+.Xr arno-serve 5
+says.
 Offered only when
 .Cm searxng
 is set.

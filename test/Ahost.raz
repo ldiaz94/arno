@@ -899,13 +899,21 @@ begin
     end;
 end;
 
-(* A search tells the pages it found as sources, after its done. *)
+(* A search tells the pages it found as sources, after its done, with
+   the ids the model is shown: counted on through the turn, from 1 again
+   in the next. *)
 proc searched;
 begin
     clear();
-    line(`call search {"query":"rain"}`);
+    line(`fan search {"query":"rain"}` + "\t" + `{"query":"snow"}`);
     idle();
+    mustHave("the model is shown the id", "[1] Found\nhttp://x/\nrain");
     mustHave("the sources", `"id":1,"url":"http://x/","title":"Found","excerpt":"rain","retrievedAt":`);
+    mustHave("counted on through the turn", `"id":2,"url":"http://x/","title":"Found","excerpt":"snow","retrievedAt":`);
+    clear();
+    line(`call search {"query":"hail"}`);
+    idle();
+    mustHave("from 1 in the next turn", `"id":1,"url":"http://x/","title":"Found","excerpt":"hail","retrievedAt":`);
 end;
 
 (* The host takes a line back from the queue, as a viewer does. *)

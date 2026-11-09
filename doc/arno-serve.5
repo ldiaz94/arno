@@ -414,7 +414,13 @@ the page's snippet, and
 in milliseconds since 1970.
 They are the sources of the reply that follows in the turn.
 A search that fails or finds nothing tells none.
-The model is not shown the ids, and does not cite them.
+The model is shown each page with its id,
+.Ql "[1] Rain" ,
+and told to cite it so:
+.Ql "Rain is water [1]." ;
+an id is the same in the result and in
+.Cm sources ,
+so a host links a citation to its page.
 .It Cm image Ar n type bytes
 A picture that goes with entry
 .Ar n :
@@ -773,7 +779,7 @@ arno -> host   busy 0
 A search, and the pages it found:
 .Bd -literal -offset indent
 arno -> host   tool 9 search {"query":"rain"}
-arno -> host   done 9 "Rain\enhttps://example.org/rain\enWater that falls...\en\en"
+arno -> host   done 9 "[1] Rain\enhttps://example.org/rain\enWater that falls...\en\en"
 arno -> host   sources 9 [{"id":1,"url":"https://example.org/rain",
                            "title":"Rain","excerpt":"Water that falls...",
                            "retrievedAt":1794236874512}]
