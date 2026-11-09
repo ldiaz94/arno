@@ -580,8 +580,8 @@ one or more commits that build with `-Werror`.
      rebuilt. And a config value goes on over lines that begin with a
      blank or tab (Aconf.read, a stray one warned of; a joined value
      is a block of the Conf's `folds`).
-   - [ ] An eval: a task with a good plan approved first, supervisor
-     and workers against one model alone.
+   - [-] An eval: a task with a good plan approved first, supervisor
+     and workers against one model alone. Dropped for now (2026-11-09).
    - [x] Context files in an editor's sessions. `ask` was put once, at
      start-up, to a human who might not look, and its `n` (also for no
      answer) held for the session only. The answer is now kept per
