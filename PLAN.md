@@ -647,8 +647,9 @@ one or more commits that build with `-Werror`.
 - **raz: a signal to one thread.** A stop on the screen must break
   into the turn's wait for the server, as `^C` does in one-shot mode;
   `Sys.kill` signals the process, which any thread may take. Proposed
-  in raz's PROPOSALS.md (`db917e5`): `Thread.signal(t, sig)`. Until
-  then a stop waits for the next read.
+  in raz's PROPOSALS.md (`db917e5`); done in raz, `Thread.signal`. A
+  stop now sends `SIGUSR1` to the turn's thread and each worker's beside
+  it (`Agent.poke`): the wait's `poll` breaks, and Awire asks `stopped`.
 - **rtui: the rows an editor's text takes.** The input grows with its
   text: done in rtui `f1f1b73`, `TuiEdit.rows`.
 - **rtui: a program's own sequence to the terminal.** Copy mode sends

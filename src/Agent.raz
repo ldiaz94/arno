@@ -165,6 +165,7 @@ type
         why: Buf.Buf;         (* why its last request failed *)
         err: ERROR;           (* how its turn ended *)
         thread: ^Thread.Thread;   (* the thread it works on; nil for the lead's *)
+        slot: INT;            (* its place in fanned while on a thread of its own; -1 on the lead's *)
     end;
 
 const
@@ -220,6 +221,13 @@ const
     (* what a change or a delegation is told before a plan is approved *)
     Unplanned = "not run: in build mode nothing is changed or delegated before the human approves a plan. " +
         "Settle the goal with them, then call plan with it.";
+    (* what a stop sends the threads a turn runs on, to break into a
+       wait for the server: any signal Sys.handle takes would do *)
+    Wake = Sys.sigUsr1;
+
+var
+    crew: Thread.Mutex;   (* guards fanned *)
+    fanned: [MaxFan]^Thread.Thread;   (* the threads of the workers side by side, each nil once its work is done *)
 
 (* a made ready to run turns against prov, telling front; the fence
    set from the working directory. *)
@@ -243,6 +251,23 @@ end;
 proc stopped(const a: Agent): BOOL;
 begin
     return (a.front.stopped # nil) and a.front.stopped();
+end;
+
+(* The human said to stop, which the front's stopped now says: t, the
+   thread the turn runs on (or nil), and each worker's beside it, sent
+   Wake. A wait for the server breaks off at once, and Awire asks
+   stopped, instead of hearing it at the next read; the other waits
+   take the interruption and go on. *)
+proc poke*(t: ^Thread.Thread);
+var i: INT;
+begin
+    _ := Sys.handle(Wake);   (* noted, never asked: the default would end arno *)
+    if t # nil then _ := Thread.signal(t, Wake); end;
+    Thread.lock(crew);
+    for i := 0 to MaxFan - 1 do
+        if fanned[i] # nil then _ := Thread.signal(fanned[i], Wake); end;
+    end;
+    Thread.unlock(crew);
 end;
 
 (* What lasts the session found: the context files, as config's
@@ -591,6 +616,7 @@ proc open(var a: Agent; var w: Worker);
 var f: Front;
 begin
     w.prov := a.prov^;
+    w.slot := -1;
     f := {text: workerText, call: workerCall, result: workerResult, note: workerNote, ask: a.front.ask,
         why: a.front.why, stopped: a.front.stopped, counted: workerCounted, arg: ^U8(SYSTEM.ADR(w.agent))};
     w.agent := {prov: SYSTEM.ADR(w.prov), front: f, prune: a.prune, buildSteps: a.buildSteps, worker: a.worker,
@@ -626,6 +652,11 @@ begin
     take(w^.agent);
     w^.err := turn(w^.agent, w^.conv, w^.why);
     Thread.unlock(w^.agent.lead^.place);
+    if w^.slot >= 0 then
+        Thread.lock(crew);
+        fanned[w^.slot] := nil;   (* poke leaves this thread be: fan joins and frees it *)
+        Thread.unlock(crew);
+    end;
 end;
 
 (* How many steps the worker took over w: its requests answered. *)
@@ -876,8 +907,19 @@ begin
         open(a, ws[i]);
         made[i] := ready(a, calls[i].args, LEN(calls), ws[i], results[i]);
     end;
+    (* each thread put in fanned, for poke, before its labour can take
+       it out again: that waits for crew *)
+    Thread.lock(crew);
     for i := 0 to LEN(calls) - 1 do
-        if made[i] and (LEN(calls) > 1) then ws[i].thread, _ := Thread.spawn(labour, ^U8(SYSTEM.ADR(ws[i]))); end;
+        if made[i] and (LEN(calls) > 1) then
+            ws[i].slot := i;
+            ws[i].thread, _ := Thread.spawn(labour, ^U8(SYSTEM.ADR(ws[i])));
+            if ws[i].thread = nil then ws[i].slot := -1; end;
+            fanned[i] := ws[i].thread;
+        end;
+    end;
+    Thread.unlock(crew);
+    for i := 0 to LEN(calls) - 1 do
         (* alone, or with no thread to be had, it works on the lead's *)
         if made[i] and (ws[i].thread = nil) then labour(^U8(SYSTEM.ADR(ws[i]))); end;
     end;

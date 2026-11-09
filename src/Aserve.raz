@@ -546,6 +546,7 @@ begin
     Thread.lock(mutex);
     stopping := true;
     Thread.unlock(mutex);
+    Agent.poke(thread);
     if pending > 0 then replied(["", "", ""], true); end;
 end;
 
@@ -557,6 +558,7 @@ begin
     ending := true;
     stopping := true;
     Thread.unlock(mutex);
+    Agent.poke(thread);
     if pending > 0 then replied(["", "", ""], true); end;
 end;
 

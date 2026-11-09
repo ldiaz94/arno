@@ -727,6 +727,12 @@ end;
    said to stop, *status the response's. Its error is a failure to
    reach the server, or of the connection; an error the server
    answered is in a, for the caller to find. *)
+(* Whether r's stopped says to stop now. *)
+proc halted(const r: Request): BOOL;
+begin
+    return (r.stopped # nil) and r.stopped();
+end;
+
 proc exchange(const r: Request; key, body: []const U8; var a: Acc; var got: BOOL; var stopped: BOOL; var status: INT): ERROR;
 var req, res: Http.Message; url, auth: Buf.Buf; rd: ^Http.Reader; chunk: [16384]U8; n: INT;
     err: ERROR; version: []const U8;
@@ -739,6 +745,10 @@ begin
     defer Http.done(res);
     defer Buf.done(url);
     defer Buf.done(auth);
+    if halted(r) then   (* said while waiting to try again *)
+        stopped := true;
+        return nil;
+    end;
     req.method := "POST";
     req.body := body;
     try Http.add(req, "Content-Type", "application/json");
@@ -764,8 +774,8 @@ begin
             lines(a, chunk[0..n]);
         end;
         (* asked after each read, so that a stop that broke into the
-           wait, as ^C does, is heard at once *)
-        if (r.stopped # nil) and r.stopped() then
+           wait, as ^C and Agent.poke do, is heard at once *)
+        if halted(r) then
             stopped := true;
             return nil;
         end;
@@ -895,11 +905,16 @@ begin
         stopped := false;
         status := 0;
         err := exchange(r, key, Buf.bytes(body), a, got, stopped, status);
+        (* a stop that broke into connecting fails it: not a failure to try again *)
+        if (err # nil) and halted(r) then stopped := true; end;
         if (err = nil) or got or stopped or (tries >= r.prov^.retries) then break; end;
         doneAcc(a);
         wait := r.prov^.backoff shl tries;
         if wait > 30 then wait := 30; end;
-        Sys.sleep(1000 * wait);
+        while (wait > 0) and not halted(r) do   (* a second at a time, for a stop *)
+            Sys.sleep(1000);
+            DEC(wait);
+        end;
         INC(tries);
     until false;
     defer doneAcc(a);
@@ -1071,7 +1086,7 @@ end;
 
 (* the server: each path an answer *)
 
-var server: Http.Server; listening: INT; asked, apiKey: Buf.Buf; shown: Buf.Buf;
+var server: Http.Server; listening: INT; asked, apiKey: Buf.Buf; shown: Buf.Buf; stops: INT;
 
 proc answer(const req: Http.Message; var res: Http.Message; _arg: ^U8);
 begin
@@ -1084,6 +1099,9 @@ begin
     | "/o/chat/completions": res.body := OpenaiStream;
     | "/a/messages": res.body := AnthropicStream;
     | "/overloaded/messages": res.body := Overloaded;
+    | "/slow/messages":   (* a server that keeps the client waiting *)
+        Sys.sleep(2000);
+        res.body := AnthropicStream;
     | "/denied/messages":
         res.status := 401;
         res.body := Denied;
@@ -1106,6 +1124,34 @@ begin
     return true;
 end;
 
+var halting: BOOL;   (* the stop the test of a wait says, set as it signals *)
+
+proc halt: BOOL;
+begin
+    return halting;
+end;
+
+type
+    (* a request sent on a thread of its own, and what came of it *)
+    Trial = record
+        r: Request;
+        p: Prov;
+        cl: Http.Client;
+        url: Buf.Buf;
+        m: Amsg.Msg;
+        u: Usage;
+        why: Buf.Buf;
+        err: ERROR;
+    end;
+
+(* A stop said from its second asking on: after the reply's first read,
+   the first having been before the request was sent. *)
+proc later: BOOL;
+begin
+    INC(stops);
+    return stops > 1;
+end;
+
 (* r sent to the test's server at path: chat's error, and why. *)
 proc ask(const r: Request; var prov: Prov; url: []const U8; var m: Amsg.Msg; var u: Usage; var why: Buf.Buf): ERROR;
 begin
@@ -1115,8 +1161,17 @@ begin
     return chat(r, m, u, why);
 end;
 
+(* t's request sent: on its thread. *)
+proc trying(arg: ^U8);
+var t: ^Trial;
+begin
+    t := ^Trial(arg);
+    t^.err := ask(t^.r, t^.p, Buf.bytes(t^.url), t^.m, t^.u, t^.why);
+end;
+
 proc main*: INT;
-var p: Prov; r: Request; cl: Http.Client; m: Amsg.Msg; u: Usage; why, url: Buf.Buf; err: ERROR;
+var p: Prov; r: Request; cl: Http.Client; m: Amsg.Msg; u: Usage; why, url: Buf.Buf; err: ERROR; trial: Trial;
+    t: ^Thread.Thread; t0: I64;
     base: [20]U8; n: INT;
 begin
     readHistory;
@@ -1185,11 +1240,42 @@ begin
     Buf.reset(why);
     r.stopped := always;
     err := ask(r, p, join(why, Buf.bytes(url), "/a"), m, u, why);
+    if err # Stopped then fail("a stop before the request"); end;
+    expect("a stop before the request: its text", m.text, "");
+    Amsg.free(m);
+
+    Buf.reset(why);
+    r.stopped := later;
+    err := ask(r, p, join(why, Buf.bytes(url), "/a"), m, u, why);
     if err # Stopped then fail("a stop"); end;
     expect("a stop's text", m.text, "Hi");
     expectInt("a stop's calls", m.calls.len, 0);
     Amsg.free(m);
     r.stopped := nil;
+
+    (* a stop signalled to the thread that waits for a server saying
+       nothing yet breaks the wait, as Agent.poke does *)
+    trial := {r: r, p: p};
+    trial.r.prov := SYSTEM.ADR(trial.p);
+    trial.r.stopped := halt;
+    initClient(trial.cl);
+    trial.r.client := SYSTEM.ADR(trial.cl);
+    Buf.init(trial.why, Heap.heap);
+    Buf.init(trial.url, Heap.heap);
+    _ := join(trial.url, Buf.bytes(url), "/slow");
+    _ := Sys.handle(Sys.sigUsr1);
+    t0 := Sys.clock();
+    t, err := Thread.spawn(trying, ^U8(SYSTEM.ADR(trial)));
+    if err # nil then fail("the trial's thread"); return 1; end;
+    Sys.sleep(200);
+    halting := true;
+    _ := Thread.signal(t, Sys.sigUsr1);
+    Thread.join(t);
+    if trial.err # Stopped then fail("a stop in a wait"); end;
+    if Sys.clock() - t0 > 1000000000 then fail("a stop in a wait took too long"); end;
+    Amsg.free(trial.m);
+    Buf.done(trial.why);
+    Buf.done(trial.url);
 
     err := ask(r, p, "http://127.0.0.1:1", m, u, why);
     if (err # Failed) or (why.len = 0) then fail("a server that isn't there"); end;

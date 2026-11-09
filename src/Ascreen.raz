@@ -450,6 +450,7 @@ begin
         Thread.lock(mutex);
         stopping := true;
         Thread.unlock(mutex);
+        Agent.poke(thread);
         Buf.str(flash, "stopping");
     elsif LEN(Aview.queue()) > 0 then
         Aview.clearQueue;
@@ -1604,6 +1605,7 @@ begin
         stopping := true;
         ending := true;
         Thread.unlock(mutex);
+        Agent.poke(thread);
         if (question.len > 0) or why.open then reply(no); end;
         Thread.join(thread);
     end;
