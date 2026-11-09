@@ -160,7 +160,8 @@ these are the ones to start with:
 | `/quit` | leave (so does C-d) |
 
 Attach a file with `@src/Arno.raz`, a line range with
-`@src/Arno.raz:1-40`, or a path with spaces with `@"my file.txt"`.
+`@src/Arno.raz:1-40`, or a path with spaces with `@"my file.txt"`;
+in the quotes, `\"` is a quote and `\\` a backslash.
 Directories and images work too, if the model takes images.
 
 | Key (full screen) | What it does |

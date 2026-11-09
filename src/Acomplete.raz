@@ -17,7 +17,8 @@
    with a blank, to go on past. A bare name, with no directory, also
    finds the files below that hold it anywhere in their name, at most
    MaxHits of them, of the first MaxWalk the walk comes to (Afind, so
-   ignore files hold). A path with a blank in it is quoted.
+   ignore files hold). A path with a blank or a quote in it is quoted,
+   a quote or backslash in it escaped (Aattach.quote).
 
    As the Pascal arno's Suggest and attach.pas's Files, less te's open
    files.
@@ -41,6 +42,16 @@ var
     mem: Arena.Arena;   (* the items' text, until the next call *)
     items: Items.Vec;
 
+(* Whether the quote s[q] is escaped: an odd number of backslashes
+   before it. *)
+proc escaped(s: []const U8; q: INT): BOOL;
+var i: INT;
+begin
+    i := q;
+    while (i > 0) and (s[i - 1] = '\\') do DEC(i); end;
+    return (q - i) mod 2 = 1;
+end;
+
 (* The word of s being completed, with the point at point: from where it
    starts to where it ends; -1 and -1 for none. *)
 proc token*(s: []const U8; point: INT): (INT, INT);
@@ -52,7 +63,7 @@ begin
     if (i < point) and Aattach.starts(s, i) then return i, point; end;
     (* an @" open on the point's line, blanks and all *)
     i := point;
-    while (i > 0) and (s[i - 1] # '"') and (s[i - 1] # '\n') do DEC(i); end;
+    while (i > 0) and ((s[i - 1] # '"') or escaped(s, i - 1)) and (s[i - 1] # '\n') do DEC(i); end;
     if (i >= 2) and (s[i - 1] = '"') and Aattach.starts(s, i - 2) then return i - 2, point; end;
     return -1, -1;
 end;
@@ -95,14 +106,16 @@ end;
 
 (* The item that writes path: @path and a blank after a file, a slash
    after a directory; quoted, the quote left open after a directory, if
-   path has a blank in it. *)
+   path has a blank or a quote in it. *)
 proc path(p: []const U8; dir: BOOL);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    if Str.find(p, " ") >= 0 then
-        if dir then Fmt.write(b, "@\"{}/", [Fmt.str(p)]); else Fmt.write(b, "@\"{}\" ", [Fmt.str(p)]); end;
+    if (Str.find(p, " ") >= 0) or (Str.find(p, "\t") >= 0) or (Str.find(p, "\"") >= 0) then
+        Buf.str(b, "@\"");
+        Aattach.quote(b, p);
+        if dir then Buf.add(b, '/'); else Buf.str(b, "\" "); end;
     elsif dir then
         Fmt.write(b, "@{}/", [Fmt.str(p)]);
     else
@@ -113,11 +126,19 @@ end;
 
 (* The items for word, an @path being typed. *)
 proc files(word: []const U8);
-var p, dir, base, name, rest: []const U8; list, full: Buf.Buf; i, seen: INT; ok: BOOL; w: Afind.Walk;
+var p, dir, base, name, rest: []const U8; list, full, unquoted: Buf.Buf; i, seen: INT; ok: BOOL; w: Afind.Walk;
 begin
+    Buf.init(unquoted, Heap.heap);
+    defer Buf.done(unquoted);
     p := word[1..LEN(word)];
-    if Str.hasPrefix(p, "\"") then p := p[1..LEN(p)]; end;
-    if (Str.find(p, ":") >= 0) or (Str.find(p, "\"") >= 0) then return; end;
+    if Str.hasPrefix(p, "\"") then
+        (* none once the quote is closed *)
+        if Aattach.unquote(p[1..LEN(p)], unquoted) < LEN(p) - 1 then return; end;
+        p := Buf.bytes(unquoted);
+    elsif Str.find(p, "\"") >= 0 then
+        return;
+    end;
+    if Str.find(p, ":") >= 0 then return; end;
     i := Str.findLast(p, "/");
     dir := p[0..i + 1];
     base := p[i + 1..LEN(p)];
@@ -265,6 +286,7 @@ begin
     at("a word", "see @src/A", 10, 4, 10);
     at("not a word", "me@x", 4, -1, -1);
     at("quoted", "see @\"a dir/b", 13, 4, 13);
+    at("an escaped quote", "see @\"a \\\"b", 11, 4, 11);
     at("no @", "plain", 5, -1, -1);
     expect("names", "/mo", "/mode|[NAME] \u{B7} show or set the mode;/model|[NAME] \u{B7} show or set the model;" +
         "/models|list the provider's models;");
@@ -276,6 +298,8 @@ begin
     _ := Sys.makeDir("build/complete");
     _ := Sys.makeDir("build/complete/a dir");
     _ := Sys.makeDir("build/complete/sub");
+    _ := Sys.makeDir("build/complete/say \"hi\"");
+    _ := Files.write("build/complete/say \"hi\"/x.txt", "");
     _ := Files.write("build/complete/Apple.txt", "");
     _ := Files.write("build/complete/.hidden", "");
     _ := Files.write("build/complete/sub/deep-apple.raz", "");
@@ -287,6 +311,8 @@ begin
     expect("found below", "@apple", "@Apple.txt |;@sub/deep-apple.raz |;");
     expect("into a directory", "@sub/", "@sub/deep-apple.raz |;");
     expect("hidden", "@.h", "@.hidden |;");
+    expect("a quote", "@sa", "@\"say \\\"hi\\\"/|dir;");
+    expect("into it", "@\"say \\\"hi\\\"/", "@\"say \\\"hi\\\"/x.txt\" |;");
     _ := Sys.setWorkDir(Buf.bytes(here));
     if failed then return 1; end;
     return 0;

@@ -657,7 +657,12 @@ A listing of the directory, a name a line, a subdirectory with a slash.
 The same, for a path with spaces in it; the range, if any, follows the
 closing quote.
 An unquoted path ends at the next space.
-There are no escapes in the quotes.
+In the quotes,
+.Ql \e"
+stands for a quote and
+.Ql \e\e
+for a backslash; any other backslash stands for itself.
+A path with a newline in it can't be attached.
 .It @ Ns Ar image
 An image, a
 .Pa .png , .jpg , .jpeg , .gif

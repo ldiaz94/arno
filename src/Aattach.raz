@@ -4,7 +4,10 @@
    @path attaches a file, @path:N its line N, @path:N-M lines N to M,
    and @dir a listing of the directory, one name a line, a directory's
    with a slash after it. A path with a blank in it is quoted:
-   @"some dir/a file", and :N or :N-M may follow the closing quote. An
+   @"some dir/a file", and :N or :N-M may follow the closing quote; in
+   the quotes \" stands for a quote and \\ for a backslash, and any
+   other backslash for itself. A path with a newline in it can't be
+   attached: the quotes end at the end of the line. An
    @ starts a reference only at the start of the text or after a blank
    or an opening parenthesis, so that an email address is left alone;
    an unquoted one runs to the next blank, and if it names nothing,
@@ -205,15 +208,41 @@ begin
     return (text[i] = '@') and ((i = 0) or blank(text[i - 1]) or (text[i - 1] = '('));
 end;
 
+(* s, the text after an @", up to its closing quote or the end of its
+   line, added to b with its escapes undone, \" a quote and \\ a
+   backslash; where in s it stopped. *)
+proc unquote*(s: []const U8; var b: Buf.Buf): INT;
+var k: INT;
+begin
+    k := 0;
+    while (k < LEN(s)) and (s[k] # '"') and (s[k] # '\n') do
+        if (s[k] = '\\') and (k + 1 < LEN(s)) and ((s[k + 1] = '"') or (s[k + 1] = '\\')) then INC(k); end;
+        Buf.add(b, s[k]);
+        INC(k);
+    end;
+    return k;
+end;
+
+(* path added to b as it goes between the quotes of an @"...": a quote
+   or a backslash in it with a backslash before it. *)
+proc quote*(var b: Buf.Buf; path: []const U8);
+var i: INT;
+begin
+    for i := 0 to LEN(path) - 1 do
+        if (path[i] = '"') or (path[i] = '\\') then Buf.add(b, '\\'); end;
+        Buf.add(b, path[i]);
+    end;
+end;
+
 (* The quoted reference at text[i], @"path" and maybe :N or :N-M after
-   it: its path and lines, and where it ends; false if the quote isn't
-   closed on its line, or holds nothing. *)
-proc quoted(text: []const U8; i: INT): ([]const U8, []const U8, INT, BOOL);
+   it: its lines, and where it ends, its path into path; false if the
+   quote isn't closed on its line, or holds nothing. *)
+proc quoted(text: []const U8; i: INT; var path: Buf.Buf): ([]const U8, INT, BOOL);
 var k, j: INT;
 begin
-    k := i + 2;
-    while (k < LEN(text)) and (text[k] # '"') and (text[k] # '\n') do INC(k); end;
-    if (k >= LEN(text)) or (text[k] # '"') or (k = i + 2) then return "", "", i, false; end;
+    Buf.reset(path);
+    k := i + 2 + unquote(text[i + 2..LEN(text)], path);
+    if (k >= LEN(text)) or (text[k] # '"') or (k = i + 2) then return "", i, false; end;
     j := k + 1;
     if (j + 1 < LEN(text)) and (text[j] = ':') and Str.isDigit(text[j + 1]) then
         k := j + 1;
@@ -222,9 +251,9 @@ begin
             INC(k);
             while (k < LEN(text)) and Str.isDigit(text[k]) do INC(k); end;
         end;
-        return text[i + 2..j - 1], text[j + 1..k], k, true;
+        return text[j + 1..k], k, true;
     end;
-    return text[i + 2..j - 1], "", j, true;
+    return "", j, true;
 end;
 
 (* Whether s is lines: N or N-M. *)
@@ -274,19 +303,21 @@ end;
 (* m's text made text and what its references bring, and its images
    those they name. *)
 proc expand*(var m: Amsg.Msg; text: []const U8);
-var out: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []const U8; ok: BOOL;
+var out, unquoted: Buf.Buf; seen: Strs.Vec; i, j: INT; ref, path, lines: []const U8; ok: BOOL;
 begin
     Buf.init(out, Heap.heap);
     defer Buf.done(out);
+    Buf.init(unquoted, Heap.heap);
+    defer Buf.done(unquoted);
     Strs.init(seen, Heap.heap);
     Buf.str(out, text);
     i := 0;
     while i < LEN(text) do
         if not starts(text, i) then INC(i); continue; end;
         if (i + 1 < LEN(text)) and (text[i + 1] = '"') then
-            path, lines, j, ok := quoted(text, i);
+            lines, j, ok := quoted(text, i, unquoted);
             if ok then
-                _ := take(m, path, lines, seen, out);
+                _ := take(m, Buf.bytes(unquoted), lines, seen, out);
                 i := j;
                 continue;
             end;
@@ -420,6 +451,15 @@ begin
         Out.str("Aattach: an image\n");
         failed := true;
     end;
+    _ := Files.write("build/attach/q\"t.txt", "quote");
+    _ := Files.write("build/attach/b\\s.txt", "backslash");
+    expand(m, "@\"build/attach/q\\\"t.txt\" @\"build/attach/b\\\\s.txt\" @\"build/attach/b\\s.txt\"");
+    expect("escapes, and a backslash for itself", m.text[LEN(shown(m.text))..LEN(m.text)],
+        "\n\n<file path=\"build/attach/q\"t.txt\">\nquote\n</file>\n\n" +
+        "<file path=\"build/attach/b\\s.txt\">\nbackslash\n</file>", failed);
+    Buf.reset(b);
+    quote(b, "a \"b\\c\"");
+    expect("quote", Buf.bytes(b), "a \\\"b\\\\c\\\"", failed);
     if failed then return 1; end;
     return 0;
 end;
