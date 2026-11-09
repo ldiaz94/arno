@@ -58,12 +58,12 @@
 module Aserve;
 import Aframe, Aview, Apeer, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Amsg, Json, Thread, Sys,
     Buf, Str, Fmt, Heap, Rt, Fields := Vec([]const U8), Polls := Vec(Sys.Poll),
-    Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item);
+    Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item), Images := Vec([]U8);
 import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (typed, said, called, answered, told, failed, status, request, switched, named, costed, ended);
+    Sort = (typed, pictured, said, called, answered, told, failed, status, request, switched, named, costed, ended);
 
     Event = record
         sort: Sort;             (* what it tells *)
@@ -199,6 +199,12 @@ begin
     post(costed, Buf.bytes(b), "", "", "", false);
 end;
 
+(* The front's picture: one the human's message took, told. *)
+proc picture(url: []const U8; _arg: ^U8);
+begin
+    post(pictured, url, "", "", "", false);
+end;
+
 (* The front's call: a tool about to run, told. *)
 proc call(name, args: []const U8; _arg: ^U8);
 begin
@@ -319,20 +325,22 @@ end;
 proc front: Agent.Front;
 begin
     return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted,
-        speaker: speaker, spent: spent};
+        speaker: speaker, spent: spent, picture: picture};
 end;
 
 (* c shown again from its start, on the job's thread, which has it: the
    board cleared, then each message as it was told when it came. As
    Ascreen's changed does. *)
 proc changed(const c: Astore.Conv; _arg: ^U8);
-var m: []Amsg.Msg; calls: []Amsg.Call; i, k: INT;
+var m: []Amsg.Msg; calls: []Amsg.Call; images: [][]U8; i, k: INT;
 begin
     post(switched, c.id, "", "", "", false);
     m := Msgs.all(c.msgs);
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
         | user: post(typed, Aattach.shown(m[i].text), "", "", "", false);
+            images := Images.all(m[i].images);
+            for k := 0 to LEN(images) - 1 do post(pictured, images[k], "", "", "", false); end;
         | assistant: post(said, m[i].text, "", "", "", false);
             calls := Calls.all(m[i].calls);
             for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", "", false); end;
@@ -855,6 +863,7 @@ begin
     defer Aboard.speak(0);
     match e.sort of
     | typed: Aview.typed(Buf.bytes(e.a));
+    | pictured: Aview.pictured(Buf.bytes(e.a));
     | said: Aview.said(Buf.bytes(e.a));
     | called: Aview.called(Buf.bytes(e.a), Buf.bytes(e.b));
     | answered: Aview.answered(Buf.bytes(e.a));

@@ -32,6 +32,8 @@
                           each; to viewers only
        spent N COST       what worker N has spent so far, dollars as
                           /usage writes them, after each of its requests
+       image N TYPE BYTES a picture of entry N, the human's, its
+                          bytes; to the owner only
 
    Whoever keeps a copy of the transcript appends what it is told, in
    order, and has the same numbers; apply is that, for a viewer. These
@@ -368,6 +370,28 @@ proc typed*(s: []const U8);
 begin
     _ := Aboard.push(Aboard.user, s);
     pushed(LEN(Aboard.all()) - 1);
+end;
+
+(* A picture of the newest entry of the human's, url a data: URL, told
+   to the owner alone, as image N TYPE BYTES. The Board keeps no
+   picture, and a viewer is not told: a terminal shows none, and a
+   picture of a few megabytes would put it past its backlog. A url that
+   isn't a data: URL in base64 is dropped. *)
+proc pictured*(url: []const U8);
+var i, n: INT; head, data: []const U8; ok: BOOL; raw: Buf.Buf; d: [20]U8;
+begin
+    i := LEN(Aboard.all()) - 1;
+    while (i >= 0) and (Aboard.all()[i].kind # Aboard.user) do DEC(i); end;
+    head, data, ok := Str.cut(url, ";base64,");
+    if (sink = nil) or (i < 0) or not ok or not Str.hasPrefix(head, "data:") then return; end;
+    Buf.init(raw, Heap.heap);
+    defer Buf.done(raw);
+    n, ok := Str.unbase64(data, Buf.spare(raw, LEN(data) div 4 * 3));
+    if not ok then return; end;
+    raw.len := n;
+    Buf.reset(out);
+    Aframe.pack(out, ["image", num(i, d), head[5..LEN(head)], Buf.bytes(raw)]);
+    sink(Buf.bytes(out));
 end;
 
 (* A piece of the model's text, appended to the reply it goes on, the

@@ -113,6 +113,7 @@ type
         edit*: proc(text: []const U8): ([]const U8, BOOL);   (* text, as the human edited it; nil if they can't *)
         speaker*: proc(n: INT; model: []const U8; arg: ^U8);   (* who speaks from now on: 0 the lead, N worker N, said around each thing a worker tells, with its model once as it starts and "" after; nil if it is not asked *)
         spent*: proc(dollars: F64; arg: ^U8);     (* what the worker speaking has spent, at list price, said after each request of its; nil if it is not asked *)
+        picture*: proc(url: []const U8; arg: ^U8);   (* a picture the human's message took, a data: URL, said once its @paths are read; nil if it is not asked *)
         arg*: ^U8;
     end;
 

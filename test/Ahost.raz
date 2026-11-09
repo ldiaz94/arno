@@ -12,6 +12,8 @@
      - refuses a host's tool that clashes with its own, and says ready;
      - runs a line as a turn, and tells it as push, tool, append, done,
        status and busy, the same transcript numbers to every reader;
+     - tells the host a picture a line's @path brings, its bytes,
+       live and when the conversation is loaded;
      - calls the host's tool and gives the model its result;
      - asks the host what it would ask the human, a change to a file,
        and takes its refusal with the reason; a cancel refuses the
@@ -41,6 +43,7 @@ import Aframe, Buf, Str, Sys, Files, Fmt, Out, Heap, Fields := Vec([]const U8);
 
 const
     Patience = 20000;   (* ms to wait for a message *)
+    Png = "\x89PNG\r\n\x1a\n a picture";   (* a picture's bytes, as a PNG starts *)
 
 var
     toArno, fromArno: INT;   (* the pipes *)
@@ -630,6 +633,38 @@ begin
     mustHave("the hello's prompt reaches the system prompt", "Be careful.");
 end;
 
+(* A picture a line's @path brings is told to the host as image, its
+   bytes, right after the line's own entry and before the reply's; and
+   again when the conversation is loaded. *)
+proc picture;
+var want, path: Buf.Buf;
+begin
+    Buf.init(want, Heap.heap);
+    defer Buf.done(want);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Fmt.write(path, "{}/p.png", [Fmt.str(Buf.bytes(root))]);
+    if not Files.write(Buf.bytes(path), Png) then fail("a picture", "p.png can't be written"); return; end;
+    clear();
+    line("look @p.png");
+    _ := await("push|");
+    Fmt.write(want, "image|{}|image/png|{}", [Fmt.str(idOf()), Fmt.str(Png)]);
+    _ := await("image|");
+    is("a picture, after its line's entry", Buf.bytes(want));
+    mustNotHave("and before the reply", "|asst|");
+    idle();
+    clear();
+    Buf.reset(path);
+    Fmt.write(path, "/load {}", [Fmt.str(Buf.bytes(ident))]);
+    line(Buf.bytes(path));
+    _ := await("reset");
+    _ := await("image|");
+    mustHave("a picture, when its conversation is loaded", "|image/png|" + Png);
+    while not has("|info|loaded ") do   (* the loading told *)
+        if not await("push|") then return; end;
+    end;
+end;
+
 (* A command is not a turn: busy does not tell it, for a host that reads
    busy 0 as "the model is done" must not be fooled. *)
 proc command;
@@ -891,6 +926,7 @@ begin
     beforeHello();
     greeting();
     turn();
+    picture();
     command();
     hostTool();
     queued();

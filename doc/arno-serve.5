@@ -1,4 +1,4 @@
-.Dd October 30, 2026
+.Dd November 9, 2026
 .Dt ARNO-SERVE 5
 .Os
 .Sh NAME
@@ -322,6 +322,40 @@ writes dollars:
 .Ql $0.042 .
 It comes after each request of the worker's, for the line that says
 the worker in the lead's view.
+.It Cm image Ar n type bytes
+A picture that goes with entry
+.Ar n :
+.Ar type
+is its media type, such as
+.Ql image/png
+or
+.Ql image/jpeg ,
+and
+.Ar bytes
+the picture itself, as its file holds it.
+Today only a
+.Ql user
+entry has pictures: those its line brought with
+.Ql @path ,
+a pasted one among them.
+Each comes right after the entry's
+.Cm push ,
+one message a picture, in the order the line named them, and before
+anything of the reply; and again when a conversation is loaded, after
+its entry.
+A picture a tool returns or a reply holds, should arno come to keep one,
+will come the same way, after the entry's
+.Cm done
+or
+.Cm append .
+A host that shows no pictures ignores it.
+.Pp
+The picture is sent, not its path, because a path may not lead the host
+to it: a pasted picture's file is removed as the session ends, a
+conversation loaded keeps its pictures only inside itself, and a host may
+not see the files as arno does, when one of them runs in a jail or
+another mount namespace.
+The bytes are raw, not base64, since a field holds any bytes.
 .It Cm error Ar text
 What arno made of the host's last message: see above; or, to a request, why it
 cannot be done.
@@ -524,9 +558,12 @@ Anything else it sends is ignored.
 A viewer is never sent
 .Cm ask ,
 .Cm call ,
-.Cm ready
+.Cm ready ,
+.Cm error
 or
-.Cm error ;
+.Cm image ,
+the last since a picture of a few megabytes would put it past the
+megabyte it may fall behind;
 while a question waits, its
 .Cm status
 says so, with
@@ -575,6 +612,15 @@ host -> arno   result 1 "1  teh quick fox"
 arno -> host   done 2 "1  teh quick fox"
 arno -> host   ask 2 "apply these changes?" "diff..." yn
 host -> arno   answer 2 n "keep teh"
+.Ed
+.Pp
+A line with a picture:
+.Bd -literal -offset indent
+host -> arno   line "what is wrong here? @shot.png"
+arno -> host   busy 1
+arno -> host   push 4 user "what is wrong here? @shot.png"
+arno -> host   image 4 image/png "\e211PNG\er\en..."
+arno -> host   push 5 asst ""
 .Ed
 .Pp
 List the live sessions: a line for each, with its process id, owner, project

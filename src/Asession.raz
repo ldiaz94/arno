@@ -44,7 +44,8 @@
    again. *)
 module Asession;
 import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Alogin, Afence, Arun, Amsg, Buf, Str,
-    Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item);
+    Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item),
+    Images := Vec([]U8);
 import SYSTEM;
 
 type
@@ -596,13 +597,18 @@ end;
 
 (* A turn of s's conversation, on the human's message text and what its
    @paths bring: Agent.turn's error, why saying why it failed. The
-   conversation is saved after. *)
+   pictures it takes are told to the front first, and the conversation
+   is saved after. *)
 proc turn*(var s: Session; text: []const U8; var why: Buf.Buf): ERROR;
-var m: ^Amsg.Msg; err: ERROR;
+var m: ^Amsg.Msg; err: ERROR; images: [][]U8; i: INT;
 begin
     m := Msgs.add(s.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
     Aattach.expand(m^, text);
+    if s.agent.front.picture # nil then
+        images := Images.all(m^.images);
+        for i := 0 to LEN(images) - 1 do s.agent.front.picture(images[i], s.agent.front.arg); end;
+    end;
     err := answer(s, why);
     Arena.reset(s.mem);
     return err;
