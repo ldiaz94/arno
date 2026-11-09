@@ -3,7 +3,7 @@
 </p>
 
 arno is a harness for language models in the terminal, written in
-[raz](https://raz.lucelad.workers.dev). It sends a conversation to a
+[raz](https://raz.lucelad.workers.dev) with love ❤️. It sends a conversation to a
 model (Ollama, Ollama Cloud, OpenAI, Gemini or Claude), streams the
 reply, and lets the model read your project and change it through a
 few tools, each one asking you before it reaches past what is safe.
@@ -357,4 +357,4 @@ by `make loc`.
 
 ## Licence
 
-[ISC](LICENSE). Copyright © 2026 Luis Díaz. Built with love.
+[ISC](LICENSE). Copyright © 2026 Luis Díaz.
