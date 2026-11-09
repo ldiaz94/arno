@@ -167,9 +167,13 @@ number
 for the model to read.
 Dropped like an answer for an id not waited on.
 .It Cm unqueue Ar text
-Take the last line of the queue back, if it is still
-.Ar text ,
-for the host to edit, as a viewer does; else nothing.
+Take a line that is
+.Ar text
+out of the queue, the last such, for the host to edit, or to drop, as
+a viewer does; else nothing.
+The line is named by its text, not its place, which shifts under the
+host as a line starts or a viewer adds or takes one; lines that are
+the same text are as good as one another.
 It is not answered: the
 .Cm queue
 that follows says what waits.
@@ -825,9 +829,10 @@ A viewer's
 stops the turn, as the host's does; with none running, or one stopping
 already, it empties the queue, as a second C-c does.
 .Cm unqueue
-takes the last line out of the queue, if it is still
-.Ar text ,
-for the viewer to edit.
+takes a line that is
+.Ar text
+out of the queue, the last such, for the viewer to edit, as the host's
+does.
 A
 .Cm line
 of
@@ -966,7 +971,7 @@ arno -> host   usagelog [{"at":1794236875,"model":"deepseek-v4.1-flash:cloud",
                           "kind":"model"}]
 .Ed
 .Pp
-The line of entry 6 tried again, edited; a line taken back from the queue;
+The line of entry 6 tried again, edited; a line taken out of the queue, not the last;
 and the conversation forgotten:
 .Bd -literal -offset indent
 host -> arno   rewind 6
@@ -978,8 +983,10 @@ arno -> host   rewound 6
 host -> arno   line "why, briefly?"
 host -> arno   line "and then?"
 arno -> host   queue 0 "and then?"
+host -> arno   line "and after?"
+arno -> host   queue 0 "and then?" "and after?"
 host -> arno   unqueue "and then?"
-arno -> host   queue 0
+arno -> host   queue 0 "and after?"
 host -> arno   forget ""
 arno -> host   reset
 arno -> host   push 0 info "a new conversation"

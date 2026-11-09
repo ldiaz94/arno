@@ -67,8 +67,10 @@
    the order typed, and the owner takes them with heard, a turn each.
    After a turn that stopped or failed the owner may hold it until an
    Enter: any line typed, an empty one too, lets it go. A viewer's
-   unqueue TEXT takes the last line back, if it is still TEXT, to be
-   edited. A change is told when the owner settles, after taking what
+   unqueue TEXT takes a line that is TEXT out, the last such, to be
+   edited, or dropped: by its text, not its place, which shifts as a
+   line starts or another screen adds or takes one, while lines that are
+   the same text are as good as one another. A change is told when the owner settles, after taking what
    it can, so that a line that runs at once is never told as waiting.
 
    Two things a viewer's screen needs the session for are told it or
@@ -318,11 +320,15 @@ begin
     return true;
 end;
 
-(* The last line of the queue taken out, if it is still s: a viewer's
-   or the host's unqueue, which takes it back to edit. *)
+(* The last line of the queue that is s taken out, if there is one: a
+   viewer's or the host's unqueue, which takes it back to edit, or drops
+   it. *)
 proc unqueueIf*(s: []const U8);
+var i: INT;
 begin
-    if (queued.len > 0) and (Strs.all(queued)[queued.len - 1] = s) then forget(queued.len - 1); end;
+    for i := queued.len - 1 to 0 by -1 do
+        if Strs.all(queued)[i] = s then forget(i); return; end;
+    end;
 end;
 
 (* The queue emptied. *)
@@ -1135,14 +1141,16 @@ begin
     Aframe.pack(line, ["line", "hello"]);
     Aframe.pack(line, ["line", "a"]);
     Aframe.pack(line, ["line", "b"]);
-    Aframe.pack(line, ["unqueue", "b"]);
+    Aframe.pack(line, ["line", "c"]);
+    Aframe.pack(line, ["unqueue", "b"]);   (* a line that is not the last *)
     Aframe.pack(line, ["unqueue", "c"]);
+    Aframe.pack(line, ["unqueue", "d"]);   (* none *)
     Aframe.pack(line, ["cancel"]);
     _ := Sys.send(fd, Buf.bytes(line));
     serviceAll();
     settle();
     received(fd, got);
-    expect("the queue, the last taken back", Buf.bytes(got), "queue|0|hello|a\n");
+    expect("the queue, those taken back gone", Buf.bytes(got), "queue|0|hello|a\n");
     if not heard(line) then failed := true; Out.str("Aview: no line\n"); end;
     expect("the line", Buf.bytes(line), "hello");
     if not cancelled() or cancelled() then failed := true; Out.str("Aview: cancel\n"); end;

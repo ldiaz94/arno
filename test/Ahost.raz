@@ -29,7 +29,7 @@
      - tells a reasoning model's thinking as a think entry, stamps
        each new entry with its time and model, and tells a turn's
        stats before its busy 0, and a search's sources;
-     - takes a line back from the queue at the host's unqueue; rewinds
+     - takes any line back from the queue at the host's unqueue; rewinds
        the conversation to a message of the human's; forgets the
        current conversation, and begins a new one;
      - on a terminal, holds a queue after an error too, answers /usage
@@ -973,7 +973,8 @@ begin
     mustHave("from 1 in the next turn", `"id":1,"url":"http://x/","title":"Found","excerpt":"hail","retrievedAt":`);
 end;
 
-(* The host takes a line back from the queue, as a viewer does. *)
+(* The host takes lines back from the queue, as a viewer does: the
+   last, and then one before another. *)
 proc unqueued;
 var id: Buf.Buf;
 begin
@@ -989,9 +990,18 @@ begin
     send(["unqueue", "take me back"]);
     _ := await("queue|");
     is("and taken back", "queue|0");
+    line("drop me");
+    _ := await("queue|");
+    line("keep me");
+    _ := await("queue|");
+    is("two lines queued", "queue|0|drop me|keep me");
+    send(["unqueue", "drop me"]);
+    _ := await("queue|");
+    is("the first taken out", "queue|0|keep me");
     send(["result", Buf.bytes(id), "fine"]);
     idle();
     mustNotHave("the line taken back never runs", "|user|take me back");
+    mustNotHave("nor the one taken out", "|user|drop me");
 end;
 
 (* rewind cuts the conversation back to a message of the human's, which
