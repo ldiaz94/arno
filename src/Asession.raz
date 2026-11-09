@@ -1060,6 +1060,14 @@ begin
     Buf.done(f.title);
 end;
 
+(* The conversation's title, as it is listed, into b: its own, or,
+   with none, the one made from its first line. *)
+proc titled*(const s: Session; var b: Buf.Buf);
+begin
+    Buf.str(b, s.conv.title);
+    if b.len = 0 then Astore.autoTitle(s.conv, b); end;
+end;
+
 (* What s's status line says, into f, made with initFacts. The
    conversation is large, time for /compact, at 60% of the model's
    window where that is known, else at 20 messages or 50 KB of text.
@@ -1100,8 +1108,7 @@ begin
     Buf.reset(f.title);
     Buf.init(title, Heap.heap);
     defer Buf.done(title);
-    Buf.str(title, s.conv.title);
-    if title.len = 0 then Astore.autoTitle(s.conv, title); end;
+    titled(s, title);
     t := Buf.bytes(title);
     if LEN(t) <= 40 then Str.replace(f.title, t, "\n", " "); return; end;
     i := 40;

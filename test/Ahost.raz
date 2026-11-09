@@ -781,6 +781,9 @@ begin
     Buf.reset(out);
     Fmt.write(out, "renamed|{}", [Fmt.str(Buf.bytes(ident))]);
     is("rename the current", Buf.bytes(out));
+    Buf.reset(out);
+    Fmt.write(out, "|A title|{}\n", [Fmt.str(Buf.bytes(ident))]);
+    mustHave("the status tells the title and the id", Buf.bytes(out));
     send(["rename", "nosuch", "x"]);
     _ := await("error");
     is("rename of none", "error|no conversation nosuch");

@@ -24,7 +24,9 @@
        append N TEXT      more of entry N's text
        done N TEXT        tool call N's result
        reset              the transcript was cleared
-       status TEXT        the status line
+       status TEXT TITLE ID
+                          the status line, then the conversation's
+                          title, as it is listed, and its id
        busy 0|1           a turn ended or started
        queue H LINE...    the lines that wait for the turn, in order;
                           H is 1 when they wait for an Enter too
@@ -122,7 +124,8 @@ var
     holding: BOOL;            (* the queue waits for an Enter, after a turn that stopped or failed *)
     queueTold: Buf.Buf;       (* the queue's message as last told *)
     cancelling: BOOL;         (* a viewer said cancel *)
-    owner, root, title: Buf.Buf;   (* what who answers *)
+    owner, root, title: Buf.Buf;   (* what who answers, the title as listed *)
+    ident: Buf.Buf;           (* the conversation's id, as last stated *)
     status: Buf.Buf;          (* the status line last told *)
     busy: BOOL;               (* a turn is running, as last told *)
     models: Buf.Buf;          (* the models /model completes from, a line each, as last told *)
@@ -210,6 +213,13 @@ begin
     Buf.reset(out);
     Aframe.pack(out, fields);
     tell(Buf.bytes(out));
+end;
+
+(* The status message, with the status line s, appended to b: the
+   title and the id of the conversation follow it, as last stated. *)
+proc packStatus(var b: Buf.Buf; s: []const U8);
+begin
+    Aframe.pack(b, ["status", s, Buf.bytes(title), Buf.bytes(ident)]);
 end;
 
 (* n in decimal text, in digits, as a field. *)
@@ -348,7 +358,7 @@ var i: INT; d: [20]U8;
 begin
     Aframe.pack(b, ["reset"]);
     for i := 0 to LEN(Aboard.all()) - 1 do entry(i, b); end;
-    Aframe.pack(b, ["status", Buf.bytes(status)]);
+    packStatus(b, Buf.bytes(status));
     if busy then Aframe.pack(b, ["busy", "1"]); else Aframe.pack(b, ["busy", "0"]); end;
     if queued.len > 0 then packQueue(b); end;
     if models.len > 0 then Aframe.pack(b, ["listed", Buf.bytes(models)]); end;
@@ -448,14 +458,19 @@ begin
     say(["reset"]);
 end;
 
-(* The status line is s, and the conversation's title t. *)
-proc stated*(s, t: []const U8);
+(* The status line is s, the conversation's title t, as it is listed,
+   and its id id. *)
+proc stated*(s, t, id: []const U8);
 begin
     Buf.reset(status);
     Buf.str(status, s);
     Buf.reset(title);
     Buf.str(title, t);
-    say(["status", s]);
+    Buf.reset(ident);
+    Buf.str(ident, id);
+    Buf.reset(out);
+    packStatus(out, s);
+    tell(Buf.bytes(out));
 end;
 
 (* A turn has begun or ended. *)
@@ -475,7 +490,7 @@ begin
     Buf.str(b, Buf.bytes(status));
     if yes then Fmt.write(b, " \u{B7} a question waits in {}", [Fmt.str(who)]); end;
     Buf.reset(out);
-    Aframe.pack(out, ["status", Buf.bytes(b)]);
+    packStatus(out, Buf.bytes(b));
     toViewers(Buf.bytes(out));
 end;
 
@@ -1063,11 +1078,11 @@ begin
     said("one");
     said(" two");
     called("read", `{"path":"a"}`);
-    stated("ready", "a title");
+    stated("ready", "a title", "c1");
     busied(true);
     expect("what the owner is told", Buf.bytes(told),
         "23:4:push,1:0,4:user,2:hi,,21:4:push,1:1,4:asst,0:,,19:6:append,1:1,3:one,,20:6:append,1:1,4: two,," +
-        "34:4:tool,1:2,4:read,12:{\"path\":\"a\"},,17:6:status,5:ready,,11:4:busy,1:1,,");
+        "34:4:tool,1:2,4:read,12:{\"path\":\"a\"},,32:6:status,5:ready,7:a title,2:c1,,11:4:busy,1:1,,");
     Buf.reset(told);
 
     (* a viewer that arrives: the transcript so far, and then the changes *)
@@ -1078,17 +1093,17 @@ begin
     serviceAll();
     received(fd, got);
     expect("a viewer's snapshot", Buf.bytes(got),
-        "reset\npush|0|user|hi\npush|1|asst|one two\ntool|2|read|{\"path\":\"a\"}\nstatus|ready\nbusy|1\n");
+        "reset\npush|0|user|hi\npush|1|asst|one two\ntool|2|read|{\"path\":\"a\"}\nstatus|ready|a title|c1\nbusy|1\n");
     answered("1\ta\n");
     cleared();
     received(fd, got);
     expect("then each change", Buf.bytes(got), "done|2|1\ta\n\nreset\n");
     waiting("the terminal", true);
     received(fd, got);
-    expect("a question waits", Buf.bytes(got), "status|ready \u{B7} a question waits in the terminal\n");
+    expect("a question waits", Buf.bytes(got), "status|ready \u{B7} a question waits in the terminal|a title|c1\n");
     waiting("", false);
     received(fd, got);
-    expect("and no longer", Buf.bytes(got), "status|ready\n");
+    expect("and no longer", Buf.bytes(got), "status|ready|a title|c1\n");
 
     (* what the viewer types *)
     Buf.reset(line);
@@ -1157,6 +1172,7 @@ begin
     Buf.init(owner, Heap.heap);
     Buf.init(root, Heap.heap);
     Buf.init(title, Heap.heap);
+    Buf.init(ident, Heap.heap);
     Buf.init(status, Heap.heap);
     Buf.init(models, Heap.heap);
     Buf.init(usage, Heap.heap);

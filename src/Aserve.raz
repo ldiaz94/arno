@@ -114,6 +114,7 @@ var
     (* a job's own *)
     job: Buf.Buf;         (* the line it runs; "" to prepare the session *)
     made: Buf.Buf;        (* the status line it makes *)
+    heading: Buf.Buf;     (* and the title, as it is listed *)
     reason: Buf.Buf;      (* the reason given after a no, kept for why *)
     result: Buf.Buf;      (* a host tool's result, kept for hostRun *)
 
@@ -229,13 +230,15 @@ begin
     if bad then post(failed, s, "", "", "", false); else post(told, s, "", "", "", false); end;
 end;
 
-(* The status line made again, and the conversation's title, from the
+(* The status line made again, and the conversation's title and id, from the
    job's thread: the session is the job's while it runs. *)
 proc counted(_arg: ^U8);
 begin
     Buf.reset(made);
     Asession.status(session, made);
-    post(status, Buf.bytes(made), session.conv.title, "", "", false);
+    Buf.reset(heading);
+    Asession.titled(session, heading);
+    post(status, Buf.bytes(made), Buf.bytes(heading), session.conv.id, "", false);
 end;
 
 (* Whether the host said to stop the turn, which the session asks between reads. *)
@@ -423,7 +426,9 @@ proc restated;
 begin
     Buf.reset(made);
     Asession.status(session, made);
-    Aview.stated(Buf.bytes(made), session.conv.title);
+    Buf.reset(heading);
+    Asession.titled(session, heading);
+    Aview.stated(Buf.bytes(made), Buf.bytes(heading), session.conv.id);
 end;
 
 (* rename ID TITLE: a saved conversation named, or the current one,
@@ -869,7 +874,7 @@ begin
     | answered: Aview.answered(Buf.bytes(e.a));
     | told: Aview.noted(Aboard.info, Buf.bytes(e.a));
     | failed: Aview.noted(Aboard.error, Buf.bytes(e.a));
-    | status: Aview.stated(Buf.bytes(e.a), Buf.bytes(e.b));
+    | status: Aview.stated(Buf.bytes(e.a), Buf.bytes(e.b), Buf.bytes(e.c));
     | request: put(e);
     | switched:
         Aview.cleared();
@@ -1047,6 +1052,7 @@ begin
     Buf.init(slotWhy, Heap.heap);
     Buf.init(job, Heap.heap);
     Buf.init(made, Heap.heap);
+    Buf.init(heading, Heap.heap);
     Buf.init(reason, Heap.heap);
     Buf.init(result, Heap.heap);
 end;

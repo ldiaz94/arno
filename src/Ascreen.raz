@@ -139,6 +139,7 @@ var
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
     made: Buf.Buf;      (* the status line it makes *)
+    heading: Buf.Buf;   (* and the title, as it is listed *)
     posted: Asession.Facts;   (* the facts it made last, under mutex *)
     fresh: BOOL;        (* posted is newer than what the loop shows, under mutex *)
     because: Buf.Buf;   (* the why it was given *)
@@ -261,7 +262,7 @@ begin
     if bad then post(failed, s, "", "", false); else post(shown, s, "", "", false); end;
 end;
 
-(* The status line made again, from the job's thread: the session is
+(* The status line made again, with the title and id, from the job's thread: the session is
    the job's while it runs. Its facts are left in posted for the loop,
    its text goes in the event, for the viewers. *)
 proc counted(_arg: ^U8);
@@ -271,8 +272,10 @@ begin
     fresh := true;
     Buf.reset(made);
     Asession.text(posted, made);
+    Buf.reset(heading);
+    Asession.titled(session^, heading);
     Thread.unlock(mutex);
-    post(Sort.status, Buf.bytes(made), session^.conv.title, "", false);
+    post(Sort.status, Buf.bytes(made), Buf.bytes(heading), session^.conv.id, false);
 end;
 
 proc stopped: BOOL;
@@ -573,7 +576,9 @@ begin
     defer Buf.done(b);
     Asession.facts(session^, f);
     Asession.text(f, b);
-    Aview.stated(Buf.bytes(b), session^.conv.title);
+    Buf.reset(heading);
+    Asession.titled(session^, heading);
+    Aview.stated(Buf.bytes(b), Buf.bytes(heading), session^.conv.id);
     restate(f);
 end;
 
@@ -604,7 +609,7 @@ begin
             revising := true;
         | Sort.status:
             if fresh then restate(posted); fresh := false; end;
-            Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b));
+            Aview.stated(Buf.bytes(e[i].a), Buf.bytes(e[i].b), Buf.bytes(e[i].c));
         | named: Aboard.name(e[i].who, Buf.bytes(e[i].a));
         | costed: Aview.spent(e[i].who, Buf.bytes(e[i].a));
         | ended:
@@ -1666,6 +1671,7 @@ begin
     Buf.init(job, Heap.heap);
     Buf.init(usageText, Heap.heap);
     Buf.init(made, Heap.heap);
+    Buf.init(heading, Heap.heap);
     Buf.init(because, Heap.heap);
     Buf.init(revision, Heap.heap);
     Buf.init(revised, Heap.heap);

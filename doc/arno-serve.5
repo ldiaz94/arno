@@ -257,9 +257,23 @@ or
 what follows rebuilds it.
 A host that keeps the transcript appends what it is told, in order, and has
 the same numbers.
-.It Cm status Ar text
+.It Cm status Ar text title id
 The status line: mode, with the safety and, in build, the plan; then
 model, context in use, tokens, cost, and the title.
+.Ar title
+is the conversation's title, whole, as
+.Cm recent
+lists it: its own, or one made from its first line, or empty before
+there is one.
+.Ar id
+is the conversation's id, which changes with
+.Ic /new
+and
+.Ic /load ,
+so that a list of conversations can mark the current one.
+The status comes again whenever either changes.
+The branch of the project is not told: a host on the same machine asks
+git for it.
 .It Cm busy Ar 0|1
 1 when a turn of the model starts and 0 when it ends, once the conversation
 is saved.
@@ -596,7 +610,7 @@ host -> arno   hello 1 pad "" {"prompt":"pad is a scratch buffer.",
                               "tools":[{"name":"doc_read",
                                         "description":"The buffer."}]}
 arno -> host   ready 20261028-101500 deepseek-v4.1-flash:cloud 4242
-arno -> host   status "arno · chat @ ollama · ctx ..."
+arno -> host   status "arno · chat @ ollama · ctx ..." "" 20261028-101500
 .Ed
 .Pp
 A line, a streaming reply, and a question:
