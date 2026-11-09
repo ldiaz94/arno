@@ -1063,7 +1063,8 @@ Offered only when
 .Cm workers
 is set.
 .Pp
-Staged, the delegations a reply begins with, up to four, run side by
+Staged, the delegations a reply begins with, up to four (or
+.Cm max_workers ) , run side by
 side, each worker on a thread of its own.
 Their briefs are made before any starts, so none carries another's
 report; each is paid at most an even share of what the turn has left;
@@ -1870,6 +1871,9 @@ one model, the one a step runs on when it names none, is still read.
 Each model has its own
 .Cm effort
 entry, if any.
+.It Cm max_workers
+How many workers may run side by side, from 1 to 4; 4 by default.
+1 runs them one after another.
 .It Cm max_steps
 Steps of tool calls a turn takes before it hands back; 30 by default.
 .It Cm prune
@@ -2123,7 +2127,7 @@ jail_rw = ~/.npm ~/.cache/ms-playwright
 A section may set only what is one project's:
 .Cm run , run_ro , run_env , trust , test_cmd , check.NAME , safety , shell ,
 .Cm jail_net , jail_rw , context_files , project_map , prefetch ,
-.Cm mode , worker , workers , max_steps , turn_budget , build_steps ,
+.Cm mode , worker , workers , max_workers , max_steps , turn_budget , build_steps ,
 .Cm build_budget
 and
 .Cm lsp. Ns Ar ext .

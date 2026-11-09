@@ -128,6 +128,7 @@ type
         budget*: F64;         (* dollars a turn may spend, at list price; 0 for no limit *)
         buildSteps*: INT;     (* a turn's steps in build mode, in place of maxSteps *)
         buildBudget*: F64;    (* a turn's dollars in build mode, in place of budget; 0 for no limit *)
+        fan*: INT;            (* workers that may run side by side, 1 to MaxFan: config's max_workers *)
         prefetch*: BOOL;      (* definitions attached to the human's message *)
         worker*: []const U8;        (* the model a worker runs on when none is named; "" for no workers *)
         mode*: Aprompt.Mode;
@@ -216,7 +217,7 @@ const
         "changed as one diff, and merges it or not.";
     (* Workers run side by side at most: each holds a copy of the project
        and a connection to the provider, whose rate limit they share. *)
-    MaxFan = 4;
+    MaxFan* = 4;
     MaxReports = 4;     (* earlier reports a brief carries, the newest *)
     MaxReport = 4000;   (* bytes of each *)
     MaxRequest = 4000;   (* bytes of the human's message a brief carries *)
@@ -240,7 +241,7 @@ var
 proc init*(var a: Agent; prov: ^Awire.Prov; front: Front);
 begin
     a := {prov: prov, front: front, maxSteps: MaxSteps, prune: Prune, prefetch: true, buildSteps: BuildSteps,
-        buildBudget: BuildBudget,
+        buildBudget: BuildBudget, fan: MaxFan,
         human: {ask: front.ask, why: front.why, stopped: front.stopped, edit: front.edit, arg: front.arg}};
     Strs.init(a.reports, Heap.heap);
     Awire.initClient(a.client);
@@ -1116,7 +1117,7 @@ begin
 end;
 
 (* How many of calls, from the first, run together: the delegations
-   that begin them, up to MaxFan, when the lead's workers would each
+   that begin them, up to a.fan, when the lead's workers would each
    have a copy of their own and nothing holds them back; else 1. *)
 proc together(const a: Agent; const c: Astore.Conv; calls: []Amsg.Call): INT;
 var n: INT;
@@ -1124,7 +1125,7 @@ begin
     if a.working or (LEN(Afence.stage) = 0) or (LEN(Afence.scratch) = 0) or stopped(a) then return 1; end;
     if (a.mode = Aprompt.build) and not approved(c) then return 1; end;
     n := 0;
-    while (n < LEN(calls)) and (n < MaxFan) and (calls[n].name = "delegate") do INC(n); end;
+    while (n < LEN(calls)) and (n < a.fan) and (calls[n].name = "delegate") do INC(n); end;
     if n < 2 then return 1; end;
     return n;
 end;

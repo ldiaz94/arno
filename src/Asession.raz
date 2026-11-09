@@ -267,6 +267,8 @@ begin
     n, ok := Str.toInt(Aconf.get(s^.conf, "prune"));
     if ok and (n >= 0) then s^.agent.prune := INT(n); end;
     s^.agent.budget, _ := Math.toReal(Aconf.get(s^.conf, "turn_budget"));
+    n, ok := Str.toInt(Aconf.get(s^.conf, "max_workers"));
+    if ok and (n >= 1) and (n <= Agent.MaxFan) then s^.agent.fan := INT(n); end;
     n, ok := Str.toInt(Aconf.get(s^.conf, "build_steps"));
     if ok and (n > 0) then s^.agent.buildSteps := INT(n); end;
     x, ok := Math.toReal(Aconf.get(s^.conf, "build_budget"));
