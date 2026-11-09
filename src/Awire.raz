@@ -89,6 +89,7 @@ type
         msgs*: []Amsg.Msg;
         tools*: []const Tool;
         emit*: proc(text: []const U8; arg: ^U8);   (* each piece of the reply's text, as it comes; or nil *)
+        think*: proc(text: []const U8; arg: ^U8);  (* and of its thinking, where the server streams it; or nil *)
         arg*: ^U8;
         stopped*: proc: BOOL;                (* whether to stop the reply now, asked as it comes; or nil *)
     end;
@@ -100,6 +101,7 @@ type
     Acc = record
         dialect: Dialect;
         emit: proc(text: []const U8; arg: ^U8);
+        thought: proc(text: []const U8; arg: ^U8);   (* each piece of the thinking, as it comes; or nil *)
         arg: ^U8;
         line: Buf.Buf;       (* the line coming, up to its line feed *)
         text: Buf.Buf;
@@ -414,9 +416,9 @@ end;
 
 (* the reply *)
 
-proc initAcc(var a: Acc; dialect: Dialect; emit: proc(text: []const U8; arg: ^U8); arg: ^U8);
+proc initAcc(var a: Acc; dialect: Dialect; emit, thought: proc(text: []const U8; arg: ^U8); arg: ^U8);
 begin
-    a := {dialect: dialect, emit: emit, arg: arg};
+    a := {dialect: dialect, emit: emit, thought: thought, arg: arg};
     Buf.init(a.line, Heap.heap);
     Buf.init(a.text, Heap.heap);
     Buf.init(a.think, Heap.heap);
@@ -515,6 +517,7 @@ begin
         if LEN(s) > 0 then
             Buf.str(a.think, s);
             a.thinkKey := Amsg.ThinkKeys[i];
+            if a.thought # nil then a.thought(s, a.arg); end;
         end;
     end;
     said(a, Json.text(d, Json.member(d, delta, "content")));
@@ -900,7 +903,7 @@ begin
     if r.prov^.dialect = anthropic then anthropicBody(r, body); else openaiBody(r, body); end;
     tries := 0;
     repeat
-        initAcc(a, r.prov^.dialect, r.emit, r.arg);
+        initAcc(a, r.prov^.dialect, r.emit, r.think, r.arg);
         got := false;
         stopped := false;
         status := 0;
@@ -1061,7 +1064,7 @@ end;
 proc pieces(dialect: Dialect; stream, want: []const U8; u: Usage);
 var a: Acc; m: Amsg.Msg; b: Buf.Buf; i, j: INT;
 begin
-    initAcc(a, dialect, nil, nil);
+    initAcc(a, dialect, nil, nil, nil);
     defer doneAcc(a);
     i := 0;
     while i < LEN(stream) do
@@ -1117,6 +1120,14 @@ end;
 proc show(text: []const U8; _arg: ^U8);
 begin
     Buf.str(shown, text);
+end;
+
+(* What a thinking emit is given, kept, marked off from the text. *)
+proc showThought(text: []const U8; _arg: ^U8);
+begin
+    Buf.add(shown, '[');
+    Buf.str(shown, text);
+    Buf.add(shown, ']');
 end;
 
 proc always: BOOL;
@@ -1205,10 +1216,11 @@ begin
     initClient(cl);
     r.client := SYSTEM.ADR(cl);
     r.emit := show;
+    r.think := showThought;
 
     err := ask(r, p, join(why, Buf.bytes(url), "/o"), m, u, why);
     if err # nil then fail("an OpenAI request"); Out.str(Buf.bytes(why)); Out.ln; end;
-    expect("what went to emit", Buf.bytes(shown), "Hello");
+    expect("what went to emit and think", Buf.bytes(shown), "[think ][hard]Hello");
     expectInt("the tokens out", u.out, 20);
     expectInt("the calls", m.calls.len, 3);
     Amsg.free(m);

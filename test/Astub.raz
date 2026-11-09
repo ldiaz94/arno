@@ -13,6 +13,9 @@
    To a last message of "system" it answers the request's system
    prompt, for a test of what arno tells the model.
 
+   To "think" it streams a thought, as a reasoning model does, then
+   the reply "thought out".
+
    It also serves fetch and search: /page is a page of HTML, and
    /search?format=json&q=... what SearXNG answers, a result that is the
    query. /v1/models lists two models, the second as Gemini names
@@ -174,6 +177,9 @@ begin
     end;
     if task = "empty" then
         (* an empty reply: usage only, no text *)
+    elsif asked = "think" then
+        event(`{"choices":[{"delta":{"reasoning_content":"a thought"}}]}`);
+        said("thought out");
     elsif asked = "system" then
         said(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, 0), "content")));
     elsif not tool(asked, role, last) then

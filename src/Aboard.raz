@@ -90,7 +90,7 @@ import Adiff, TuiScreen, Term, Buf, Str, Heap, Fmt, Out, Json, Rt, Entries := Ve
 import SYSTEM;
 
 type
-    Kind* = (user, reply, tool, info, error);
+    Kind* = (user, reply, tool, info, error, think);   (* think: the model's thinking, which a screen leaves out *)
 
     Entry* = record
         kind*: Kind;
@@ -351,6 +351,16 @@ begin
     Buf.str(e^.text, s);
 end;
 
+(* A piece of the model's thinking, added to the speaker's thinking it
+   goes on, or the start of a new one, as reply does. *)
+proc thought*(s: []const U8);
+var e: ^Entry; i: INT;
+begin
+    i := latest();
+    if (i < 0) or (all()[i].kind # Kind.think) then e := push(Kind.think, ""); else e := SYSTEM.ADR(all()[i]); end;
+    Buf.str(e^.text, s);
+end;
+
 (* A tool call, about to run. *)
 proc call*(name, args: []const U8);
 begin
@@ -415,7 +425,7 @@ end;
 (* Whether the view shows e. *)
 proc shows(const e: Entry): BOOL;
 begin
-    return (view = All) or (e.speaker = view);
+    return (e.kind # Kind.think) and ((view = All) or (e.speaker = view));
 end;
 
 (* The entry shown before entry i, or -1 if there is none. *)
@@ -1552,6 +1562,7 @@ begin
         lines(s, "  ", dim, dim, w - 2);
     | error:
         lines(s, "  ", red, red, w - 2);
+    | think:   (* left out, by shows *)
     end;
 end;
 

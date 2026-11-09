@@ -39,16 +39,25 @@
    viewers' in the order they came, and every viewer is shown the
    queue. It is never held here: the host, a program, says what runs.
 
-   Seven requests are answered at once, even mid-turn: recent, paste,
-   forget, and rename, system and setsystem of a saved conversation.
-   models, and rename, system and setsystem of the current
+   Requests are answered at once, even mid-turn: recent, paste, and
+   forget, rename, system and setsystem of a saved conversation. models,
+   rewind, and forget, rename, system and setsystem of the current
    conversation, which the job running may be changing, wait for the
-   job's end, and are answered then. So that the replies come in the
-   order of the requests, as a host counts on, every request that comes
-   while another waits waits too.
+   job's end, and are answered then. rewind and forget of the current
+   conversation show it again, or the new one, as a /load does: the loop
+   calls on the session itself then, and what the session tells is
+   applied at once (direct), not queued, so that it comes before the
+   answer. So that the replies come in the order of the requests, as a
+   host counts on, every request that comes while another waits waits
+   too.
+
+   Beside the Board's changes the host is told what a screen has no
+   use for: a stamp, the time and the model, on each new entry of the
+   human's, the model's reply or thinking; the stats of a turn as it
+   ends; and the sources a search found.
 
    Depends on Aframe, Aview, Asession, Agent, Aprompt, Atools, Aattach,
-   Astore, Awire and rjson's Json.
+   Astore, Awire, Aprice and rjson's Json.
 
    The session listens, too, on the editors' socket (Apeer), so that an
    editor that asks finds it and is told that this arno belongs to its
@@ -56,14 +65,15 @@
    not in one a program is driving. The editors' tools are offered as in
    any session. *)
 module Aserve;
-import Aframe, Aview, Apeer, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Amsg, Json, Thread, Sys,
-    Buf, Str, Fmt, Heap, Rt, Fields := Vec([]const U8), Polls := Vec(Sys.Poll),
+import Aframe, Aview, Apeer, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Aprice, Amsg, Json, Thread,
+    Sys, Buf, Str, Fmt, Heap, Rt, Fields := Vec([]const U8), Polls := Vec(Sys.Poll), Marks := Vec(Mark),
     Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item), Images := Vec([]U8);
 import SYSTEM;
 
 type
     (* What a job tells the loop. *)
-    Sort = (typed, pictured, said, called, answered, told, failed, status, request, switched, named, costed, ended);
+    Sort = (typed, pictured, said, thought, called, answered, told, failed, status, request, switched, replayed, named, costed,
+        ended);
 
     Event = record
         sort: Sort;             (* what it tells *)
@@ -78,12 +88,25 @@ type
         fields: INT;        (* its count of fields *)
     end;
 
+    (* A message of the human's on the Board: entry, the index of its
+       entry, is message msg of the conversation, which rewind cuts at. *)
+    Mark = record entry, msg: INT; end;
+
+    (* What the session's requests have used and cost so far, kept as a
+       turn begins, for what the turn alone took. *)
+    Sums = record
+        used: Awire.Usage;
+        paid: Aprice.Cost;     (* dollars, by part, of those priced *)
+        requests, unpriced: INT;
+    end;
+
 const
     Version = "1";           (* the protocol's *)
     NsPerSecond = 1000000000;   (* Astore's times are in nanoseconds *)
+    NsPerMs = 1000000;
     Verbs: []Need = [{verb: "hello", fields: 5}, {verb: "line", fields: 2}, {verb: "cancel", fields: 1}, {verb: "answer", fields: 3}, {verb: "result", fields: 3}, {verb: "bye", fields: 1},
         {verb: "recent", fields: 3}, {verb: "paste", fields: 1}, {verb: "rename", fields: 3}, {verb: "forget", fields: 2}, {verb: "models", fields: 1}, {verb: "system", fields: 2},
-        {verb: "setsystem", fields: 3}];
+        {verb: "setsystem", fields: 3}, {verb: "rewind", fields: 2}, {verb: "unqueue", fields: 2}];
 
 var
     session: Asession.Session;
@@ -125,6 +148,13 @@ var
     seq: INT;                 (* the last id given *)
     batch: Events.Vec;        (* the events being applied *)
     fields: Fields.Vec;       (* the host's message being handled *)
+    lead: Buf.Buf;            (* the lead's model, as the last status said, which a new entry is stamped with *)
+    replaying: BOOL;          (* a conversation is shown again: its entries are old, and not stamped *)
+    direct: BOOL;             (* the loop calls on the session itself: what the session tells is applied at once *)
+    marks: Marks.Vec;         (* the human's messages on the Board, in order *)
+    began: I64;               (* Sys.clock as the turn began *)
+    before: Sums;             (* and the session's sums *)
+    sourced: INT;             (* the id of the turn's last source *)
 
 (* Telling the host *)
 
@@ -151,24 +181,48 @@ end;
 
 (* The job's side: what it tells, put in the queue *)
 
-(* An event of sort s, with texts a, b, c and d, put in the queue, and
-   the loop woken. *)
-proc post(s: Sort; a, b, c, d: []const U8; going: BOOL);
-var e: ^Event; one: [1]U8;
+proc apply(const e: Event); forward;
+
+(* e made an event of sort s, with texts a, b, c and d, said by whoever
+   speaks; under mutex, or with no job running. *)
+proc fill(var e: Event; s: Sort; a, b, c, d: []const U8; going: BOOL);
 begin
+    e.sort := s;
+    e.going := going;
+    e.who := speaking;
+    Buf.init(e.a, Heap.heap);
+    Buf.init(e.b, Heap.heap);
+    Buf.init(e.c, Heap.heap);
+    Buf.init(e.d, Heap.heap);
+    Buf.str(e.a, a);
+    Buf.str(e.b, b);
+    Buf.str(e.c, c);
+    Buf.str(e.d, d);
+end;
+
+(* The texts of e let go. *)
+proc unfill(var e: Event);
+begin
+    Buf.done(e.a);
+    Buf.done(e.b);
+    Buf.done(e.c);
+    Buf.done(e.d);
+end;
+
+(* An event of sort s, with texts a, b, c and d, put in the queue, and
+   the loop woken; or, when the loop itself calls on the session, which
+   no job has, applied at once, in order with what the loop tells. *)
+proc post(s: Sort; a, b, c, d: []const U8; going: BOOL);
+var e: Event; one: [1]U8;
+begin
+    if direct then
+        fill(e, s, a, b, c, d, going);
+        apply(e);
+        unfill(e);
+        return;
+    end;
     Thread.lock(mutex);
-    e := Events.add(events);
-    e^.sort := s;
-    e^.going := going;
-    e^.who := speaking;
-    Buf.init(e^.a, Heap.heap);
-    Buf.init(e^.b, Heap.heap);
-    Buf.init(e^.c, Heap.heap);
-    Buf.init(e^.d, Heap.heap);
-    Buf.str(e^.a, a);
-    Buf.str(e^.b, b);
-    Buf.str(e^.c, c);
-    Buf.str(e^.d, d);
+    fill(Events.add(events)^, s, a, b, c, d, going);
     Thread.unlock(mutex);
     one[0] := 1;
     _ := Sys.write(wakeWrite, one);
@@ -178,6 +232,12 @@ end;
 proc text(s: []const U8; _arg: ^U8);
 begin
     post(said, s, "", "", "", false);
+end;
+
+(* The front's thinking: the model's, told. *)
+proc think(s: []const U8; _arg: ^U8);
+begin
+    post(thought, s, "", "", "", false);
 end;
 
 (* The front's speaker: who speaks from now on, kept for what is posted,
@@ -212,10 +272,10 @@ begin
     post(called, name, args, "", "", false);
 end;
 
-(* The front's result: what the call gave, told. *)
-proc answer(_name, res: []const U8; _arg: ^U8);
+(* The front's result: what the call gave, told, with the tool's name. *)
+proc answer(name, res: []const U8; _arg: ^U8);
 begin
-    post(answered, res, "", "", "", false);
+    post(answered, res, name, "", "", false);
 end;
 
 (* The front's note: what arno says on the side, told as information. *)
@@ -230,15 +290,16 @@ begin
     if bad then post(failed, s, "", "", "", false); else post(told, s, "", "", "", false); end;
 end;
 
-(* The status line made again, and the conversation's title and id, from the
-   job's thread: the session is the job's while it runs. *)
+(* The status line made again, and the conversation's title and id,
+   and the model, from the job's thread: the session is the job's while
+   it runs. *)
 proc counted(_arg: ^U8);
 begin
     Buf.reset(made);
     Asession.status(session, made);
     Buf.reset(heading);
     Asession.titled(session, heading);
-    post(status, Buf.bytes(made), Buf.bytes(heading), session.conv.id, "", false);
+    post(status, Buf.bytes(made), Buf.bytes(heading), session.conv.id, session.conf.prov.model, false);
 end;
 
 (* Whether the host said to stop the turn, which the session asks between reads. *)
@@ -327,29 +388,35 @@ end;
 (* The front end the session tells. *)
 proc front: Agent.Front;
 begin
-    return {text: text, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted,
+    return {text: text, think: think, call: call, result: answer, note: note, ask: ask, why: why, stopped: stopped, counted: counted,
         speaker: speaker, spent: spent, picture: picture};
 end;
 
-(* c shown again from its start, on the job's thread, which has it: the
-   board cleared, then each message as it was told when it came. As
-   Ascreen's changed does. *)
+(* c shown again from its start, on the job's thread, which has it, or
+   on the loop's with no job: the board cleared, then each message as
+   it was told when it came, a human's with its index, for rewind; then
+   that the showing is over. As Ascreen's changed does. *)
 proc changed(const c: Astore.Conv; _arg: ^U8);
-var m: []Amsg.Msg; calls: []Amsg.Call; images: [][]U8; i, k: INT;
+var m: []Amsg.Msg; calls: []Amsg.Call; images: [][]U8; i, k: INT; d: [20]U8;
 begin
     post(switched, c.id, "", "", "", false);
     m := Msgs.all(c.msgs);
     for i := 0 to LEN(m) - 1 do
         match m[i].role of
-        | user: post(typed, Aattach.shown(m[i].text), "", "", "", false);
+        | user:
+            d, k := Str.fromInt(i);
+            post(typed, Aattach.shown(m[i].text), d[0..k], "", "", false);
             images := Images.all(m[i].images);
             for k := 0 to LEN(images) - 1 do post(pictured, images[k], "", "", "", false); end;
-        | assistant: post(said, m[i].text, "", "", "", false);
+        | assistant:
+            if LEN(m[i].think) > 0 then post(thought, m[i].think, "", "", "", false); end;
+            post(said, m[i].text, "", "", "", false);
             calls := Calls.all(m[i].calls);
             for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", "", false); end;
         | tool: post(answered, m[i].text, "", "", "", false);
         end;
     end;
+    post(replayed, "", "", "", "", false);
 end;
 
 (* The loop's side *)
@@ -429,6 +496,8 @@ begin
     Buf.reset(heading);
     Asession.titled(session, heading);
     Aview.stated(Buf.bytes(made), Buf.bytes(heading), session.conv.id);
+    Buf.reset(lead);
+    Buf.str(lead, session.conf.prov.model);
 end;
 
 (* rename ID TITLE: a saved conversation named, or the current one,
@@ -446,13 +515,58 @@ begin
 end;
 
 (* forget ID: a saved conversation gone, its file and scratch
-   directory; never the current one, which would only be saved again. *)
+   directory. The current one is gone the same way, and a new one
+   begun in its place, as /new begins one, so that it is not saved
+   again: the host is told reset and the new status before forgot. *)
 proc forgets(id: []const U8);
+var old: Buf.Buf;
 begin
-    if isCurrent(id) then fault("the current conversation cannot be forgotten");
-    elsif not Astore.forget(id) then missing(id);
-    else send(["forgot", id]);
+    if not isCurrent(id) then
+        if Astore.forget(id) then send(["forgot", id]); else missing(id); end;
+        return;
     end;
+    Buf.init(old, Heap.heap);
+    defer Buf.done(old);
+    Buf.str(old, Buf.bytes(current));
+    direct := true;
+    Asession.forgetCurrent(session);
+    restated();
+    direct := false;
+    send(["forgot", Buf.bytes(old)]);
+end;
+
+(* The conversation's message that entry n of the Board is, or -1 if
+   it is none: a line typed that was no command, or one shown again. *)
+proc markOf(n: INT): INT;
+var m: []Mark; i: INT;
+begin
+    m := Marks.all(marks);
+    for i := 0 to LEN(m) - 1 do
+        if m[i].entry = n then return m[i].msg; end;
+    end;
+    return -1;
+end;
+
+(* rewind N: the conversation cut back to before entry N, a message the
+   human typed, and saved, and shown again from its start, for the host
+   to retry it or send it edited. *)
+proc rewinds(entry: []const U8);
+var n: I64; ok: BOOL; msg: INT;
+begin
+    n, ok := Str.toInt(entry);
+    msg := -1;
+    if ok then msg := markOf(INT(n)); end;
+    if msg < 0 then
+        Buf.reset(words);
+        Fmt.write(words, "entry {} is no message of the human's", [Fmt.str(entry)]);
+        fault(Buf.bytes(words));
+        return;
+    end;
+    direct := true;
+    Asession.rewind(session, msg);
+    restated();
+    direct := false;
+    send(["rewound", entry]);
 end;
 
 (* system ID: one JSON object, the conversation's own system prompt
@@ -660,8 +774,8 @@ begin
     if thread = nil then return false; end;
     if held.len > 0 then return true; end;
     match f[0] of
-    | "models": return true;
-    | "rename", "system", "setsystem": return isCurrent(f[1]);
+    | "models", "rewind": return true;
+    | "rename", "system", "setsystem", "forget": return isCurrent(f[1]);
     | else: return false;
     end;
 end;
@@ -677,6 +791,7 @@ begin
     | "rename": renames(f[1], f[2]);
     | "system": systems(f[1]);
     | "setsystem": setsystems(f[1], f[2]);
+    | "rewind": rewinds(f[1]);
     | else:
     end;
 end;
@@ -718,7 +833,8 @@ begin
         n, ok := Str.toInt(f[1]);
         if ok and (pending > 0) and (n = pending) then replied(f, false); end;
     | "bye": finish();
-    | "recent", "paste", "forget", "models", "rename", "system", "setsystem":
+    | "unqueue": Aview.unqueueIf(f[1]);
+    | "recent", "paste", "forget", "models", "rename", "system", "setsystem", "rewind":
         if waits(f) then Aframe.pack(held, f); else request(f); end;
     | else:
     end;
@@ -791,6 +907,101 @@ begin
     Aview.metered(Buf.bytes(u));
 end;
 
+(* n in decimal text, in digits, as a field. *)
+proc num(n: I64; var digits: [20]U8): []const U8;
+var k: INT;
+begin
+    digits, k := Str.fromInt(n);
+    return digits[0..k];
+end;
+
+(* The entries from n on that are new, the human's lines, replies and
+   thinking, each stamped: stamp N AT MODEL, AT in seconds since 1970,
+   MODEL the one that speaks. A conversation shown again has no times. *)
+proc stampFrom(n: INT);
+var e: []Aboard.Entry; i: INT; model: []const U8; d, t: [20]U8;
+begin
+    if replaying then return; end;
+    e := Aboard.all();
+    for i := n to LEN(e) - 1 do
+        if e[i].kind in {Aboard.user, Aboard.Kind.reply, Aboard.Kind.think} then
+            model := Buf.bytes(lead);
+            if e[i].speaker > 0 then model := Aboard.model(e[i].speaker); end;
+            send(["stamp", num(i, d), num(Sys.now() div NsPerSecond, t), model]);
+        end;
+    end;
+end;
+
+(* Entry n of the Board is message msg of the conversation, for rewind. *)
+proc mark(n, msg: INT);
+begin
+    Marks.push(marks, {entry: n, msg: msg});
+end;
+
+(* What the session's requests have used and cost so far; no job runs. *)
+proc sums: Sums;
+begin
+    return {used: session.agent.used, paid: session.agent.paid, requests: session.agent.requests,
+        unpriced: session.agent.unpriced};
+end;
+
+(* What the turn that ended took, as one JSON object, told: stats JSON,
+   its wall time in milliseconds, its requests, their tokens, and what
+   they cost at list price, with its parts; unpriced is how many had
+   no known price, and count for nothing in the cost. *)
+proc stats;
+var now: Sums; c: Aprice.Cost;
+begin
+    now := sums();
+    c := {inp: now.paid.inp - before.paid.inp, cached: now.paid.cached - before.paid.cached,
+        written: now.paid.written - before.paid.written, out: now.paid.out - before.paid.out};
+    Buf.reset(scratch);
+    Fmt.write(scratch, `{{"ms":{},"requests":{},"unpriced":{},`, [Fmt.int(INT((Sys.clock() - began) div NsPerMs)),
+        Fmt.int(now.requests - before.requests), Fmt.int(now.unpriced - before.unpriced)]);
+    Fmt.write(scratch, `"in":{},"cached":{},"written":{},"out":{},`, [Fmt.int(INT(now.used.inp - before.used.inp)),
+        Fmt.int(INT(now.used.cached - before.used.cached)), Fmt.int(INT(now.used.written - before.used.written)),
+        Fmt.int(INT(now.used.out - before.used.out))]);
+    Fmt.write(scratch, `"cost":{},"parts":{{"in":{},"cached":{},"written":{},"out":{}}}}}`,
+        [Fmt.real(c.inp + c.cached + c.written + c.out, 6), Fmt.real(c.inp, 6), Fmt.real(c.cached, 6),
+        Fmt.real(c.written, 6), Fmt.real(c.out, 6)]);
+    send(["stats", Buf.bytes(scratch)]);
+end;
+
+(* The web pages a search, entry n, found, told: sources N JSON, an
+   array of objects with id, counted on through the turn, url, title,
+   excerpt, and retrievedAt, in milliseconds since 1970. res is the
+   search's result, a page a block of three lines (Atools); an error,
+   or nothing found, tells nothing. *)
+proc sources(n: INT; res: []const U8);
+var rest, block, title, url, excerpt: []const U8; more: BOOL; at: I64; d: [20]U8; first: BOOL;
+begin
+    if Str.hasPrefix(res, "error:") then return; end;
+    at := Sys.now() div NsPerMs;
+    Buf.reset(scratch);
+    Buf.add(scratch, '[');
+    first := true;
+    rest := res;
+    more := true;
+    while more do
+        block, rest, more := Str.cut(rest, "\n\n");
+        title, block, _ := Str.cut(block, "\n");
+        url, excerpt, _ := Str.cut(block, "\n");
+        if LEN(url) = 0 then continue; end;
+        if not first then Buf.add(scratch, ','); end;
+        first := false;
+        INC(sourced);
+        Fmt.write(scratch, `{{"id":{},"url":`, [Fmt.int(sourced)]);
+        quoted(url);
+        Buf.str(scratch, `,"title":`);
+        quoted(title);
+        Buf.str(scratch, `,"excerpt":`);
+        quoted(Str.trimRight(excerpt));
+        Fmt.write(scratch, `,"retrievedAt":{}}}`, [Fmt.int(INT(at))]);
+    end;
+    Buf.add(scratch, ']');
+    if not first then send(["sources", num(n, d), Buf.bytes(scratch)]); end;
+end;
+
 (* A job started on line, "" to prepare the session. *)
 proc start(line: []const U8);
 var err: ERROR;
@@ -803,6 +1014,9 @@ begin
     turning := isTurn(line);
     if turning then
         metered();
+        began := Sys.clock();
+        before := sums();
+        sourced := 0;
         Aview.busied(true);
     end;
     thread, err := Thread.spawn(work, nil);
@@ -838,7 +1052,10 @@ proc over(going: BOOL);
 begin
     if thread # nil then Thread.join(thread); thread := nil; end;
     Aview.waiting("", false);
-    if turning then Aview.busied(false); end;
+    if turning then
+        stats();
+        Aview.busied(false);
+    end;
     if not going then quit := true; return; end;
     Aview.listed(Asession.models(session));   (* for viewers' /model, which complete from it *)
     runHeld();
@@ -861,29 +1078,45 @@ begin
     if stopped() or gone() then replied(["", "", ""], true); end;
 end;
 
-(* What a job told, applied to the Board and told on. *)
+(* What a job told, applied to the Board and told on. What is new on the
+   Board is stamped; what is shown again is marked. *)
 proc apply(const e: Event);
+var n, i: INT; ok: BOOL; msg: I64;
 begin
+    n := LEN(Aboard.all());
     Aboard.speak(e.who);
     defer Aboard.speak(0);
     match e.sort of
-    | typed: Aview.typed(Buf.bytes(e.a));
+    | typed:
+        Aview.typed(Buf.bytes(e.a));
+        msg, ok := Str.toInt(Buf.bytes(e.b));
+        if ok then mark(n, INT(msg)); end;
     | pictured: Aview.pictured(Buf.bytes(e.a));
     | said: Aview.said(Buf.bytes(e.a));
+    | thought: Aview.thought(Buf.bytes(e.a));
     | called: Aview.called(Buf.bytes(e.a), Buf.bytes(e.b));
-    | answered: Aview.answered(Buf.bytes(e.a));
+    | answered:
+        i := Aview.answered(Buf.bytes(e.a));
+        if (i >= 0) and (Buf.bytes(e.b) = "search") then sources(i, Buf.bytes(e.a)); end;
     | told: Aview.noted(Aboard.info, Buf.bytes(e.a));
     | failed: Aview.noted(Aboard.error, Buf.bytes(e.a));
-    | status: Aview.stated(Buf.bytes(e.a), Buf.bytes(e.b), Buf.bytes(e.c));
+    | status:
+        Aview.stated(Buf.bytes(e.a), Buf.bytes(e.b), Buf.bytes(e.c));
+        Buf.reset(lead);
+        Buf.str(lead, Buf.bytes(e.d));
     | request: put(e);
     | switched:
         Aview.cleared();
+        Marks.reset(marks);
+        replaying := true;
         Buf.reset(current);
         Buf.str(current, Buf.bytes(e.a));
+    | replayed: replaying := false;
     | named: Aboard.name(e.who, Buf.bytes(e.a));
     | costed: Aview.spent(e.who, Buf.bytes(e.a));
     | ended: over(e.going);
     end;
+    if e.sort in {typed, said, thought} then stampFrom(n); end;
 end;
 
 (* The events the jobs queued, taken from the queue and then applied,
@@ -899,23 +1132,24 @@ begin
     all := Events.all(batch);
     for i := 0 to LEN(all) - 1 do
         apply(all[i]);
-        Buf.done(all[i].a);
-        Buf.done(all[i].b);
-        Buf.done(all[i].c);
-        Buf.done(all[i].d);
+        unfill(all[i]);
     end;
     Events.reset(batch);
 end;
 
 (* With no job running, the next line of the queue, if there is one,
-   started; then the queue as it is now told. *)
+   started; then the queue as it is now told. A line that is no command
+   is marked as the message it will be. *)
 proc startNext;
-var line: Buf.Buf;
+var line: Buf.Buf; n: INT;
 begin
     Buf.init(line, Heap.heap);
     defer Buf.done(line);
     while (thread = nil) and not quit and Aview.heard(line) do
         Aview.typed(Buf.bytes(line));
+        n := LEN(Aboard.all()) - 1;
+        if Buf.bytes(line)[0] # '/' then mark(n, session.conv.msgs.len); end;
+        stampFrom(n);
         start(Buf.bytes(line));
     end;
     Aview.settle;
@@ -1053,6 +1287,8 @@ begin
     Buf.init(job, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(heading, Heap.heap);
+    Buf.init(lead, Heap.heap);
+    Marks.init(marks, Heap.heap);
     Buf.init(reason, Heap.heap);
     Buf.init(result, Heap.heap);
 end;

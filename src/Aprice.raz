@@ -21,6 +21,10 @@ type
         window*: I64;               (* tokens; 0 if unknown *)
     end;
 
+    (* What requests cost, in dollars, by part: the prompt not cached, read
+       from the cache, written to it, and the reply. *)
+    Cost* = record inp*, cached*, written*, out*: F64; end;
+
     Listed = record
         model: []const U8;
         inp, cached, out: F64;
@@ -108,10 +112,17 @@ begin
     return pr, known;
 end;
 
-(* What a request cost, in dollars. The prompt is billed three ways:
+(* What a request cost, in dollars, by part. The prompt is billed three ways:
    what was read from the cache at the cache's price, what was written
    to it at 1.25 times the input's (Anthropic's cache of five minutes;
    the others never say they wrote), and the rest at the input's. *)
+proc parts*(pr: Price; u: Awire.Usage): Cost;
+begin
+    return {inp: F64(u.inp - u.cached - u.written) * pr.inp / 1.0E6, cached: F64(u.cached) * pr.cached / 1.0E6,
+        written: F64(u.written) * pr.inp * 1.25 / 1.0E6, out: F64(u.out) * pr.out / 1.0E6};
+end;
+
+(* What a request that used u cost at pr, in dollars, the parts summed. *)
 proc cost*(pr: Price; u: Awire.Usage): F64;
 begin
     return (F64(u.inp - u.cached - u.written) * pr.inp + F64(u.cached) * pr.cached +

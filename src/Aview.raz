@@ -17,7 +17,8 @@
 
        push N KIND TEXT   a new entry, N its index, which starts again
                           from 0 after a reset; KIND is user, asst,
-                          info or err
+                          info, err or think, the model's thinking,
+                          which a screen leaves out
        tool N NAME ARGS   a new entry for a tool call
                           (a worker's push or tool adds its number
                           and its model)
@@ -113,7 +114,7 @@ const
     Patience = 1000;         (* ms the one asking who waits for the answer *)
 
 var
-    kinds: [5][]const U8;   (* Aboard.Kind's names on the wire, by Kind *)
+    kinds: [6][]const U8;   (* Aboard.Kind's names on the wire, by Kind *)
     sink: Sink;
     watch: Watch;
     viewers: Viewers.Vec;
@@ -317,6 +318,13 @@ begin
     return true;
 end;
 
+(* The last line of the queue taken out, if it is still s: a viewer's
+   or the host's unqueue, which takes it back to edit. *)
+proc unqueueIf*(s: []const U8);
+begin
+    if (queued.len > 0) and (Strs.all(queued)[queued.len - 1] = s) then forget(queued.len - 1); end;
+end;
+
 (* The queue emptied. *)
 proc clearQueue*;
 begin
@@ -423,6 +431,22 @@ begin
     say(["append", num(i, d), s]);
 end;
 
+(* A piece of the model's thinking, appended to the thinking it goes
+   on, the speaker's, which is pushed empty first, as a reply is. *)
+proc thought*(s: []const U8);
+var i: INT; d: [20]U8;
+begin
+    i := Aboard.latest();
+    if (i < 0) or (Aboard.all()[i].kind # Aboard.Kind.think) then
+        Aboard.thought("");
+        i := LEN(Aboard.all()) - 1;
+        pushed(i);
+    end;
+    if LEN(s) = 0 then return; end;
+    Aboard.thought(s);
+    say(["append", num(i, d), s]);
+end;
+
 (* A tool call, about to run. *)
 proc called*(name, args: []const U8);
 begin
@@ -430,8 +454,9 @@ begin
     pushed(LEN(Aboard.all()) - 1);
 end;
 
-(* res, the result of the first call still running of the speaker's. *)
-proc answered*(res: []const U8);
+(* res, the result of the first call still running of the speaker's:
+   that call's index, or -1 if there is none. *)
+proc answered*(res: []const U8): INT;
 var e: []Aboard.Entry; i: INT; d: [20]U8;
 begin
     e := Aboard.all();
@@ -439,9 +464,10 @@ begin
         if (e[i].kind = Aboard.tool) and not e[i].done and (e[i].speaker = Aboard.speaker) then
             Aboard.result(res);
             say(["done", num(i, d), res]);
-            return;
+            return i;
         end;
     end;
+    return -1;
 end;
 
 (* What arno says, as information or as an error. *)
@@ -676,9 +702,8 @@ begin
                     enqueue(Fields.all(f)[1]);
                 elsif one = "cancel" then
                     cancelling := true;
-                elsif (one = "unqueue") and (f.len >= 2) and (queued.len > 0) and
-                    (Strs.all(queued)[queued.len - 1] = Fields.all(f)[1]) then
-                    forget(queued.len - 1);
+                elsif (one = "unqueue") and (f.len >= 2) then
+                    unqueueIf(Fields.all(f)[1]);
                 end;
             end;
         end;
@@ -1094,7 +1119,7 @@ begin
     received(fd, got);
     expect("a viewer's snapshot", Buf.bytes(got),
         "reset\npush|0|user|hi\npush|1|asst|one two\ntool|2|read|{\"path\":\"a\"}\nstatus|ready|a title|c1\nbusy|1\n");
-    answered("1\ta\n");
+    _ := answered("1\ta\n");
     cleared();
     received(fd, got);
     expect("then each change", Buf.bytes(got), "done|2|1\ta\n\nreset\n");
@@ -1161,7 +1186,7 @@ begin
 end;
 
 begin
-    kinds := ["user", "asst", "tool", "info", "err"];
+    kinds := ["user", "asst", "tool", "info", "err", "think"];
     listener := -1;
     Viewers.init(viewers, Heap.heap);
     Strs.init(queued, Heap.heap);

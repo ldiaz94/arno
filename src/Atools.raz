@@ -2190,8 +2190,17 @@ begin
     return Http.header(res, "Content-Type"), nil;
 end;
 
+(* s added to out as a line, its own newlines made blanks. *)
+proc oneLine(var out: Buf.Buf; s: []const U8);
+begin
+    Str.replace(out, s, "\n", " ");
+    Buf.add(out, '\n');
+end;
+
 (* search: the first MaxResults of what SearXNG finds for the query,
-   each its title, its URL and a snippet. *)
+   each its title, its URL and a snippet, a line each, newlines in them
+   made blanks, and a blank line after: a host makes its sources from
+   them (Aserve). *)
 proc searchWeb(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
 var url, body: Buf.Buf; d: Json.Doc; v, r, x: Json.Value; i: INT; err: ERROR;
 begin
@@ -2220,9 +2229,10 @@ begin
     for i := 0 to Json.len(SYSTEM.ADR(d), r) - 1 do
         if i = MaxResults then break; end;
         x := Json.item(SYSTEM.ADR(d), r, i);
-        Fmt.write(out, "{}\n{}\n{}\n\n", [Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "title"))),
-            Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "url"))),
-            Fmt.str(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "content")))]);
+        oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "title")));
+        oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "url")));
+        oneLine(out, Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), x, "content")));
+        Buf.add(out, '\n');
     end;
     if out.len = 0 then Buf.str(out, "no results"); end;
 end;

@@ -166,7 +166,14 @@ number
 .Ar id ,
 for the model to read.
 Dropped like an answer for an id not waited on.
-.It "recent, paste, rename, forget, models, system, setsystem"
+.It Cm unqueue Ar text
+Take the last line of the queue back, if it is still
+.Ar text ,
+for the host to edit, as a viewer does; else nothing.
+It is not answered: the
+.Cm queue
+that follows says what waits.
+.It "recent, paste, rename, forget, rewind, models, system, setsystem"
 Requests about the conversations, with the fields the section
 .Sx Requests
 gives each.
@@ -210,11 +217,16 @@ for what was typed,
 .Ql asst
 for the model's reply,
 .Ql info
-for what arno says on the side, or
+for what arno says on the side,
 .Ql err
-for an error.
-The text of a reply is often empty at first, and grows by
+for an error, or
+.Ql think
+for the model's thinking, where its provider streams it, before its reply.
+The text of a reply, or of thinking, is often empty at first, and grows by
 .Cm append .
+A host that does not show thinking leaves out the entries of that kind;
+one older than it may show them as
+.Ql info .
 .Ar worker ,
 when present, is the number of the worker that said it, in decimal text.
 It is left out for the lead's own entries, so a host that
@@ -279,6 +291,54 @@ git for it.
 is saved.
 A command, or the work arno does before the first turn, is not a turn and is
 not told.
+.It Cm stamp Ar n at model
+When entry
+.Ar n
+was made, and by what:
+.Ar at
+in seconds since 1970, and
+.Ar model
+the model that speaks in the turn, a worker's for a worker's entry.
+It comes right after the
+.Cm push
+of each new
+.Ql user ,
+.Ql asst
+and
+.Ql think
+entry.
+A conversation loaded, or shown again after
+.Cm rewind ,
+keeps no times, and its entries are not stamped.
+.It Cm stats Ar json
+What the turn that ends took, right before its
+.Cm busy
+0: an object with
+.Cm ms ,
+its wall time in milliseconds;
+.Cm requests ,
+the model's;
+.Cm in ,
+.Cm cached ,
+.Cm written
+and
+.Cm out ,
+their tokens, the prompt's, those of it read from and written to the
+provider's cache, and the reply's;
+.Cm cost ,
+in dollars at list price, and
+.Cm parts ,
+an object with the same four keys, what each cost;
+.Cm unpriced ,
+how many requests were of a model with no known price, which count for
+nothing in the cost.
+Workers' requests are in it.
+It is a message of its own, not more fields of
+.Cm busy ,
+because
+.Cm busy
+is a state, told again to every viewer that arrives, and this is a record
+of one turn, in JSON so that it can grow.
 .It Cm ask Ar id question detail keys
 A question for the person, which the host must answer with
 .Cm answer .
@@ -336,6 +396,25 @@ writes dollars:
 .Ql $0.042 .
 It comes after each request of the worker's, for the line that says
 the worker in the lead's view.
+.It Cm sources Ar n json
+The web pages the
+.Ql search
+tool, called in entry
+.Ar n ,
+found, after the entry's
+.Cm done :
+an array of objects with
+.Cm id ,
+counted from 1 through the turn,
+.Cm url ,
+.Cm title ,
+.Cm excerpt ,
+the page's snippet, and
+.Cm retrievedAt ,
+in milliseconds since 1970.
+They are the sources of the reply that follows in the turn.
+A search that fails or finds nothing tells none.
+The model is not shown the ids, and does not cite them.
 .It Cm image Ar n type bytes
 A picture that goes with entry
 .Ar n :
@@ -382,16 +461,20 @@ The answers to requests are in the next section.
 These are answered at once, even while a turn runs, in the order asked:
 .Cm recent ,
 .Cm paste ,
-.Cm forget ,
 and
+.Cm forget ,
 .Cm rename ,
 .Cm system
 and
 .Cm setsystem
 of a saved conversation.
-.Cm models
-and the same three for the current conversation, which a running job may be
+.Cm models ,
+.Cm rewind ,
+and the same four for the current conversation, which a running job may be
 changing, wait for the job's end and are answered then.
+A host that wants the turn stopped first sends
+.Cm cancel
+before them.
 So that replies come in the order of the requests, every request that comes
 while another waits waits too.
 .Pp
@@ -450,9 +533,37 @@ The current one's new title shows on the status line.
 Remove a saved conversation and its scratch directory.
 Answered
 .Cm forgot Ar id .
-The current conversation is refused:
+The current conversation goes the same way, and a new, empty one takes its
+place, as after
+.Ic /new :
+the host is told
+.Cm reset ,
+what
+.Ic /new
+says, and the new
+.Cm status
+before
+.Cm forgot
+with the id of the one forgotten.
+.It Cm rewind Ar n
+Cut the current conversation back to before entry
+.Ar n ,
+a line the human typed that went to the model, and save it, to try that
+line again or send it edited.
+The model no longer sees it or anything after it.
+The transcript is shown again from its start, as a conversation loaded is:
+.Cm reset ,
+then its entries, with new numbers and without what arno said on the side;
+then
+.Cm status ,
+and the answer
+.Cm rewound Ar n .
+A line queued in the meantime runs after it.
+An
+.Ar n
+that is no such line, a command, or what arno said, is answered
 .Cm error
-.Ql "the current conversation cannot be forgotten" .
+.Ql "entry N is no message of the human's" .
 .It Cm models
 The models
 .Ic /models
@@ -573,7 +684,10 @@ A viewer is never sent
 .Cm ask ,
 .Cm call ,
 .Cm ready ,
-.Cm error
+.Cm error ,
+.Cm stamp ,
+.Cm stats ,
+.Cm sources
 or
 .Cm image ,
 the last since a picture of a few megabytes would put it past the
@@ -635,6 +749,55 @@ arno -> host   busy 1
 arno -> host   push 4 user "what is wrong here? @shot.png"
 arno -> host   image 4 image/png "\e211PNG\er\en..."
 arno -> host   push 5 asst ""
+.Ed
+.Pp
+A reasoning model's turn, each entry stamped, and what it took:
+.Bd -literal -offset indent
+host -> arno   line "why?"
+arno -> host   push 6 user "why?"
+arno -> host   stamp 6 1794236874 deepseek-v4.1-flash:cloud
+arno -> host   busy 1
+arno -> host   push 7 think ""
+arno -> host   stamp 7 1794236874 deepseek-v4.1-flash:cloud
+arno -> host   append 7 "The person asks why"
+arno -> host   push 8 asst ""
+arno -> host   stamp 8 1794236875 deepseek-v4.1-flash:cloud
+arno -> host   append 8 "Because"
+arno -> host   stats {"ms":2140,"requests":1,"unpriced":0,"in":10,
+                      "cached":0,"written":0,"out":2,"cost":0.000005,
+                      "parts":{"in":0.000003,"cached":0.000000,
+                               "written":0.000000,"out":0.000002}}
+arno -> host   busy 0
+.Ed
+.Pp
+A search, and the pages it found:
+.Bd -literal -offset indent
+arno -> host   tool 9 search {"query":"rain"}
+arno -> host   done 9 "Rain\enhttps://example.org/rain\enWater that falls...\en\en"
+arno -> host   sources 9 [{"id":1,"url":"https://example.org/rain",
+                           "title":"Rain","excerpt":"Water that falls...",
+                           "retrievedAt":1794236874512}]
+.Ed
+.Pp
+The line of entry 6 tried again, edited; a line taken back from the queue;
+and the conversation forgotten:
+.Bd -literal -offset indent
+host -> arno   rewind 6
+arno -> host   reset
+arno -> host   push 0 user "fix the typo"
+arno -> host   ...
+arno -> host   status "arno · chat ..." "fix the typo" 20261028-101500
+arno -> host   rewound 6
+host -> arno   line "why, briefly?"
+host -> arno   line "and then?"
+arno -> host   queue 0 "and then?"
+host -> arno   unqueue "and then?"
+arno -> host   queue 0
+host -> arno   forget ""
+arno -> host   reset
+arno -> host   push 0 info "a new conversation"
+arno -> host   status "arno · chat ..." "" 20261028-104200
+arno -> host   forgot 20261028-101500
 .Ed
 .Pp
 List the live sessions: a line for each, with its process id, owner, project

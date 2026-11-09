@@ -715,6 +715,31 @@ begin
     say(s, "a new conversation");
 end;
 
+(* s's conversation forgotten, its file and scratch directory gone, and
+   a new one begun in its place, as /new begins one: a host asks. *)
+proc forgetCurrent*(var s: Session);
+var id: Buf.Buf;
+begin
+    Buf.init(id, Heap.heap);
+    defer Buf.done(id);
+    Buf.str(id, s.conv.id);
+    renew(s);
+    _ := Astore.forget(Buf.bytes(id));
+end;
+
+(* s's conversation cut back to its first n messages, saved, and shown
+   again: a host asks, to retry a message or send it edited. *)
+proc rewind*(var s: Session; n: INT);
+var m: []Amsg.Msg; i: INT;
+begin
+    m := Msgs.all(s.conv.msgs);
+    if n > LEN(m) then n := LEN(m); end;
+    for i := n to LEN(m) - 1 do Amsg.free(m[i]); end;
+    Msgs.resize(s.conv.msgs, n);
+    save(s);
+    changed(s);
+end;
+
 (* The history cut to the first exchange: the human's first message
    and what came of it, up to the next. *)
 proc clear(var s: Session);

@@ -26,6 +26,12 @@
      - queues a line that comes during a turn, tells it as queue, and
        runs it after the turn;
      - tells what two workers make with their numbers and their model;
+     - tells a reasoning model's thinking as a think entry, stamps
+       each new entry with its time and model, and tells a turn's
+       stats before its busy 0, and a search's sources;
+     - takes a line back from the queue at the host's unqueue; rewinds
+       the conversation to a message of the human's; forgets the
+       current conversation, and begins a new one;
      - on a terminal, holds a queue after an error too, answers /usage
        at once during a turn, and draws the menu of commands then;
      - shows a viewer on its session socket the transcript, and runs
@@ -55,6 +61,7 @@ var
     failed: BOOL;            (* some check has failed *)
     pid: Buf.Buf;            (* arno's, from ready *)
     ident: Buf.Buf;          (* the conversation's id, from ready *)
+    model: Buf.Buf;          (* the model, from ready *)
     root: Buf.Buf;           (* the project's directory *)
     screenText: Buf.Buf;     (* what a terminal arno drew, since it was last reset *)
 
@@ -596,7 +603,7 @@ begin
     send(["hello", "1", "testhost", Buf.bytes(root), `{"prompt":"Be careful.","tools":[` +
         `{"name":"doc_read","description":"The document.","parameters":{"type":"object","properties":{}}},` +
         `{"name":"read","description":"a clash"},{"description":"no name"}],` +
-        `"builtins":["read","edit","grep"]}`]);
+        `"builtins":["read","edit","grep","search"]}`]);
     _ := await("error");
     is("a tool of arno's name", "error|tool read is already arno's own");
     _ := await("error");
@@ -605,7 +612,8 @@ begin
     _, rest, _ := Str.cut(Buf.bytes(last), "|");
     id, rest, _ := Str.cut(rest, "|");
     Buf.str(ident, id);
-    _, rest, _ := Str.cut(rest, "|");
+    id, rest, _ := Str.cut(rest, "|");
+    Buf.str(model, id);
     Buf.str(pid, rest);
     send(["hello", "1", "x", "", ""]);
     _ := await("error");
@@ -693,7 +701,7 @@ begin
     clear();
     line(`call find {"name":"x"}`);
     idle();
-    mustHave("a builtin left out is gone", `there is no tool named "find". The tools are: read grep edit doc_read`);
+    mustHave("a builtin left out is gone", `there is no tool named "find". The tools are: read grep edit search doc_read`);
     clear();
     line(`call doc_read {"n":2}`);
     _ := await("call|");
@@ -787,9 +795,6 @@ begin
     send(["rename", "nosuch", "x"]);
     _ := await("error");
     is("rename of none", "error|no conversation nosuch");
-    send(["forget", ""]);
-    _ := await("error");
-    is("forget the current", "error|the current conversation cannot be forgotten");
     send(["forget", "nosuch"]);
     _ := await("error");
     is("forget of none", "error|no conversation nosuch");
@@ -852,6 +857,126 @@ begin
     send(["recent", "5", ""]);
     _ := await("recent|");
     if has("Old one") then fail("the forgotten one is gone from recent", Buf.bytes(seen)); end;
+end;
+
+(* The number of the entry the push of the human's text made, into n. *)
+proc entryOf(text: []const U8; var n: Buf.Buf);
+var s: []const U8; i, j: INT;
+begin
+    Buf.reset(n);
+    Fmt.write(n, "|user|{}\n", [Fmt.str(text)]);
+    s := Buf.bytes(seen);
+    i := Str.find(s, Buf.bytes(n));
+    Buf.reset(n);
+    if i < 0 then fail("no entry", text); return; end;
+    j := i;
+    while (j > 0) and (s[j - 1] # '|') do DEC(j); end;
+    Buf.str(n, s[j..i]);
+end;
+
+(* A reasoning model's thought is an entry of its own, think, streamed
+   as a reply is; the human's line, the thought and the reply are
+   stamped with the time and the model; the turn's stats come before
+   busy 0. *)
+proc thinking;
+var want: Buf.Buf;
+begin
+    Buf.init(want, Heap.heap);
+    defer Buf.done(want);
+    clear();
+    line("think");
+    idle();
+    mustHave("a thought pushed empty", "|think|\n");
+    mustHave("and appended", "|a thought\n");
+    mustHave("then the reply", "|thought out\n");
+    Fmt.write(want, "|{}\n", [Fmt.str(Buf.bytes(model))]);
+    mustHave("stamped with the model", Buf.bytes(want));
+    mustHave("each stamped", "stamp|");
+    mustHave("the turn's stats", `stats|{"ms":`);
+    mustHave("its tokens", `"requests":1,"unpriced":0,"in":10,"cached":0,"written":0,"out":2,"cost":0.000005,"parts":{"in":`);
+    if Str.find(Buf.bytes(seen), "stats|") > Str.find(Buf.bytes(seen), "busy|0") then
+        fail("stats before busy 0", Buf.bytes(seen));
+    end;
+end;
+
+(* A search tells the pages it found as sources, after its done. *)
+proc searched;
+begin
+    clear();
+    line(`call search {"query":"rain"}`);
+    idle();
+    mustHave("the sources", `"id":1,"url":"http://x/","title":"Found","excerpt":"rain","retrievedAt":`);
+end;
+
+(* The host takes a line back from the queue, as a viewer does. *)
+proc unqueued;
+var id: Buf.Buf;
+begin
+    Buf.init(id, Heap.heap);
+    defer Buf.done(id);
+    clear();
+    line(`call doc_read {"n":5}`);
+    _ := await("call|");
+    Buf.str(id, idOf());
+    line("take me back");
+    _ := await("queue|");
+    is("a line queued", "queue|0|take me back");
+    send(["unqueue", "take me back"]);
+    _ := await("queue|");
+    is("and taken back", "queue|0");
+    send(["result", Buf.bytes(id), "fine"]);
+    idle();
+    mustNotHave("the line taken back never runs", "|user|take me back");
+end;
+
+(* rewind cuts the conversation back to a message of the human's, which
+   the model no longer sees; an entry that is none is refused. *)
+proc rewinding;
+var n: Buf.Buf;
+begin
+    Buf.init(n, Heap.heap);
+    defer Buf.done(n);
+    line("/new");
+    _ := await("reset");
+    clear();
+    line("first");
+    idle();
+    line("second");
+    idle();
+    mustHave("two exchanges", "|4\n");
+    entryOf("second", n);
+    send(["rewind", "0"]);
+    _ := await("error");
+    is("rewind to an entry that is no message", "error|entry 0 is no message of the human's");
+    clear();
+    send(["rewind", Buf.bytes(n)]);
+    _ := await("rewound|");
+    if Buf.bytes(last)[8..last.len] # Buf.bytes(n) then fail("rewound", Buf.bytes(last)); end;
+    mustHave("shown again", "reset\n");
+    mustHave("the first stays", "|user|first\n");
+    mustNotHave("the second is gone", "|user|second\n");
+    clear();
+    line("again");
+    idle();
+    mustHave("the model sees one exchange before", "|4\n");
+end;
+
+(* The current conversation forgotten: a new one in its place, and the
+   old one gone from recent. *)
+proc forgetCurrent;
+var id: Buf.Buf;
+begin
+    Buf.init(id, Heap.heap);
+    defer Buf.done(id);
+    clear();
+    send(["forget", ""]);
+    _ := await("forgot|");
+    mustHave("a new conversation shown", "reset\n");
+    Fmt.write(id, `"id":"{}"`, [Fmt.str(Buf.bytes(last)[7..last.len])]);
+    clear();
+    send(["recent", "50", ""]);
+    _ := await("recent|");
+    if has(Buf.bytes(id)) then fail("the forgotten one is gone", Buf.bytes(seen)); end;
 end;
 
 (* A who among viewers, not the last connection: the others stay. *)
@@ -920,6 +1045,7 @@ begin
     Buf.init(root, Heap.heap);
     Buf.init(screenText, Heap.heap);
     Buf.init(ident, Heap.heap);
+    Buf.init(model, Heap.heap);
     Fields.init(fields, Heap.heap);
     _ := Sys.ignore(Sys.sigPipe, true);
     Buf.str(root, Files.arg(2));
@@ -938,6 +1064,11 @@ begin
     requests();
     order();
     saved();
+    thinking();
+    searched();
+    unqueued();
+    rewinding();
+    forgetCurrent();
     viewers(Files.arg(1));
 
     (* bye while a question waits: arno ends, and doesn't wait for the answer *)

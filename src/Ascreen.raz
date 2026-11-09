@@ -596,7 +596,7 @@ begin
         match e[i].sort of
         | said: Aview.said(Buf.bytes(e[i].a)); troubled := false;
         | called: Aview.called(Buf.bytes(e[i].a), Buf.bytes(e[i].b)); back := 0; troubled := false;
-        | answered: Aview.answered(Buf.bytes(e[i].a)); troubled := false;
+        | answered: _ := Aview.answered(Buf.bytes(e[i].a)); troubled := false;
         | told, shown: Aview.noted(Aboard.info, Buf.bytes(e[i].a)); back := 0;
         | failed: Aview.noted(Aboard.error, Buf.bytes(e[i].a)); back := 0; troubled := true;
         | typed: Aview.typed(Buf.bytes(e[i].a));
@@ -1139,7 +1139,7 @@ begin
             Str.replace(b, line, "\n", " ");
             Buf.add(b, '\n');
         | error: Fmt.write(b, "\n{}\n", [Fmt.str(s)]);
-        | info:
+        | info, think:
         end;
     end;
 end;

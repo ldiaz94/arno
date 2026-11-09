@@ -103,6 +103,7 @@ type
        procedure may be nil, and each gets arg. *)
     Front* = record
         text*: proc(s: []const U8; arg: ^U8);            (* a piece of the model's text, as it comes *)
+        think*: proc(s: []const U8; arg: ^U8);           (* a piece of its thinking, where the provider streams it; nil if it is not asked *)
         call*: proc(name, args: []const U8; arg: ^U8);   (* a tool call, about to run *)
         result*: proc(name, res: []const U8; arg: ^U8);  (* its result *)
         note*: proc(s: []const U8; arg: ^U8);            (* what arno says of the turn, a line *)
@@ -144,6 +145,7 @@ type
         used*: Awire.Usage;   (* what the requests so far cost, summed *)
         requests*: INT;       (* how many there were *)
         spent*: F64;          (* dollars, at list price, of those priced *)
+        paid*: Aprice.Cost;   (* and spent by part *)
         unpriced*: INT;       (* those whose model has no known price *)
         held*: I64;           (* tokens the conversation's last request held, in and out; 0 if unknown *)
         human: Atools.Human;  (* the front's ask and why *)
@@ -403,15 +405,23 @@ begin
     return Tools.all(t);
 end;
 
-(* What a request used, u, and cost, in dollars if priced, added to a's sums. *)
-proc count(var a: Agent; const u: Awire.Usage; cost: F64; priced: BOOL);
+(* What a request used, u, and cost, in dollars by part if priced, added to a's sums. *)
+proc count(var a: Agent; const u: Awire.Usage; cost: Aprice.Cost; priced: BOOL);
 begin
     INC(a.used.inp, u.inp);
     INC(a.used.cached, u.cached);
     INC(a.used.written, u.written);
     INC(a.used.out, u.out);
     INC(a.requests);
-    if priced then a.spent := a.spent + cost; else INC(a.unpriced); end;
+    if priced then
+        a.spent := a.spent + cost.inp + cost.cached + cost.written + cost.out;
+        a.paid.inp := a.paid.inp + cost.inp;
+        a.paid.cached := a.paid.cached + cost.cached;
+        a.paid.written := a.paid.written + cost.written;
+        a.paid.out := a.paid.out + cost.out;
+    else
+        INC(a.unpriced);
+    end;
 end;
 
 (* The model asked, once, with c's messages; its reply added to them,
@@ -420,12 +430,12 @@ end;
    and a worker's in the lead's sums too. A worker lets the lead's
    place go while it waits for the model. *)
 proc ask(var a: Agent; var c: Astore.Conv; sys: []const U8; var why: Buf.Buf): ERROR;
-var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; cost: F64; err: ERROR;
+var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; cost: Aprice.Cost; err: ERROR;
 begin
     r := {prov: a.prov, client: SYSTEM.ADR(a.client), system: sys, msgs: Msgs.all(c.msgs),
         tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
             not a.working and (a.mode = Aprompt.build)),
-        emit: a.front.text, arg: a.front.arg, stopped: a.front.stopped};
+        emit: a.front.text, think: a.front.think, arg: a.front.arg, stopped: a.front.stopped};
     if a.working then
         r.tools := owned(a, r.tools);
         Thread.unlock(a.lead^.place);
@@ -436,8 +446,8 @@ begin
         Arena.reset(a.mem);
     end;
     price, priced := Aprice.price(a.prov^);
-    cost := 0.0;
-    if priced then cost := Aprice.cost(price, u); end;
+    cost := {};
+    if priced then cost := Aprice.parts(price, u); end;
     count(a, u, cost, priced);
     if a.working then count(a.lead^, u, cost, priced); end;
     (* a worker's context is not the conversation's *)
@@ -570,6 +580,15 @@ begin
     spoken(l);
 end;
 
+(* a piece of its thinking, *)
+proc workerThink(s: []const U8; arg: ^U8);
+var l: ^Agent;
+begin
+    l := speak(arg);
+    if l^.front.think # nil then l^.front.think(s, l^.front.arg); end;
+    spoken(l);
+end;
+
 (* a call it makes, *)
 proc workerCall(name, args: []const U8; arg: ^U8);
 var l: ^Agent;
@@ -618,7 +637,7 @@ var f: Front;
 begin
     w.prov := a.prov^;
     w.slot := -1;
-    f := {text: workerText, call: workerCall, result: workerResult, note: workerNote, ask: a.front.ask,
+    f := {text: workerText, think: workerThink, call: workerCall, result: workerResult, note: workerNote, ask: a.front.ask,
         why: a.front.why, stopped: a.front.stopped, counted: workerCounted, arg: ^U8(SYSTEM.ADR(w.agent))};
     w.agent := {prov: SYSTEM.ADR(w.prov), front: f, prune: a.prune, buildSteps: a.buildSteps, worker: a.worker,
         mode: a.mode, working: true, lead: SYSTEM.ADR(a), prompt: a.prompt, human: a.human};
