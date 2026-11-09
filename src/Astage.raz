@@ -700,7 +700,7 @@ begin
     Buf.init(cache, Heap.heap);
     _ := sh("rm -rf build/stage; mkdir -p build/stage/cache build/stage/proj/src");
     _ := sh("cd build/stage/proj && git init -q && printf 'one\\n' > a.txt && printf 'two\\n' > src/b.txt && printf 'kept\\n' > src/k.txt && printf 'forced\\n' > f.o && " +
-        "printf '*.o\\nnode_modules\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t commit -q -m first && " +
+        "printf '*.o\\nnode_modules\\n' > .gitignore && git add . && git add -f f.o && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m first && " +
         "mkdir -p node_modules/dep && printf 'lib\\n' > node_modules/dep/i.js && printf 'human\\n' >> a.txt && printf 'new\\n' > new.txt && printf 'obj\\n' > x.o");
     Buf.str(top, sh("cd build/stage && pwd"));
     Buf.str(cache, Buf.bytes(top));

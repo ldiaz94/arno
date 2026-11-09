@@ -66,7 +66,7 @@ begin
   writeln('Summarise $ARGUMENTS for users.')
 end > $dir/repo/.claude/skills/comment/SKILL.md
 git -C $dir/repo add -A
-git -C $dir/repo -c user.name=t -c user.email=t@t commit -q -m first
+git -C $dir/repo -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m first
 git -C $dir/repo worktree add -q $dir/other
 writeln('{"type":"user","cwd":"', dir, '/repo","message":"hi"}') > $dir/home/.claude/projects/-repo/s.jsonl
 begin

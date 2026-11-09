@@ -391,7 +391,7 @@ mkdir -p $proj
 git -C $proj init -q
 echo one > "$proj/a.txt"
 git -C $proj add a.txt
-git -C $proj -c user.name=t -c user.email=t@t commit -q -m first
+git -C $proj -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m first
 configure(['safety = auto'])
 edit := '{"path":"a.txt","old":"one","new":"two"}'
 
