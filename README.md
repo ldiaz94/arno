@@ -358,3 +358,5 @@ by `make loc`.
 ## Licence
 
 [ISC](LICENSE). Copyright © 2026 Luis Díaz.
+
+Built with love.
