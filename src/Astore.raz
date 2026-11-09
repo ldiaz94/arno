@@ -39,6 +39,9 @@
    lives, a directory a process (stageDir), and sweeps the copies of
    processes that are gone.
 
+   It keeps the usage log, a line for each request of a model, what it
+   used and cost, for a host to sum over days (logUse, uses).
+
    Depends on Amsg, rjson's Json, and rzone's Zone, for the local
    time. Leaves out the other
    files the agent keeps beside the conversations (memory, notes, the
@@ -795,6 +798,58 @@ begin
     Items.done(list);
 end;
 
+(* The usage log, usage.log in arno's directory: a line for each
+   request of a model, every session's, the lead's and its workers', as
+   a compact JSON object that starts with its time, {"at":SECONDS,...
+   (Agent writes it). A line is written with one write to the file
+   opened to append, so two sessions' lines never mix, and no lock is
+   needed. It holds no text of a conversation. *)
+
+(* line added to the usage log, a newline after it; lost if the file
+   can't be written, which costs the human nothing but a row. *)
+proc logUse*(line: []const U8);
+var path, b: Buf.Buf; fd: INT;
+begin
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.str(b, line);
+    Buf.add(b, '\n');
+    fd := Sys.openMode(pathOf("usage.log", path), {Sys.writing, Sys.creating, Sys.appending}, 180H);
+    if fd < 0 then return; end;
+    _ := Sys.write(fd, Buf.bytes(b));
+    Sys.close(fd);
+end;
+
+(* The lines of the usage log made at from or after, and before till
+   (0 for no end), as a JSON array, oldest first, into out. A line that
+   doesn't start with its time, a write cut short, is passed over. *)
+proc uses*(from, till: I64; var out: Buf.Buf);
+var path, text: Buf.Buf; rest, line, n: []const U8; more, ok, first: BOOL; at: I64;
+begin
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    _ := Files.load(pathOf("usage.log", path), text);
+    Buf.add(out, '[');
+    first := true;
+    rest := Buf.bytes(text);
+    more := LEN(rest) > 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if not Str.hasPrefix(line, `{"at":`) or not Str.hasSuffix(line, "}") then continue; end;
+        n, _, _ := Str.cut(line[6..LEN(line)], ",");
+        at, ok := Str.toInt(n);
+        if not ok or (at < from) or ((till > 0) and (at >= till)) then continue; end;
+        if not first then Buf.add(out, ','); end;
+        first := false;
+        Buf.str(out, line);
+    end;
+    Buf.add(out, ']');
+end;
+
 (* The test, in build/store, made empty: conversations saved, read
    back, renamed and listed; and, given files, each conversation the
    Pascal arno saved, read and saved again, byte for byte. *)
@@ -1020,6 +1075,15 @@ begin
     Args.init(args, Heap.heap);
     for i := 1 to ARGC() - 1 do Args.push(args, Files.arg(i)); end;
     compat(Args.all(args));
+    (* the usage log: a line a request, read back by its time *)
+    logUse(`{"at":100,"model":"a"}`);
+    logUse(`{"at":200,"model":"b"}`);
+    Buf.reset(b);
+    uses(150, 0, b);
+    expect("the usage log from a time", Buf.bytes(b), `[{"at":200,"model":"b"}]`);
+    Buf.reset(b);
+    uses(0, 200, b);
+    expect("the usage log till a time", Buf.bytes(b), `[{"at":100,"model":"a"}]`);
     (* a text kept for each project, the others' left as they were *)
     Buf.reset(b);
     if (setKeyed("tests.json", "/a", "make check") # nil) or (setKeyed("tests.json", "/b", "x") # nil) or

@@ -2266,6 +2266,16 @@ Each project's safety, as
 or
 .Ic /safety safe
 last left it, by project root.
+.It Pa ~/.local/share/arno/usage.log
+A line for each request of a model, every session's, workers' too: when, the
+model, the conversation, its tokens and what it cost, as JSON, holding no
+text of the conversation.
+A host reads it with
+.Cm usagelog ,
+as
+.Xr arno-serve 5
+says.
+Nothing trims it; remove it to start over.
 .It Pa ~/.local/share/arno/lock
 Locked while one session changes the files above, so that two sessions at
 once keep each other's changes.

@@ -1037,7 +1037,7 @@ end;
 (* The tokens s's conversation holds: what its last request held, in
    and out, and true; before one, a guess of a token for every four
    bytes of its messages, and false. *)
-proc context(const s: Session): (I64, BOOL);
+proc context*(const s: Session): (I64, BOOL);
 var m: []Amsg.Msg; i: INT; n: I64;
 begin
     if s.agent.held > 0 then return s.agent.held, true; end;

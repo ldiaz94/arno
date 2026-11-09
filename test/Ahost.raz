@@ -899,6 +899,34 @@ begin
     end;
 end;
 
+(* usage answers the session's sums, and usagelog the usage log's rows,
+   a request each, the last thinking's among them. *)
+proc used;
+var want: Buf.Buf;
+begin
+    Buf.init(want, Heap.heap);
+    defer Buf.done(want);
+    clear();
+    send(["usage"]);
+    _ := await("usage|");
+    mustHave("the session's usage", `usage|{"turns":`);
+    mustNotHave("its turns counted", `"turns":0,`);
+    mustHave("its context", `,"context":{"used":`);
+    clear();
+    send(["usagelog", "", ""]);
+    _ := await("usagelog|");
+    Fmt.write(want, `"model":"{}","conversation":"`, [Fmt.str(Buf.bytes(model))]);
+    mustHave("a request logged", Buf.bytes(want));
+    mustHave("with its tokens and cost", `"in":10,"cached":0,"written":0,"out":2,"cost":0.000005,"kind":"model"}`);
+    clear();
+    send(["usagelog", "1", "2"]);
+    _ := await("usagelog|");
+    is("no request in a span long gone", "usagelog|[]");
+    send(["usagelog", "yesterday", ""]);
+    _ := await("error|");
+    is("a span that is no time", "error|usagelog needs times in seconds since 1970, or empty");
+end;
+
 (* A search tells the pages it found as sources, after its done, with
    the ids the model is shown: counted on through the turn, from 1 again
    in the next. *)
@@ -1073,6 +1101,7 @@ begin
     order();
     saved();
     thinking();
+    used();
     searched();
     unqueued();
     rewinding();

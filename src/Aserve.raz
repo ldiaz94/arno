@@ -39,9 +39,9 @@
    viewers' in the order they came, and every viewer is shown the
    queue. It is never held here: the host, a program, says what runs.
 
-   Requests are answered at once, even mid-turn: recent, paste, and
-   forget, rename, system and setsystem of a saved conversation. models,
-   rewind, and forget, rename, system and setsystem of the current
+   Requests are answered at once, even mid-turn: recent, paste,
+   usagelog, and forget, rename, system and setsystem of a saved
+   conversation. models, rewind, usage, and forget, rename, system and setsystem of the current
    conversation, which the job running may be changing, wait for the
    job's end, and are answered then. rewind and forget of the current
    conversation show it again, or the new one, as a /load does: the loop
@@ -54,7 +54,9 @@
    Beside the Board's changes the host is told what a screen has no
    use for: a stamp, the time and the model, on each new entry of the
    human's, the model's reply or thinking; the stats of a turn as it
-   ends; and the sources a search found.
+   ends; and the sources a search found. usage gives the session's sums
+   in the same keys as stats, and usagelog the usage log (Astore) that
+   Agent writes a line of for every request.
 
    Depends on Aframe, Aview, Asession, Agent, Aprompt, Atools, Aattach,
    Astore, Awire, Aprice and rjson's Json.
@@ -106,7 +108,8 @@ const
     NsPerMs = 1000000;
     Verbs: []Need = [{verb: "hello", fields: 5}, {verb: "line", fields: 2}, {verb: "cancel", fields: 1}, {verb: "answer", fields: 3}, {verb: "result", fields: 3}, {verb: "bye", fields: 1},
         {verb: "recent", fields: 3}, {verb: "paste", fields: 1}, {verb: "rename", fields: 3}, {verb: "forget", fields: 2}, {verb: "models", fields: 1}, {verb: "system", fields: 2},
-        {verb: "setsystem", fields: 3}, {verb: "rewind", fields: 2}, {verb: "unqueue", fields: 2}];
+        {verb: "setsystem", fields: 3}, {verb: "rewind", fields: 2}, {verb: "unqueue", fields: 2}, {verb: "usage", fields: 1},
+        {verb: "usagelog", fields: 3}];
 
 var
     session: Asession.Session;
@@ -154,6 +157,7 @@ var
     marks: Marks.Vec;         (* the human's messages on the Board, in order *)
     began: I64;               (* Sys.clock as the turn began *)
     before: Sums;             (* and the session's sums *)
+    turns: INT;               (* the turns of the model that have ended in the session *)
 
 (* Telling the host *)
 
@@ -643,6 +647,68 @@ begin
     send(["models", Buf.bytes(scratch)]);
 end;
 
+(* What the session's requests have used and cost so far; no job runs. *)
+proc sums: Sums;
+begin
+    return {used: session.agent.used, paid: session.agent.paid, requests: session.agent.requests,
+        unpriced: session.agent.unpriced};
+end;
+
+(* What the requests between from and now used, as members of a JSON
+   object, into scratch: their count; unpriced, those of a model with no
+   known price, which count for nothing in the cost; their tokens; and
+   what they cost at list price, with its parts. *)
+proc tally(const from, now: Sums);
+var c: Aprice.Cost;
+begin
+    c := {inp: now.paid.inp - from.paid.inp, cached: now.paid.cached - from.paid.cached,
+        written: now.paid.written - from.paid.written, out: now.paid.out - from.paid.out};
+    Fmt.write(scratch, `"requests":{},"unpriced":{},`, [Fmt.int(now.requests - from.requests),
+        Fmt.int(now.unpriced - from.unpriced)]);
+    Fmt.write(scratch, `"in":{},"cached":{},"written":{},"out":{},`, [Fmt.int(INT(now.used.inp - from.used.inp)),
+        Fmt.int(INT(now.used.cached - from.used.cached)), Fmt.int(INT(now.used.written - from.used.written)),
+        Fmt.int(INT(now.used.out - from.used.out))]);
+    Fmt.write(scratch, `"cost":{},"parts":{{"in":{},"cached":{},"written":{},"out":{}}}`,
+        [Fmt.real(c.inp + c.cached + c.written + c.out, 6), Fmt.real(c.inp, 6), Fmt.real(c.cached, 6),
+        Fmt.real(c.written, 6), Fmt.real(c.out, 6)]);
+end;
+
+(* usage: what the session's requests have used, as one JSON object:
+   the turns that have ended, the tally of every request, and the
+   context, the tokens the conversation's last request held (a guess
+   from its length, exact false, before one), of the model's window, 0
+   if unknown. No job runs. *)
+proc usage;
+var none: Sums; held: I64; exact: BOOL; pr: Aprice.Price;
+begin
+    none := {};
+    held, exact := Asession.context(session);
+    pr, _ := Aprice.price(session.conf.prov);
+    Buf.reset(scratch);
+    Fmt.write(scratch, `{{"turns":{},`, [Fmt.int(turns)]);
+    tally(none, sums());
+    Fmt.write(scratch, `,"context":{{"used":{},"window":{},"exact":`, [Fmt.int(INT(held)), Fmt.int(INT(pr.window))]);
+    if exact then Buf.str(scratch, "true}}"); else Buf.str(scratch, "false}}"); end;
+    send(["usage", Buf.bytes(scratch)]);
+end;
+
+(* usagelog: the usage log's rows made at from or after and before
+   till, seconds since 1970, empty for no bound, as a JSON array
+   (Astore.uses). *)
+proc usagelog(from, till: []const U8);
+var a, b: I64; ok: BOOL;
+begin
+    a := 0;
+    b := 0;
+    ok := true;
+    if LEN(from) > 0 then a, ok := Str.toInt(from); end;
+    if ok and (LEN(till) > 0) then b, ok := Str.toInt(till); end;
+    if not ok then fault("usagelog needs times in seconds since 1970, or empty"); return; end;
+    Buf.reset(scratch);
+    Astore.uses(a, b, scratch);
+    send(["usagelog", Buf.bytes(scratch)]);
+end;
+
 (* The request's answer from the host: ask's key, with its reason if
    it gave one, or call's result, to the job waiting. Dropped if it is
    for a request no longer waited on. *)
@@ -773,7 +839,7 @@ begin
     if thread = nil then return false; end;
     if held.len > 0 then return true; end;
     match f[0] of
-    | "models", "rewind": return true;
+    | "models", "rewind", "usage": return true;
     | "rename", "system", "setsystem", "forget": return isCurrent(f[1]);
     | else: return false;
     end;
@@ -791,6 +857,8 @@ begin
     | "system": systems(f[1]);
     | "setsystem": setsystems(f[1], f[2]);
     | "rewind": rewinds(f[1]);
+    | "usage": usage();
+    | "usagelog": usagelog(f[1], f[2]);
     | else:
     end;
 end;
@@ -833,7 +901,7 @@ begin
         if ok and (pending > 0) and (n = pending) then replied(f, false); end;
     | "bye": finish();
     | "unqueue": Aview.unqueueIf(f[1]);
-    | "recent", "paste", "forget", "models", "rename", "system", "setsystem", "rewind":
+    | "recent", "paste", "forget", "models", "rename", "system", "setsystem", "rewind", "usage", "usagelog":
         if waits(f) then Aframe.pack(held, f); else request(f); end;
     | else:
     end;
@@ -937,32 +1005,14 @@ begin
     Marks.push(marks, {entry: n, msg: msg});
 end;
 
-(* What the session's requests have used and cost so far; no job runs. *)
-proc sums: Sums;
-begin
-    return {used: session.agent.used, paid: session.agent.paid, requests: session.agent.requests,
-        unpriced: session.agent.unpriced};
-end;
-
 (* What the turn that ended took, as one JSON object, told: stats JSON,
-   its wall time in milliseconds, its requests, their tokens, and what
-   they cost at list price, with its parts; unpriced is how many had
-   no known price, and count for nothing in the cost. *)
+   its wall time in milliseconds and its tally. *)
 proc stats;
-var now: Sums; c: Aprice.Cost;
 begin
-    now := sums();
-    c := {inp: now.paid.inp - before.paid.inp, cached: now.paid.cached - before.paid.cached,
-        written: now.paid.written - before.paid.written, out: now.paid.out - before.paid.out};
     Buf.reset(scratch);
-    Fmt.write(scratch, `{{"ms":{},"requests":{},"unpriced":{},`, [Fmt.int(INT((Sys.clock() - began) div NsPerMs)),
-        Fmt.int(now.requests - before.requests), Fmt.int(now.unpriced - before.unpriced)]);
-    Fmt.write(scratch, `"in":{},"cached":{},"written":{},"out":{},`, [Fmt.int(INT(now.used.inp - before.used.inp)),
-        Fmt.int(INT(now.used.cached - before.used.cached)), Fmt.int(INT(now.used.written - before.used.written)),
-        Fmt.int(INT(now.used.out - before.used.out))]);
-    Fmt.write(scratch, `"cost":{},"parts":{{"in":{},"cached":{},"written":{},"out":{}}}}}`,
-        [Fmt.real(c.inp + c.cached + c.written + c.out, 6), Fmt.real(c.inp, 6), Fmt.real(c.cached, 6),
-        Fmt.real(c.written, 6), Fmt.real(c.out, 6)]);
+    Fmt.write(scratch, `{{"ms":{},`, [Fmt.int(INT((Sys.clock() - began) div NsPerMs))]);
+    tally(before, sums());
+    Buf.add(scratch, '}');
     send(["stats", Buf.bytes(scratch)]);
 end;
 
@@ -1053,6 +1103,7 @@ begin
     if thread # nil then Thread.join(thread); thread := nil; end;
     Aview.waiting("", false);
     if turning then
+        INC(turns);
         stats();
         Aview.busied(false);
     end;

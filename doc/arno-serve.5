@@ -173,7 +173,7 @@ for the host to edit, as a viewer does; else nothing.
 It is not answered: the
 .Cm queue
 that follows says what waits.
-.It "recent, paste, rename, forget, rewind, models, system, setsystem"
+.It "recent, paste, rename, forget, rewind, models, system, setsystem, usage, usagelog"
 Requests about the conversations, with the fields the section
 .Sx Requests
 gives each.
@@ -467,6 +467,7 @@ The answers to requests are in the next section.
 These are answered at once, even while a turn runs, in the order asked:
 .Cm recent ,
 .Cm paste ,
+.Cm usagelog ,
 and
 .Cm forget ,
 .Cm rename ,
@@ -476,6 +477,7 @@ and
 of a saved conversation.
 .Cm models ,
 .Cm rewind ,
+.Cm usage ,
 and the same four for the current conversation, which a running job may be
 changing, wait for the job's end and are answered then.
 A host that wants the turn stopped first sends
@@ -598,6 +600,65 @@ back to arno's own.
 Answered
 .Cm systemset Ar id .
 The current conversation's takes effect from its next request.
+.It Cm usage
+What the session's requests have used, the numbers of
+.Ic /usage
+for a program to read.
+Answered
+.Cm usage Ar json :
+an object with
+.Cm turns ,
+the turns of the model that have ended;
+the members of
+.Cm stats
+but
+.Cm ms ,
+summed over the session, every conversation it went through;
+and
+.Cm context ,
+an object with
+.Cm used ,
+the tokens the conversation's last request held,
+.Cm window ,
+how many the model holds, 0 when not known, and
+.Cm exact ,
+false when
+.Cm used
+is a guess from the conversation's length, before its first request.
+.It Cm usagelog Ar from till
+The rows of the usage log, every session's, made at
+.Ar from
+or after and before
+.Ar till ,
+in seconds since 1970; an empty one is no bound.
+Answered
+.Cm usagelog Ar json :
+an array, oldest first, of an object a request of a model, with
+.Cm at ,
+in seconds since 1970;
+.Cm model ;
+.Cm conversation ,
+the id of the conversation whose turn made it, a worker's request its
+lead's;
+.Cm in ,
+.Cm cached ,
+.Cm written
+and
+.Cm out ,
+as in
+.Cm stats ;
+.Cm cost ,
+in dollars at list price, or null for a model with no known price; and
+.Cm kind ,
+.Ql model ,
+the only kind of request arno pays for today.
+A
+.Ar from
+or
+.Ar till
+that is no number is answered
+.Cm error
+.Ql "usagelog needs times in seconds since 1970, or empty" .
 .El
 .Pp
 A
@@ -783,6 +844,20 @@ arno -> host   done 9 "[1] Rain\enhttps://example.org/rain\enWater that falls...
 arno -> host   sources 9 [{"id":1,"url":"https://example.org/rain",
                            "title":"Rain","excerpt":"Water that falls...",
                            "retrievedAt":1794236874512}]
+.Ed
+.Pp
+What the session has used, and its requests since a time:
+.Bd -literal -offset indent
+host -> arno   usage
+arno -> host   usage {"turns":3,"requests":4,"unpriced":0,"in":40,
+                      "cached":0,"written":0,"out":8,"cost":0.000021,
+                      "parts":{...},
+                      "context":{"used":52,"window":1000000,"exact":true}}
+host -> arno   usagelog 1794200000 ""
+arno -> host   usagelog [{"at":1794236875,"model":"deepseek-v4.1-flash:cloud",
+                          "conversation":"20261028-101500","in":10,
+                          "cached":0,"written":0,"out":2,"cost":0.000005,
+                          "kind":"model"}]
 .Ed
 .Pp
 The line of entry 6 tried again, edited; a line taken back from the queue;

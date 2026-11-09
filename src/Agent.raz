@@ -41,6 +41,8 @@
    tells the lead's, saying who speaks around each thing it tells
    (Front.speaker), one worker at a time; what its requests cost is
    added to the lead's sums as well as its own.
+   Every request, the lead's or a worker's, is written to the usage log
+   (Astore.logUse) under the lead's conversation.
 
    Staged, each worker works in a copy of its own (Astage.fork), made
    from the stage's copy as it stands, numbered, and for its turn the
@@ -148,6 +150,7 @@ type
         paid*: Aprice.Cost;   (* and spent by part *)
         unpriced*: INT;       (* those whose model has no known price *)
         held*: I64;           (* tokens the conversation's last request held, in and out; 0 if unknown *)
+        convId: []const U8;   (* the id of the conversation the lead's requests are for, which the usage log names; a worker's are its lead's *)
         human: Atools.Human;  (* the front's ask and why *)
         client: Http.Client;
         mem: Arena.Arena;     (* a call's work *)
@@ -424,6 +427,33 @@ begin
     end;
 end;
 
+(* A request of a's model, which used u and cost cost if priced, written
+   to the usage log (Astore.logUse): its time, in seconds since 1970,
+   the model, the conversation of the lead's turn, the tokens, the cost
+   in dollars at list price, null if unpriced, and its kind, "model",
+   the only kind of request arno pays for. *)
+proc logged(const a: Agent; const u: Awire.Usage; cost: Aprice.Cost; priced: BOOL);
+var b: Buf.Buf; conv: []const U8;
+begin
+    conv := a.convId;
+    if a.working then conv := a.lead^.convId; end;
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Fmt.write(b, `{{"at":{},"model":`, [Fmt.int(INT(Sys.now() div 1000000000))]);
+    Amsg.quote(b, a.prov^.model);
+    Buf.str(b, `,"conversation":`);
+    Amsg.quote(b, conv);
+    Fmt.write(b, `,"in":{},"cached":{},"written":{},"out":{},"cost":`, [Fmt.int(INT(u.inp)), Fmt.int(INT(u.cached)),
+        Fmt.int(INT(u.written)), Fmt.int(INT(u.out))]);
+    if priced then
+        Fmt.write(b, "{}", [Fmt.real(cost.inp + cost.cached + cost.written + cost.out, 6)]);
+    else
+        Buf.str(b, "null");
+    end;
+    Buf.str(b, `,"kind":"model"}`);
+    Astore.logUse(Buf.bytes(b));
+end;
+
 (* The model asked, once, with c's messages; its reply added to them,
    unless the request failed with nothing said. What it cost is
    counted, at the price of the model asked, a worker's or the lead's,
@@ -448,8 +478,10 @@ begin
     price, priced := Aprice.price(a.prov^);
     cost := {};
     if priced then cost := Aprice.parts(price, u); end;
+    if not a.working then a.convId := c.id; end;
     count(a, u, cost, priced);
     if a.working then count(a.lead^, u, cost, priced); end;
+    logged(a, u, cost, priced);
     (* a worker's context is not the conversation's *)
     if not a.working and (u.inp + u.out > 0) then a.held := u.inp + u.out; end;
     if a.front.counted # nil then a.front.counted(a.front.arg); end;
