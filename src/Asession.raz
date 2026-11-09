@@ -289,7 +289,8 @@ begin
         INC(i);
         name, cmd, ok := Aconf.named(s^.conf, "check", i);
     end;
-    Atools.jail(Aconf.get(s^.conf, "jail_net") = "yes", Aconf.get(s^.conf, "jail_rw"));
+    Atools.jail(Aconf.get(s^.conf, "jail_net") = "yes", Aconf.get(s^.conf, "jail_rw"),
+        Aconf.get(s^.conf, "jail") = "no");
     attachServers(s^);
     stageStart(s^);
     Arena.reset(s^.mem);

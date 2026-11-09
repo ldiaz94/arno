@@ -214,6 +214,8 @@ unprivileged namespaces (no root, no helper), with no network unless
 the config says `jail_net = yes`.
 In the stage it writes in the copy, never in your tree. It is offered only
 staged, so not in safe mode, and is off if the config says `shell = no`.
+An arno that runs in a sandbox of its host's, such as a container, may
+say `jail = no`: its commands then run in the copy without the jail.
 
 **MCP servers.** A server of the Model Context Protocol, a program that
 offers tools over standard input and output, or a URL that offers them

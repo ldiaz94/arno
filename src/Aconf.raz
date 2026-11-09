@@ -102,7 +102,7 @@ const
     (* the keys the rest of arno reads, which are no provider's param *)
     Known: []const []const U8 = ["worker", "workers", "max_steps", "prune", "turn_budget", "build_steps", "build_budget", "mode", "searxng", "test_cmd", "safety",
         "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
-        "trust", "grant", "context_files", "project_map", "prefetch", "mcp", "jail_net", "jail_rw"];
+        "trust", "grant", "context_files", "project_map", "prefetch", "mcp", "jail", "jail_net", "jail_rw"];
 
     (* the keys a section may set, which are one project's *)
     Sectioned: []const []const U8 = ["run", "run_ro", "run_env", "trust", "test_cmd", "safety", "context_files",

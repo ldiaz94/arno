@@ -1935,6 +1935,19 @@ has not been given in.
 withdraws the
 .Ic shell
 tool; it is offered while staged, where the jail can run.
+.It Cm jail
+.Ql no
+runs
+.Ic shell ,
+.Ic check
+and
+.Ic run
+without the jail, in the copy, for an arno that runs in a sandbox of
+its host\(aqs, such as a container, which may forbid the jail\(aqs namespaces;
+.Ic shell
+is then offered while staged, and its time is kept by
+.Xr timeout 1 .
+Only before the first section.
 .It Cm jail_net
 .Ql yes
 leaves the network on in the jail of

@@ -351,6 +351,7 @@ var
     shellOff: BOOL;         (* config's shell is no, which takes the tool away *)
     jailNet: BOOL;          (* config's jail_net is yes: the jail keeps the network *)
     jailRw: []const U8;     (* config's jail_rw: more directories the jail leaves writable, split by blanks *)
+    noJail: BOOL;           (* config's jail is no: the host is the sandbox, and nothing is jailed *)
 
 (* config's shell: whether the shell tool may be offered. *)
 proc shellEnabled*(on: BOOL);
@@ -361,11 +362,14 @@ end;
 (* config's jail_net and jail_rw: whether the jail of check, run and
    shell keeps the network, and the directories, split by blanks, it
    leaves writable beyond the copy and the scratch, which a test may
-   want for a cache in the home. *)
-proc jail*(net: BOOL; rw: []const U8);
+   want for a cache in the home; and its jail, off when arno runs in a
+   sandbox of its host's, a container, which may forbid the jail's
+   namespaces: then check, run and shell run as they are, in the copy. *)
+proc jail*(net: BOOL; rw: []const U8; off: BOOL);
 begin
     jailNet := net;
     jailRw := rw;
+    noJail := off;
 end;
 
 (* Whether shell can be offered now: config allows it, the session is
@@ -375,7 +379,7 @@ end;
    pass by. *)
 proc shellOn*(): BOOL;
 begin
-    return not shellOff and (LEN(Afence.stage) > 0) and Arun.jails();
+    return not shellOff and (LEN(Afence.stage) > 0) and (noJail or Arun.jails());
 end;
 
 (* Whether the tool called name only reads: a call to one made twice
@@ -1023,7 +1027,7 @@ end;
    runs was changed unasked. *)
 proc confine(var j: Arun.Job; mem: ^Mem.Allocator);
 begin
-    if (LEN(Afence.stage) = 0) or not Arun.jails() then return; end;
+    if (LEN(Afence.stage) = 0) or noJail or not Arun.jails() then return; end;
     jailed(j, mem);
 end;
 
@@ -1182,7 +1186,7 @@ end;
    exit status comes first, as in check and run; a sandbox that can't
    be made is an error, never a command run outside it. *)
 proc shell(const a: Args; mem: ^Mem.Allocator; var out: Buf.Buf);
-var cmd: []const U8; got: Buf.Buf; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
+var cmd: []const U8; got, secs: Buf.Buf; j: Arun.Job; limit, status: INT; cut, flooded, clipped: BOOL;
 begin
     (* a call is not always of a tool offered: a one-shot call, or a name the model made up *)
     if not shellOn() then
@@ -1198,7 +1202,14 @@ begin
     Buf.init(got, mem);
     j := {args: ["/bin/sh", "-c", cmd], env: [scratchVar(mem)], dir: Afence.zone, detach: true, tail: true,
         timeout: limit, flood: ShellFlood};
-    jailed(j, mem);
+    if noJail then
+        (* no jail to keep the time: timeout(1) keeps it, with the jail's status *)
+        Buf.init(secs, mem);
+        Fmt.write(secs, "{}", [Fmt.int(limit)]);
+        j.args := ["/bin/sh", "-c", `exec timeout -k 5 "$0" /bin/sh -c "$1"`, Buf.bytes(secs), cmd];
+    else
+        jailed(j, mem);
+    end;
     status, cut, flooded := Arun.start(j, MaxOut - 1000, got);
     if status < 0 then Buf.str(out, "error: cannot start /bin/sh"); return; end;
     if unjailed(status, got, out) then return; end;
@@ -2729,7 +2740,7 @@ begin
     Buf.init(want, Heap.heap);
     defer Buf.done(want);
     Fmt.write(rw, "~/no-such-dir {}/build/tools/out", [Fmt.str(top)]);
-    jail(false, Buf.bytes(rw));
+    jail(false, Buf.bytes(rw), false);
     expect("shell writes in jail_rw", run("shell", `{"command":"touch ../out/x"}`, nil), "exit 0: touch ../out/x");
     ns, _ := Sys.readLink("/proc/self/ns/net");
     Fmt.write(want, "exit 0: readlink /proc/self/ns/net\n{}", [Fmt.str(ns)]);
@@ -2737,9 +2748,15 @@ begin
         Out.str("Atools: the jail kept the network without jail_net\n");
         failed := true;
     end;
-    jail(true, "");
+    jail(true, "", false);
     expect("shell, jail_net", run("shell", `{"command":"readlink /proc/self/ns/net"}`, nil), Buf.bytes(want));
-    jail(false, "");
+    (* jail = no: the command runs as it is, in arno's own namespaces *)
+    Buf.reset(want);
+    ns, _ := Sys.readLink("/proc/self/ns/pid");
+    Fmt.write(want, "exit 0: readlink /proc/self/ns/pid\n{}", [Fmt.str(ns)]);
+    jail(false, "", true);
+    expect("shell, jail no", run("shell", `{"command":"readlink /proc/self/ns/pid"}`, nil), Buf.bytes(want));
+    jail(false, "", false);
 end;
 
 (* delegate's offer names the workers with their prices, and limits model to them. *)
