@@ -66,6 +66,7 @@ type
         out: Buf.Buf;          (* what a command says *)
         listed: Buf.Buf;       (* the models /models was told, a line each *)
         listedOf: Buf.Buf;     (* by which provider *)
+        choices: Buf.Buf;      (* what models last gave: those listed, then config's models.NAME *)
         notesBefore: INT;      (* the project's notes as the turn began, which the stage shows the new ones after *)
     end;
 
@@ -249,6 +250,7 @@ begin
     Buf.init(s^.out, Heap.heap);
     Buf.init(s^.listed, Heap.heap);
     Buf.init(s^.listedOf, Heap.heap);
+    Buf.init(s^.choices, Heap.heap);
     if s^.conf.warnings.len > 0 then show(Str.trimRight(Buf.bytes(s^.conf.warnings)), true, arg); end;
     Buf.init(id, Heap.heap);
     defer Buf.done(id);
@@ -960,12 +962,33 @@ begin
     say(s, Buf.bytes(s.out));
 end;
 
-(* The models of s's provider, a line each: those its server told
-   /models, or arno's own list of them. *)
-proc models*(const s: Session): []const U8;
+(* The models config's models.NAME adds for s's provider, which its
+   server doesn't list, a line each, added to b. *)
+proc extraModels*(const s: Session; var b: Buf.Buf);
+var word, rest: []const U8;
 begin
-    if Buf.bytes(s.listedOf) = s.conf.prov.name then return Buf.bytes(s.listed); end;
-    return Awire.known(s.conf.prov.name);
+    word, rest := Str.field(Aconf.getFor(s.conf, "models", s.conf.prov.name));
+    while LEN(word) > 0 do
+        if (b.len > 0) and (Buf.bytes(b)[b.len - 1] # '\n') then Buf.add(b, '\n'); end;
+        Buf.str(b, word);
+        word, rest := Str.field(rest);
+    end;
+end;
+
+(* The models of s's provider, a line each: those its server told
+   /models, or arno's own list of them; then those config's models.NAME
+   adds, which the server doesn't list. They are made in s.choices,
+   which holds them until the next call. *)
+proc models*(var s: Session): []const U8;
+begin
+    Buf.reset(s.choices);
+    if Buf.bytes(s.listedOf) = s.conf.prov.name then
+        Buf.str(s.choices, Buf.bytes(s.listed));
+    else
+        Buf.str(s.choices, Awire.known(s.conf.prov.name));
+    end;
+    extraModels(s, s.choices);
+    return Buf.bytes(s.choices);
 end;
 
 (* /models: those the provider's server lists, kept for models; or else
@@ -1005,7 +1028,10 @@ begin
         fail(s, Buf.bytes(s.out));
         return;
     end;
-    if LEN(name) > 0 then p^.params := p^.params[0..0]; end;
+    if LEN(name) > 0 then
+        p^.params := p^.params[0..0];
+        p^.key := Aconf.getFor(s.conf, "api_key", p^.name);
+    end;
     Fmt.write(s.out, "{} {} {}", [Fmt.str(p^.name), Fmt.str(p^.model), Fmt.str(p^.url)]);
     say(s, Buf.bytes(s.out));
 end;

@@ -297,7 +297,8 @@ transcript, `Ascreen` the full screen on rtui, with `Acopy`,
 **6. A session can be seen from elsewhere.** `Aview` makes a session
 something others can watch, and `Aframe` the messages on a pipe or
 socket that stay open. `Aserve` is `--serve` and `Aview` with `Ascreen`
-is `--attach`.
+is `--attach`. `Asettings` lets a host read and write the settings,
+through `Aconf`, which changes its own file in place.
 
 **7. An editor is a peer.** `Apeer` is `arno-peer(5)`: it listens for an
 editor's asks, which `Ascreen` and `Asession` run as turns shown as the

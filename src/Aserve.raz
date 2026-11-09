@@ -58,8 +58,11 @@
    in the same keys as stats, and usagelog the usage log (Astore) that
    Agent writes a line of for every request.
 
-   Depends on Aframe, Aview, Asession, Agent, Aprompt, Atools, Aattach,
-   Astore, Awire, Aprice and rjson's Json.
+   config reads, writes and tries the settings a host edits (Asettings),
+   the host alone: a viewer never sends it.
+
+   Depends on Aframe, Aview, Asession, Asettings, Agent, Aprompt, Atools,
+   Aattach, Astore, Awire, Aprice and rjson's Json.
 
    The session listens, too, on the editors' socket (Apeer), so that an
    editor that asks finds it and is told that this arno belongs to its
@@ -67,7 +70,7 @@
    not in one a program is driving. The editors' tools are offered as in
    any session. *)
 module Aserve;
-import Aframe, Aview, Apeer, Aboard, Asession, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Aprice, Amsg, Json, Thread,
+import Aframe, Aview, Apeer, Aboard, Asession, Asettings, Aprompt, Atools, Aattach, Astore, Afence, Agent, Awire, Aprice, Amsg, Json, Thread,
     Sys, Buf, Str, Fmt, Heap, Rt, Fields := Vec([]const U8), Polls := Vec(Sys.Poll), Marks := Vec(Mark),
     Events := Vec(Event), Msgs := Vec(Amsg.Msg), Calls := Vec(Amsg.Call), Items := Vec(Astore.Item), Images := Vec([]U8);
 import SYSTEM;
@@ -109,7 +112,7 @@ const
     Verbs: []Need = [{verb: "hello", fields: 5}, {verb: "line", fields: 2}, {verb: "cancel", fields: 1}, {verb: "answer", fields: 3}, {verb: "result", fields: 3}, {verb: "bye", fields: 1},
         {verb: "recent", fields: 3}, {verb: "paste", fields: 1}, {verb: "rename", fields: 3}, {verb: "forget", fields: 2}, {verb: "models", fields: 1}, {verb: "system", fields: 2},
         {verb: "setsystem", fields: 3}, {verb: "rewind", fields: 2}, {verb: "unqueue", fields: 2}, {verb: "usage", fields: 1},
-        {verb: "usagelog", fields: 3}];
+        {verb: "usagelog", fields: 3}, {verb: "config", fields: 3}];
 
 var
     session: Asession.Session;
@@ -613,7 +616,8 @@ end;
 
 (* models: one JSON object, the provider, the model, and the models
    /models lists, arno's own list for a server that couldn't be asked,
-   an empty array for a provider with neither. *)
+   an empty array for a provider with neither; then those config's
+   models.NAME adds. *)
 proc models;
 var list, problem: Buf.Buf; rest, one: []const U8; first, more: BOOL; p: ^Awire.Prov;
 begin
@@ -626,6 +630,7 @@ begin
         Buf.reset(list);
         Buf.str(list, Awire.known(p^.name));
     end;
+    Asession.extraModels(session, list);
     Buf.reset(scratch);
     Buf.str(scratch, `{"provider":`);
     quoted(p^.name);
@@ -707,6 +712,33 @@ begin
     Buf.reset(scratch);
     Astore.uses(a, b, scratch);
     send(["usagelog", Buf.bytes(scratch)]);
+end;
+
+(* config OP KEY [VALUE]: one of arno's settings read (get), written
+   (set) or, for a provider, tried (test), as Asettings does; answered
+   config KEY JSON, the value as it now stands, or tested KEY JSON. *)
+proc configure(f: [][]const U8);
+begin
+    Buf.reset(scratch);
+    Buf.reset(words);
+    match f[1] of
+    | "get":
+        if not Asettings.get(f[2], scratch, words) then fault(Buf.bytes(words)); return; end;
+        send(["config", f[2], Buf.bytes(scratch)]);
+    | "set":
+        if LEN(f) < 4 then fault("config set needs a value"); return; end;
+        if not Asettings.change(f[2], f[3], words) or not Asettings.get(f[2], scratch, words) then
+            fault(Buf.bytes(words));
+            return;
+        end;
+        send(["config", f[2], Buf.bytes(scratch)]);
+    | "test":
+        if not Asettings.test(f[2], scratch, words) then fault(Buf.bytes(words)); return; end;
+        send(["tested", f[2], Buf.bytes(scratch)]);
+    | else:
+        Fmt.write(words, "config: get, set or test, not {}", [Fmt.str(f[1])]);
+        fault(Buf.bytes(words));
+    end;
 end;
 
 (* The request's answer from the host: ask's key, with its reason if
@@ -859,6 +891,7 @@ begin
     | "rewind": rewinds(f[1]);
     | "usage": usage();
     | "usagelog": usagelog(f[1], f[2]);
+    | "config": configure(f);
     | else:
     end;
 end;
@@ -901,7 +934,7 @@ begin
         if ok and (pending > 0) and (n = pending) then replied(f, false); end;
     | "bye": finish();
     | "unqueue": Aview.unqueueIf(f[1]);
-    | "recent", "paste", "forget", "models", "rename", "system", "setsystem", "rewind", "usage", "usagelog":
+    | "recent", "paste", "forget", "models", "rename", "system", "setsystem", "rewind", "usage", "usagelog", "config":
         if waits(f) then Aframe.pack(held, f); else request(f); end;
     | else:
     end;

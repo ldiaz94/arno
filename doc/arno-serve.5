@@ -173,7 +173,7 @@ for the host to edit, as a viewer does; else nothing.
 It is not answered: the
 .Cm queue
 that follows says what waits.
-.It "recent, paste, rename, forget, rewind, models, system, setsystem, usage, usagelog"
+.It "recent, paste, rename, forget, rewind, models, system, setsystem, usage, usagelog, config"
 Requests about the conversations, with the fields the section
 .Sx Requests
 gives each.
@@ -468,6 +468,7 @@ These are answered at once, even while a turn runs, in the order asked:
 .Cm recent ,
 .Cm paste ,
 .Cm usagelog ,
+.Cm config ,
 and
 .Cm forget ,
 .Cm rename ,
@@ -659,6 +660,96 @@ or
 that is no number is answered
 .Cm error
 .Ql "usagelog needs times in seconds since 1970, or empty" .
+.It Cm config Ar op key Op Ar json
+One of arno's settings, those a settings dialog edits:
+.Ar op
+is
+.Cm get ,
+to read
+.Ar key ,
+.Cm set ,
+to write it as the
+.Ar json
+that follows, or
+.Cm test ,
+to try the provider
+.Ar key .
+A get or a set is answered
+.Cm config Ar key json ,
+the value as it now stands; a test
+.Cm tested Ar key json ,
+an object with
+.Cm ok ,
+true when the provider listed its models, with
+.Cm models ,
+how many, or false, with
+.Cm error ,
+why not.
+The provider of the configuration is tried at its own
+.Cm url ;
+the key is the configuration's, else its variable's.
+The keys, each with its JSON:
+.Bl -tag -width "instructions"
+.It Cm provider
+A string, one of the providers of
+.Xr arno 1 .
+.It Cm model
+A string, the model.
+.It Cm searxng
+A string, the SearXNG
+.Ic search
+goes through.
+.It Cm keys
+An object of each provider with a key, each an object with
+.Cm from ,
+where its key comes from,
+.Ql config ,
+the name of its variable, or empty for none; and
+.Cm masked ,
+an ellipsis and its last four characters, or the ellipsis alone for a key
+shorter than twelve.
+A set is an object of providers, each its key, or null to remove it from
+the configuration.
+.It Cm models
+An object of each provider, an array of the models it has beyond those its
+server lists; a set is an object of providers, each an array, or null.
+.It Cm mcp
+An array of the MCP servers, each an object with
+.Cm name ,
+.Cm run ,
+the command that runs it or its URL, and
+.Cm token ,
+the command that gives its token, or empty; a set gives them all, and
+the token of a server left out goes with it.
+.It Cm skills
+An object of the skills, each its text, the first line what it is for; a
+set is an object of names, each its text, or null to remove it.
+.It Cm instructions
+A string, your instructions for every project, the context file
+.Pa ~/AGENTS.md .
+.El
+.Pp
+A string set empty, or null, removes the setting.
+An object set is merged with what there is: a member left out is kept,
+so that a key need never be sent back.
+The settings are those of
+.Pa ~/.config/arno/config
+before its first section, written in place, its comments and the rest
+kept; a skill is a file of
+.Pa ~/.config/arno/skills/ .
+What is written counts from the next session: a session keeps the
+settings it started with, and a host that wants them now starts arno
+again.
+A key that is none of these, or a value it does not take, is answered
+.Cm error ,
+such as
+.Ql "config: provider wants one of ollama ollama-cloud openai gemini claude" ,
+and nothing is written; so is a set with no
+.Ar json ,
+.Ql "config set needs a value" .
+A
+.Cm test
+waits for the provider, which nothing else of the session's does meanwhile.
 .El
 .Pp
 A
@@ -746,7 +837,9 @@ stood when the turn began, in an
 .Ql info
 entry, which every screen and the host are told, since the transcript and
 its numbers are one for all.
-Anything else it sends is ignored.
+Anything else it sends is ignored, a request among them: the settings that
+.Cm config
+reads and writes are the host's alone to see and change.
 A viewer is never sent
 .Cm ask ,
 .Cm call ,
@@ -844,6 +937,19 @@ arno -> host   done 9 "[1] Rain\enhttps://example.org/rain\enWater that falls...
 arno -> host   sources 9 [{"id":1,"url":"https://example.org/rain",
                            "title":"Rain","excerpt":"Water that falls...",
                            "retrievedAt":1794236874512}]
+.Ed
+.Pp
+A key kept, a model added, and the provider tried:
+.Bd -literal -offset indent
+host -> arno   config set keys {"claude":"sk-ant-api03-...f00d"}
+arno -> host   config keys {"ollama-cloud":{"from":"OLLAMA_API_KEY",
+                            "masked":"\[u2026]9a1b"},...,
+                            "claude":{"from":"config",
+                            "masked":"\[u2026]f00d"}}
+host -> arno   config set models {"ollama-cloud":["kimi-k3"]}
+arno -> host   config models {"ollama":[],"ollama-cloud":["kimi-k3"],...}
+host -> arno   config test claude
+arno -> host   tested claude {"ok":true,"models":4}
 .Ed
 .Pp
 What the session has used, and its requests since a time:

@@ -63,12 +63,17 @@
    is said in warnings, a line each, and the rest is read as if the
    line weren't there; a bad section's settings with it.
 
+   A provider's key may be kept here, as api_key.NAME, in place of its
+   variable's. save changes the global settings of a key in the file
+   itself, its comments and the rest kept, for a host's settings
+   (Asettings); the file is then the human's alone to read.
+
    Depends on Awire, for Prov, and Afence, which resolves a section's
    directory as it does the root. Leaves out what each key of the rest
    of arno means, and any file of the project's own: a section is the
    human's word, and a repository cloned grants itself nothing. *)
 module Aconf;
-import Awire, Amsg, Afence, Buf, Str, Sys, Files, Heap, Mem, Out, Strs := Vec([]const U8), Ints := Vec(INT),
+import Awire, Amsg, Afence, Buf, Str, Sys, Files, Fmt, Heap, Mem, Out, Strs := Vec([]const U8), Ints := Vec(INT),
     Sections := Vec(Section);
 import SYSTEM;
 
@@ -91,6 +96,9 @@ type
     end;
 
 const
+    NotSaved*: ERROR = "the configuration could not be written";
+
+const
     (* the keys the rest of arno reads, which are no provider's param *)
     Known: []const []const U8 = ["worker", "workers", "max_steps", "prune", "turn_budget", "build_steps", "build_budget", "mode", "searxng", "test_cmd", "safety",
         "keys", "cache_tools", "cache_ttl", "find_cmd", "grep_cmd", "run", "shell", "run_ro", "run_env",
@@ -106,8 +114,10 @@ const
     Prefixed: []const []const U8 = ["check", "lsp"];
 
     (* the prefixes of keys PREFIX.NAME that only the global settings
-       may set, as they run commands as the human: mcp_token.linear *)
-    Owned: []const []const U8 = ["mcp_token"];
+       may set: mcp_token.linear, which runs a command as the human;
+       api_key.claude, a provider's key; and models.claude, the models a
+       provider has beyond those it lists *)
+    Owned: []const []const U8 = ["mcp_token", "api_key", "models"];
 
 (* c made a configuration of nothing: the ollama preset. *)
 proc init*(var c: Conf);
@@ -191,6 +201,18 @@ begin
     end;
     if best < 0 then return ""; end;
     return Strs.all(c.values)[best];
+end;
+
+(* The value of prefix.name, as get gives it: api_key.claude. *)
+proc getFor*(const c: Conf; prefix, name: []const U8): []const U8;
+var key: Buf.Buf;
+begin
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Buf.str(key, prefix);
+    Buf.add(key, '.');
+    Buf.str(key, name);
+    return get(c, Buf.bytes(key));
 end;
 
 (* The sections whose directory holds root, the project's, resolved,
@@ -483,6 +505,7 @@ begin
     end;
     flush(c, p);
     c.prov.params := Strs.all(c.params);
+    c.prov.key := getFor(c, "api_key", c.prov.name);
 end;
 
 (* arno's directory of configuration, $XDG_CONFIG_HOME/arno or
@@ -513,6 +536,118 @@ begin
     dir(path);
     Buf.str(path, "/config");
     if Files.load(Buf.bytes(path), text) = 0 then read(c, Buf.bytes(text)); end;
+end;
+
+(* Writing the file *)
+
+(* Whether line, of the file, goes on with the setting above it: it is
+   indented, and neither empty nor a comment. *)
+proc goesOn(line: []const U8): BOOL;
+var bare: []const U8;
+begin
+    bare := Str.trim(line);
+    return (LEN(bare) > 0) and (bare[0] # '#') and ((line[0] = ' ') or (line[0] = '\t'));
+end;
+
+(* Whether line, of the file, is empty or a comment. *)
+proc idle(line: []const U8): BOOL;
+var bare: []const U8;
+begin
+    bare := Str.trim(line);
+    return (LEN(bare) = 0) or (bare[0] = '#');
+end;
+
+(* text, a configuration file, with the global settings of key made
+   "key = value" for each of values, a line each, into out. Every
+   global line that set key goes, with the indented lines that went on
+   with it, but not the comments among them; the new lines stand where
+   the first went, or else after the last global setting, or else
+   before the first section and the comments over it. A section's
+   settings are left as they are. No value may hold a newline. *)
+proc change*(text, key: []const U8; values: [][]const U8; var out: Buf.Buf);
+var lines: Strs.Vec; l: [][]const U8; rest, line, k: []const U8; more, global, gone, eq: BOOL; at, last, head, i, j: INT;
+begin
+    Strs.init(lines, Heap.heap);
+    defer Strs.done(lines);
+    global := true;
+    gone := false;   (* the lines that go on with a setting that went go too *)
+    at := -1;
+    last := -1;
+    head := -1;
+    rest := text;
+    more := LEN(rest) > 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if not more and (LEN(line) = 0) then break; end;   (* after the last newline *)
+        if global and not goesOn(line) and Str.hasPrefix(Str.trim(line), "[") then
+            global := false;
+            head := lines.len;
+        end;
+        if global and goesOn(line) then
+            if gone then continue; end;
+            last := lines.len + 1;
+        elsif global and not idle(line) then
+            k, _, eq := Str.cut(line, "=");
+            gone := eq and (Str.trim(k) = key);
+            if gone then
+                if at < 0 then at := lines.len; end;
+                continue;
+            end;
+            last := lines.len + 1;
+        elsif global and (LEN(Str.trim(line)) = 0) then
+            gone := false;
+        end;
+        Strs.push(lines, line);
+    end;
+    l := Strs.all(lines);
+    if at < 0 then at := last; end;
+    if (at < 0) and (head >= 0) then
+        at := head;
+        while (at > 0) and idle(l[at - 1]) and (LEN(Str.trim(l[at - 1])) > 0) do DEC(at); end;   (* the section's comments *)
+        while (at > 0) and (LEN(Str.trim(l[at - 1])) = 0) do DEC(at); end;
+    end;
+    if at < 0 then at := LEN(l); end;
+    for i := 0 to LEN(l) do
+        if i = at then
+            for j := 0 to LEN(values) - 1 do Fmt.write(out, "{} = {}\n", [Fmt.str(key), Fmt.str(values[j])]); end;
+        end;
+        if i < LEN(l) then
+            Buf.str(out, l[i]);
+            Buf.add(out, '\n');
+        end;
+    end;
+end;
+
+(* The global settings of key in arno's file made values, a line each,
+   none to remove it (change). The file is written whole to a temporary
+   beside it and renamed over it, readable by the human alone, as it may
+   hold keys; made, with its directory, if there is none. *)
+proc save*(key: []const U8; values: [][]const U8): ERROR;
+var path, tmp, text, out: Buf.Buf; fd, n: INT;
+begin
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(tmp, Heap.heap);
+    defer Buf.done(tmp);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    Buf.init(out, Heap.heap);
+    defer Buf.done(out);
+    dir(path);
+    _ := Sys.makeDir(Buf.bytes(path));
+    Buf.str(path, "/config");
+    _ := Files.load(Buf.bytes(path), text);
+    change(Buf.bytes(text), key, values, out);
+    Buf.str(tmp, Buf.bytes(path));
+    Buf.str(tmp, ".new");
+    fd := Sys.openMode(Buf.bytes(tmp), {Sys.writing, Sys.creating, Sys.truncating}, 180H);   (* 600 *)
+    if fd < 0 then return NotSaved; end;
+    n := Sys.write(fd, Buf.bytes(out));
+    if (Sys.closeChecked(fd) < 0) or (n # out.len) or (Sys.rename(Buf.bytes(tmp), Buf.bytes(path)) # 0) then
+        _ := Sys.remove(Buf.bytes(tmp));
+        return NotSaved;
+    end;
+    return nil;
 end;
 
 (* The test: a file of every kind of line, and one of sections. *)
@@ -645,6 +780,39 @@ begin
     done(c);
 end;
 
+(* A file changed, its comments, sections and other settings kept; and
+   a key kept in the file, read as the provider's. *)
+proc changing;
+var b: Buf.Buf; c: Conf;
+const File = "# mine\nprovider = claude\nrun = a\n    b\n    # still run\n    c\nmax_steps = 9\n\n# the projects\n[~/r]\nrun = x\n";
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    change(File, "run", ["fd"], b);
+    expect("a setting made again where it was, its lines with it", Buf.bytes(b),
+        "# mine\nprovider = claude\nrun = fd\n    # still run\nmax_steps = 9\n\n# the projects\n[~/r]\nrun = x\n");
+    Buf.reset(b);
+    change(File, "run", [], b);
+    expect("a setting removed", Buf.bytes(b),
+        "# mine\nprovider = claude\n    # still run\nmax_steps = 9\n\n# the projects\n[~/r]\nrun = x\n");
+    Buf.reset(b);
+    change(File, "mcp", ["a cmd", "b https://b"], b);
+    expect("a new setting, after the last", Buf.bytes(b),
+        "# mine\nprovider = claude\nrun = a\n    b\n    # still run\n    c\nmax_steps = 9\nmcp = a cmd\nmcp = b https://b\n\n# the projects\n[~/r]\nrun = x\n");
+    Buf.reset(b);
+    change("# mine\n\n# the projects\n[~/r]\nrun = x", "model", ["m"], b);
+    expect("a new setting, before the first section and its comments", Buf.bytes(b),
+        "# mine\nmodel = m\n\n# the projects\n[~/r]\nrun = x\n");
+    Buf.reset(b);
+    change("", "model", ["m"], b);
+    expect("a new setting in no file", Buf.bytes(b), "model = m\n");
+    init(c);
+    read(c, "api_key.claude = sk-1\nprovider = claude\napi_key.openai = sk-2\n");
+    expect("a key kept in the file", c.prov.key, "sk-1");
+    expect("another provider's", getFor(c, "api_key", "openai"), "sk-2");
+    done(c);
+end;
+
 proc main*: INT;
 var c: Conf; b: Buf.Buf; v: []const U8; ok: BOOL;
 begin
@@ -692,6 +860,7 @@ begin
     sections();
     checks();
     folding();
+    changing();
     if failed then return 1; end;
     return 0;
 end;

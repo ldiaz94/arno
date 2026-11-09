@@ -1,0 +1,621 @@
+(* Asettings: the settings a host edits, as arno-chat's settings dialog
+   does, each a key whose value is JSON: config get KEY, config set KEY
+   JSON and config test PROVIDER (Aserve).
+
+       provider      the provider, one of Awire.Presets  "claude"
+       model         its model                           "claude-sonnet-5-5"
+       searxng       the SearXNG search goes through     "http://localhost:8888"
+       keys          each provider's API key, masked     {"claude":{"from":"config","masked":"...f00d"}}
+       models        each provider's models beyond the   {"ollama-cloud":["kimi-k3"]}
+                     ones its server lists
+       mcp           the MCP servers                     [{"name":"linear","run":"https://...","token":""}]
+       skills        the human's skills, by name         {"review":"For a review.\n..."}
+       instructions  the human's instructions for        "Answer briefly."
+                     every project
+
+   The first six are the global settings of arno's own file (Aconf.save):
+   provider, model, searxng, api_key.NAME, models.NAME, mcp and
+   mcp_token.NAME. A skill is a file of the human's shelf,
+   ~/.config/arno/skills/NAME.md (Atools); the instructions are the home's
+   context file, ~/AGENTS.md (Aprompt), which every project reads.
+
+   A string set empty, or null, removes the setting. An object set is
+   merged: a member null removes that one, one left out is kept, so a
+   key, which get masks, is never sent back. An array set is the whole
+   of it. What is read is what the file says, as a session reads it when
+   it starts: a session that runs keeps what it started with.
+
+   A key's from is where it comes from: "config", the file; the name of
+   its variable, the environment, which the file's overrides; or "",
+   none. It is masked to its last four characters, all of it hidden
+   below twelve.
+
+   test asks the provider for its models, with the key and, for the
+   provider of the file, the url it gives: whether the key works.
+
+   Depends on Aconf, Awire, rjson's Json, Files and Sys. Leaves out the
+   profile, "about you", which arno doesn't keep: the instructions are
+   the place for it; a model's label; and an MCP server turned off but
+   kept. *)
+module Asettings;
+import Aconf, Awire, Json, Buf, Str, Sys, Files, Fmt, Heap, Out, Strs := Vec([]const U8);
+import SYSTEM;
+
+const
+    Keys = "provider model searxng keys models mcp skills instructions";   (* the keys, blank-separated *)
+    Shown = 4;     (* the characters of a key that get shows *)
+    Hidden = 12;   (* the length below which it shows none *)
+
+(* s, quoted as a JSON string, added to b. *)
+proc quoted(var b: Buf.Buf; s: []const U8);
+begin
+    Json.quote(SYSTEM.ADR(b), s);
+end;
+
+(* Whether name is a name a file or a setting may take: letters,
+   digits, - and _. *)
+proc plain(name: []const U8): BOOL;
+var i: INT;
+begin
+    if LEN(name) = 0 then return false; end;
+    for i := 0 to LEN(name) - 1 do
+        if not Str.isLetter(name[i]) and not Str.isDigit(name[i]) and (name[i] # '-') and (name[i] # '_') then
+            return false;
+        end;
+    end;
+    return true;
+end;
+
+(* Whether name is one of the words of list, blank-separated. *)
+proc among(list, name: []const U8): BOOL;
+var word, rest: []const U8;
+begin
+    word, rest := Str.field(list);
+    while LEN(word) > 0 do
+        if word = name then return true; end;
+        word, rest := Str.field(rest);
+    end;
+    return false;
+end;
+
+(* The human's skills' directory, into b. *)
+proc shelf(var b: Buf.Buf): []const U8;
+begin
+    Aconf.dir(b);
+    Buf.str(b, "/skills");
+    return Buf.bytes(b);
+end;
+
+(* The home's context file, into b. *)
+proc instructions(var b: Buf.Buf): []const U8;
+begin
+    Buf.str(b, Sys.env("HOME"));
+    Buf.str(b, "/AGENTS.md");
+    return Buf.bytes(b);
+end;
+
+(* Reading *)
+
+(* keys: an object of each preset with a key, where its key comes
+   from, and the key masked. *)
+proc keys(const c: Aconf.Conf; var out: Buf.Buf);
+var p: Awire.Prov; name, rest, key, from: []const U8; first: BOOL;
+begin
+    Buf.add(out, '{');
+    first := true;
+    name, rest := Str.field(Awire.Presets);
+    while LEN(name) > 0 do
+        p := {};
+        _ := Awire.preset(name, p);
+        if LEN(p.keyEnv) > 0 then
+            key := Aconf.getFor(c, "api_key", name);
+            from := "config";
+            if LEN(key) = 0 then key := Sys.env(p.keyEnv); from := p.keyEnv; end;
+            if LEN(key) = 0 then from := ""; end;
+            if not first then Buf.add(out, ','); end;
+            first := false;
+            quoted(out, name);
+            Buf.str(out, `:{"from":`);
+            quoted(out, from);
+            Buf.str(out, `,"masked":"`);
+            if LEN(key) > 0 then Buf.str(out, "\u{2026}"); end;
+            if LEN(key) >= Hidden then Buf.str(out, key[LEN(key) - Shown..LEN(key)]); end;
+            Buf.str(out, `"}`);
+        end;
+        name, rest := Str.field(rest);
+    end;
+    Buf.add(out, '}');
+end;
+
+(* models: an object of each preset, the models config adds for it. *)
+proc models(const c: Aconf.Conf; var out: Buf.Buf);
+var name, rest, word, words: []const U8; first: BOOL;
+begin
+    Buf.add(out, '{');
+    name, rest := Str.field(Awire.Presets);
+    while LEN(name) > 0 do
+        if out.len > 1 then Buf.add(out, ','); end;
+        quoted(out, name);
+        Buf.str(out, ":[");
+        first := true;
+        word, words := Str.field(Aconf.getFor(c, "models", name));
+        while LEN(word) > 0 do
+            if not first then Buf.add(out, ','); end;
+            first := false;
+            quoted(out, word);
+            word, words := Str.field(words);
+        end;
+        Buf.add(out, ']');
+        name, rest := Str.field(rest);
+    end;
+    Buf.add(out, '}');
+end;
+
+(* mcp: an array of the servers, each its name, what runs it, a command
+   or a URL, and the command that gives its token, "" for none. *)
+proc mcp(const c: Aconf.Conf; var out: Buf.Buf);
+var value, name, run: []const U8; n: INT; ok: BOOL;
+begin
+    Buf.add(out, '[');
+    n := 0;
+    value, ok := Aconf.nth(c, "mcp", 0);
+    while ok do
+        name, run := Str.field(value);
+        if n > 0 then Buf.add(out, ','); end;
+        Buf.str(out, `{"name":`);
+        quoted(out, name);
+        Buf.str(out, `,"run":`);
+        quoted(out, Str.trim(run));
+        Buf.str(out, `,"token":`);
+        quoted(out, Aconf.getFor(c, "mcp_token", name));
+        Buf.add(out, '}');
+        INC(n);
+        value, ok := Aconf.nth(c, "mcp", n);
+    end;
+    Buf.add(out, ']');
+end;
+
+(* skills: an object of the skills on the human's shelf, each its
+   text, its first line what it is for. *)
+proc skills(var out: Buf.Buf);
+var d: Sys.Dir; name: []const U8; more, first: BOOL; dir, path, text: Buf.Buf;
+begin
+    Buf.add(out, '{');
+    Buf.init(dir, Heap.heap);
+    defer Buf.done(dir);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    first := true;
+    if Sys.openDir(d, shelf(dir)) >= 0 then
+        name, more := Sys.nextEntry(d);
+        while more do
+            Buf.reset(path);
+            Fmt.write(path, "{}/{}", [Fmt.str(Buf.bytes(dir)), Fmt.str(name)]);
+            Buf.reset(text);
+            if Str.hasSuffix(name, ".md") and plain(name[0..LEN(name) - 3]) and (Files.load(Buf.bytes(path), text) = 0) then
+                if not first then Buf.add(out, ','); end;
+                first := false;
+                quoted(out, name[0..LEN(name) - 3]);
+                Buf.add(out, ':');
+                quoted(out, Buf.bytes(text));
+            end;
+            name, more := Sys.nextEntry(d);
+        end;
+        Sys.closeDir(d);
+    end;
+    Buf.add(out, '}');
+end;
+
+(* The value of key, as JSON, into out; false, with why, for no such key. *)
+proc get*(key: []const U8; var out, why: Buf.Buf): BOOL;
+var c: Aconf.Conf; path, text: Buf.Buf;
+begin
+    Aconf.load(c);
+    defer Aconf.done(c);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    Buf.init(text, Heap.heap);
+    defer Buf.done(text);
+    match key of
+    | "provider": quoted(out, c.prov.name);
+    | "model": quoted(out, c.prov.model);
+    | "searxng": quoted(out, Aconf.get(c, "searxng"));
+    | "keys": keys(c, out);
+    | "models": models(c, out);
+    | "mcp": mcp(c, out);
+    | "skills": skills(out);
+    | "instructions":
+        _ := Files.load(instructions(path), text);
+        quoted(out, Buf.bytes(text));
+    | else:
+        Fmt.write(why, "config: no key {}; the keys are {}", [Fmt.str(key), Fmt.str(Keys)]);
+        return false;
+    end;
+    return true;
+end;
+
+(* Writing *)
+
+(* v's text, a string's, or "" for null; false for anything else, or
+   a string that holds a newline when line says it must be one line. *)
+proc text(d: ^Json.Doc; v: Json.Value; line: BOOL): ([]const U8, BOOL);
+var s: []const U8;
+begin
+    match Json.kind(d, v) of
+    | Json.Kind.null: return "", true;
+    | Json.Kind.string:
+        s := Json.text(d, v);
+        return s, not line or (Str.find(s, "\n") < 0);
+    | else: return "", false;
+    end;
+end;
+
+(* why made "config: key wants what", and false. *)
+proc wants(var why: Buf.Buf; key, what: []const U8): BOOL;
+begin
+    Fmt.write(why, "config: {} wants {}", [Fmt.str(key), Fmt.str(what)]);
+    return false;
+end;
+
+(* The global settings of key made values, none to remove it; false,
+   with why, if the file can't be written. *)
+proc put(key: []const U8; values: [][]const U8; var why: Buf.Buf): BOOL;
+begin
+    if Aconf.save(key, values) = nil then return true; end;
+    Fmt.write(why, "config: {}", [Fmt.str(MSG(Aconf.NotSaved))]);
+    return false;
+end;
+
+(* prefix.name made value, "" to remove it. *)
+proc putFor(prefix, name, value: []const U8; var why: Buf.Buf): BOOL;
+var key: Buf.Buf;
+begin
+    Buf.init(key, Heap.heap);
+    defer Buf.done(key);
+    Fmt.write(key, "{}.{}", [Fmt.str(prefix), Fmt.str(name)]);
+    if LEN(value) = 0 then return put(Buf.bytes(key), [], why); end;
+    return put(Buf.bytes(key), [value], why);
+end;
+
+(* provider, model or searxng made v, a string of one line. *)
+proc setting(key: []const U8; d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var s: []const U8; ok: BOOL;
+begin
+    s, ok := text(d, v, true);
+    if not ok then return wants(why, key, "a string of one line, or null"); end;
+    if (key = "provider") and (LEN(s) > 0) and not among(Awire.Presets, s) then
+        return wants(why, key, "one of " + Awire.Presets);
+    end;
+    if LEN(s) = 0 then return put(key, [], why); end;
+    return put(key, [s], why);
+end;
+
+(* keys merged with v, an object of presets with a key, each its key
+   or null. *)
+proc setKeys(d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var p: Awire.Prov; i: INT; name, s: []const U8; ok: BOOL;
+begin
+    if Json.kind(d, v) # Json.Kind.object then return wants(why, "keys", "an object"); end;
+    for i := 0 to Json.len(d, v) - 1 do
+        name := Json.key(d, v, i);
+        p := {};
+        s, ok := text(d, Json.item(d, v, i), true);
+        if not Awire.preset(name, p) or (LEN(p.keyEnv) = 0) or not ok then
+            return wants(why, "keys", "an object of providers with keys, each a key of one line or null");
+        end;
+    end;
+    for i := 0 to Json.len(d, v) - 1 do
+        s, _ := text(d, Json.item(d, v, i), true);
+        if not putFor("api_key", Json.key(d, v, i), s, why) then return false; end;
+    end;
+    return true;
+end;
+
+(* models merged with v, an object of presets, each an array of model
+   names, or null. *)
+proc setModels(d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var i, j: INT; w, x: Json.Value; s: []const U8; words: Buf.Buf;
+begin
+    if Json.kind(d, v) # Json.Kind.object then return wants(why, "models", "an object"); end;
+    for i := 0 to Json.len(d, v) - 1 do
+        w := Json.item(d, v, i);
+        if not among(Awire.Presets, Json.key(d, v, i)) or
+            not (Json.kind(d, w) in {Json.Kind.array, Json.Kind.null}) then
+            return wants(why, "models", "an object of providers, each an array of names or null");
+        end;
+        for j := 0 to Json.len(d, w) - 1 do
+            x := Json.item(d, w, j);
+            s := Json.text(d, x);
+            if (Json.kind(d, x) # Json.Kind.string) or (LEN(s) = 0) or (Str.find(s, " ") >= 0) or
+                (Str.find(s, "\t") >= 0) or (Str.find(s, "\n") >= 0) then
+                return wants(why, "models", "names without blanks");
+            end;
+        end;
+    end;
+    Buf.init(words, Heap.heap);
+    defer Buf.done(words);
+    for i := 0 to Json.len(d, v) - 1 do
+        w := Json.item(d, v, i);
+        Buf.reset(words);
+        for j := 0 to Json.len(d, w) - 1 do
+            if j > 0 then Buf.add(words, ' '); end;
+            Buf.str(words, Json.text(d, Json.item(d, w, j)));
+        end;
+        if not putFor("models", Json.key(d, v, i), Buf.bytes(words), why) then return false; end;
+    end;
+    return true;
+end;
+
+(* mcp made v, an array of servers, each an object with a name, what
+   runs it and, if any, the command of its token; the token of a server
+   no longer there goes with it. *)
+proc setMcp(const c: Aconf.Conf; d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var i: INT; x: Json.Value; name, run, token, old: []const U8; ok, ok2, ok3: BOOL; all: Buf.Buf; lines: Strs.Vec;
+    ends: [64]INT;
+begin
+    if (Json.kind(d, v) # Json.Kind.array) or (Json.len(d, v) > LEN(ends)) then
+        return wants(why, "mcp", "an array of at most 64 servers");
+    end;
+    for i := 0 to Json.len(d, v) - 1 do
+        x := Json.item(d, v, i);
+        name, ok := text(d, Json.member(d, x, "name"), true);
+        run, ok2 := text(d, Json.member(d, x, "run"), true);
+        token, ok3 := text(d, Json.member(d, x, "token"), true);
+        if (Json.kind(d, Json.member(d, x, "token")) = Json.Kind.none) then ok3 := true; end;
+        if not ok or not ok2 or not ok3 or not plain(name) or (LEN(Str.trim(run)) = 0) then
+            return wants(why, "mcp", `servers of {"name","run","token"}, a name of letters, digits, - and _`);
+        end;
+    end;
+    (* the tokens of the servers that go *)
+    i := 0;
+    old, ok := Aconf.nth(c, "mcp", 0);
+    while ok do
+        name, _ := Str.field(old);
+        if (LEN(Aconf.getFor(c, "mcp_token", name)) > 0) and not putFor("mcp_token", name, "", why) then return false; end;
+        INC(i);
+        old, ok := Aconf.nth(c, "mcp", i);
+    end;
+    Buf.init(all, Heap.heap);
+    defer Buf.done(all);
+    Strs.init(lines, Heap.heap);
+    defer Strs.done(lines);
+    for i := 0 to Json.len(d, v) - 1 do
+        x := Json.item(d, v, i);
+        Fmt.write(all, "{} {}", [Fmt.str(Json.text(d, Json.member(d, x, "name"))),
+            Fmt.str(Str.trim(Json.text(d, Json.member(d, x, "run"))))]);
+        ends[i] := all.len;
+        token := Json.text(d, Json.member(d, x, "token"));
+        if (LEN(token) > 0) and not putFor("mcp_token", Json.text(d, Json.member(d, x, "name")), token, why) then
+            return false;
+        end;
+    end;
+    for i := 0 to Json.len(d, v) - 1 do
+        if i = 0 then Strs.push(lines, Buf.bytes(all)[0..ends[0]]); else Strs.push(lines, Buf.bytes(all)[ends[i - 1]..ends[i]]); end;
+    end;
+    return put("mcp", Strs.all(lines), why);
+end;
+
+(* skills merged with v, an object of names, each its text, or null to
+   remove it. *)
+proc setSkills(d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var i: INT; s: []const U8; ok: BOOL; dir, path: Buf.Buf;
+begin
+    if Json.kind(d, v) # Json.Kind.object then return wants(why, "skills", "an object"); end;
+    for i := 0 to Json.len(d, v) - 1 do
+        _, ok := text(d, Json.item(d, v, i), false);
+        if not ok or not plain(Json.key(d, v, i)) then
+            return wants(why, "skills", "an object of names of letters, digits, - and _, each a text or null");
+        end;
+    end;
+    Buf.init(dir, Heap.heap);
+    defer Buf.done(dir);
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    _ := Sys.makeDir(shelf(dir));
+    for i := 0 to Json.len(d, v) - 1 do
+        s, _ := text(d, Json.item(d, v, i), false);
+        Buf.reset(path);
+        Fmt.write(path, "{}/{}.md", [Fmt.str(Buf.bytes(dir)), Fmt.str(Json.key(d, v, i))]);
+        if LEN(s) = 0 then
+            _ := Sys.remove(Buf.bytes(path));
+        elsif not Files.write(Buf.bytes(path), s) then
+            Fmt.write(why, "config: cannot write {}", [Fmt.str(Buf.bytes(path))]);
+            return false;
+        end;
+    end;
+    return true;
+end;
+
+(* instructions made v, a text, or "" or null to remove the file. *)
+proc setInstructions(d: ^Json.Doc; v: Json.Value; var why: Buf.Buf): BOOL;
+var s: []const U8; ok: BOOL; path: Buf.Buf;
+begin
+    s, ok := text(d, v, false);
+    if not ok then return wants(why, "instructions", "a string or null"); end;
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    if LEN(s) = 0 then
+        _ := Sys.remove(instructions(path));
+    elsif not Files.write(instructions(path), s) then
+        Fmt.write(why, "config: cannot write {}", [Fmt.str(Buf.bytes(path))]);
+        return false;
+    end;
+    return true;
+end;
+
+(* key made value, JSON; false, with why, if it is no key or the value
+   is none it takes, and nothing is changed; or if a file can't be
+   written. *)
+proc change*(key, value: []const U8; var why: Buf.Buf): BOOL;
+var c: Aconf.Conf; d: Json.Doc; v: Json.Value; t: Buf.Buf;
+begin
+    if not among(Keys, key) then
+        Fmt.write(why, "config: no key {}; the keys are {}", [Fmt.str(key), Fmt.str(Keys)]);
+        return false;
+    end;
+    Buf.init(t, Heap.heap);
+    defer Buf.done(t);
+    Buf.str(t, value);
+    if not Json.init(SYSTEM.ADR(d), Heap.heap) then Buf.str(why, "config: out of memory"); return false; end;
+    defer Json.done(SYSTEM.ADR(d));
+    v := Json.parse(SYSTEM.ADR(d), Buf.bytes(t));
+    if Json.kind(SYSTEM.ADR(d), v) = Json.Kind.none then return wants(why, key, "a JSON value"); end;
+    Aconf.load(c);
+    defer Aconf.done(c);
+    match key of
+    | "keys": return setKeys(SYSTEM.ADR(d), v, why);
+    | "models": return setModels(SYSTEM.ADR(d), v, why);
+    | "mcp": return setMcp(c, SYSTEM.ADR(d), v, why);
+    | "skills": return setSkills(SYSTEM.ADR(d), v, why);
+    | "instructions": return setInstructions(SYSTEM.ADR(d), v, why);
+    | else: return setting(key, SYSTEM.ADR(d), v, why);
+    end;
+end;
+
+(* Testing *)
+
+(* The provider name asked for its models, as JSON into out: {"ok":
+   true, "models": how many} or {"ok": false, "error": why}. false, with
+   why, if name is no provider. *)
+proc test*(name: []const U8; var out, why: Buf.Buf): BOOL;
+var c: Aconf.Conf; p: Awire.Prov; list, said: Buf.Buf; rest, line: []const U8; n: INT; more: BOOL;
+begin
+    if not among(Awire.Presets, name) then
+        Fmt.write(why, "config: no provider {}; the providers are {}", [Fmt.str(name), Fmt.str(Awire.Presets)]);
+        return false;
+    end;
+    Aconf.load(c);
+    defer Aconf.done(c);
+    p := c.prov;
+    if p.name # name then
+        p := {};
+        _ := Awire.preset(name, p);
+        p.key := Aconf.getFor(c, "api_key", name);
+    end;
+    Buf.init(list, Heap.heap);
+    defer Buf.done(list);
+    Buf.init(said, Heap.heap);
+    defer Buf.done(said);
+    if Awire.models(p, list, said) # nil then
+        Buf.str(out, `{"ok":false,"error":`);
+        quoted(out, Buf.bytes(said));
+        Buf.add(out, '}');
+        return true;
+    end;
+    n := 0;
+    rest := Buf.bytes(list);
+    more := LEN(rest) > 0;
+    while more do
+        line, rest, more := Str.cut(rest, "\n");
+        if LEN(Str.trim(line)) > 0 then INC(n); end;
+    end;
+    Fmt.write(out, `{{"ok":true,"models":{}}}`, [Fmt.int(n)]);
+    return true;
+end;
+
+(* The test, in build/settings, its own configuration and home: each
+   key set and read back, the file's comment kept, and a value a key
+   doesn't take refused. *)
+
+var failed: BOOL;
+
+proc expect(what, got, want: []const U8);
+begin
+    if got = want then return; end;
+    Out.str("Asettings: ");
+    Out.str(what);
+    Out.str("\n  got:  ");
+    Out.str(got);
+    Out.str("\n  want: ");
+    Out.str(want);
+    Out.ln;
+    failed := true;
+end;
+
+(* key set to value, then read back, which must be want. *)
+proc round(key, value, want: []const U8);
+var b, why: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    Buf.init(why, Heap.heap);
+    defer Buf.done(why);
+    if not change(key, value, why) then expect(key, Buf.bytes(why), "set"); return; end;
+    if not get(key, b, why) then expect(key, Buf.bytes(why), want); end;
+    expect(key, Buf.bytes(b), want);
+end;
+
+(* key refused value, saying why. *)
+proc refused(key, value, why: []const U8);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    if change(key, value, b) then expect(key, "set", "refused"); return; end;
+    expect(key, Buf.bytes(b), why);
+end;
+
+proc main*: INT;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/settings");
+    _ := Sys.makeDir("build/settings/home");
+    _ := Sys.makeDir("build/settings/config");
+    _ := Sys.makeDir("build/settings/config/arno");
+    _ := Sys.remove("build/settings/home/AGENTS.md");
+    _ := Sys.remove("build/settings/config/arno/skills/review.md");
+    _ := Sys.setEnv("HOME", "build/settings/home");
+    _ := Sys.setEnv("XDG_CONFIG_HOME", "build/settings/config");
+    _ := Files.write("build/settings/config/arno/config", "# mine\nrun = fd\n");
+    _ := Sys.setEnv("OPENAI_API_KEY", "short");
+    _ := Sys.setEnv("ANTHROPIC_API_KEY", "");
+    _ := Sys.setEnv("GEMINI_API_KEY", "");
+    _ := Sys.setEnv("OLLAMA_API_KEY", "");
+
+    round("provider", `"claude"`, `"claude"`);
+    round("model", `"claude-opus-5-5"`, `"claude-opus-5-5"`);
+    round("searxng", `"http://localhost:8888"`, `"http://localhost:8888"`);
+    round("searxng", "null", `""`);
+    round("keys", `{"claude":"sk-abcdefgh1234"}`,
+        `{"ollama-cloud":{"from":"","masked":""},"openai":{"from":"OPENAI_API_KEY","masked":"` + "\u{2026}" + `"},` +
+        `"gemini":{"from":"","masked":""},"claude":{"from":"config","masked":"` + "\u{2026}" + `1234"}}`);
+    round("models", `{"ollama-cloud":["kimi-k3","glm-5"]}`,
+        `{"ollama":[],"ollama-cloud":["kimi-k3","glm-5"],"openai":[],"gemini":[],"claude":[]}`);
+    round("mcp", `[{"name":"web","run":"https://x/mcp","token":"pass web"},{"name":"files","run":"files-server /tmp"}]`,
+        `[{"name":"web","run":"https://x/mcp","token":"pass web"},{"name":"files","run":"files-server /tmp","token":""}]`);
+    _ := Files.load("build/settings/config/arno/config", b);
+    expect("the file, its comment kept", Buf.bytes(b),
+        "# mine\nrun = fd\nprovider = claude\nmodel = claude-opus-5-5\napi_key.claude = sk-abcdefgh1234\n" +
+        "models.ollama-cloud = kimi-k3 glm-5\nmcp_token.web = pass web\nmcp = web https://x/mcp\nmcp = files files-server /tmp\n");
+    round("mcp", "[]", "[]");
+    round("keys", `{"claude":null}`,
+        `{"ollama-cloud":{"from":"","masked":""},"openai":{"from":"OPENAI_API_KEY","masked":"` + "\u{2026}" + `"},` +
+        `"gemini":{"from":"","masked":""},"claude":{"from":"","masked":""}}`);
+    Buf.reset(b);
+    _ := Files.load("build/settings/config/arno/config", b);
+    expect("the file, a key and a server's token gone", Buf.bytes(b),
+        "# mine\nrun = fd\nprovider = claude\nmodel = claude-opus-5-5\nmodels.ollama-cloud = kimi-k3 glm-5\n");
+    round("skills", `{"review":"For a review.\nLook hard."}`, `{"review":"For a review.\nLook hard."}`);
+    round("skills", `{"review":null}`, "{}");
+    round("instructions", `"Be brief.\n"`, `"Be brief.\n"`);
+    round("instructions", "null", `""`);
+
+    refused("colour", `"red"`, "config: no key colour; the keys are " + Keys);
+    refused("provider", `"nowhere"`, "config: provider wants one of " + Awire.Presets);
+    refused("model", "3", "config: model wants a string of one line, or null");
+    refused("keys", `{"ollama":"k"}`, "config: keys wants an object of providers with keys, each a key of one line or null");
+    refused("models", `{"claude":["a b"]}`, "config: models wants names without blanks");
+    refused("mcp", `[{"name":"a b","run":"x"}]`,
+        `config: mcp wants servers of {"name","run","token"}, a name of letters, digits, - and _`);
+    refused("skills", `{"../x":"y"}`, "config: skills wants an object of names of letters, digits, - and _, each a text or null");
+    refused("searxng", "{", "config: searxng wants a JSON value");
+    if failed then return 1; end;
+    return 0;
+end;
+
+end Asettings.

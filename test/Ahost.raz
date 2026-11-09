@@ -806,6 +806,7 @@ begin
     send(["models"]);
     _ := await("models|");
     mustHave("models", "\"provider\":");
+    mustHave("and those config adds", "\"extra-one\"]");
     send(["line"]);
     _ := await("error");
     is("too few fields", "error|line needs 1 fields");
@@ -925,6 +926,34 @@ begin
     send(["usagelog", "yesterday", ""]);
     _ := await("error|");
     is("a span that is no time", "error|usagelog needs times in seconds since 1970, or empty");
+end;
+
+(* config writes a setting and answers it as it stands, reads the keys
+   masked, and tries a provider, the stub, which lists two models. *)
+proc configured;
+begin
+    clear();
+    send(["config", "set", "models", `{"claude":["opus-x"]}`]);
+    _ := await("config|");
+    mustHave("a setting written, as it stands", `config|models|{"ollama":["extra-one"],"ollama-cloud":[],`);
+    mustHave("and merged", `"claude":["opus-x"]}`);
+    send(["config", "set", "models", `{"claude":null}`]);
+    _ := await("config|");
+    send(["config", "get", "keys"]);
+    _ := await("config|");
+    mustHave("the keys, by where they come from", `config|keys|{"ollama-cloud":{"from":`);
+    send(["config", "test", "ollama"]);
+    _ := await("tested|");
+    is("a provider tried", `tested|ollama|{"ok":true,"models":2}`);
+    send(["config", "get", "colour"]);
+    _ := await("error|");
+    is("no such key", "error|config: no key colour; the keys are provider model searxng keys models mcp skills instructions");
+    send(["config", "set", "model"]);
+    _ := await("error|");
+    is("a set with no value", "error|config set needs a value");
+    send(["config", "drop", "model"]);
+    _ := await("error|");
+    is("no such operation", "error|config: get, set or test, not drop");
 end;
 
 (* A search tells the pages it found as sources, after its done, with
@@ -1102,6 +1131,7 @@ begin
     saved();
     thinking();
     used();
+    configured();
     searched();
     unqueued();
     rewinding();

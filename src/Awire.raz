@@ -61,6 +61,7 @@ type
         url*: []const U8;          (* the API's base, as https://api.openai.com/v1 *)
         model*: []const U8;
         keyEnv*: []const U8;       (* the environment variable of its key; "" for none *)
+        key*: []const U8;          (* the key itself, config's api_key.NAME, used in place of keyEnv's; "" for none *)
         dialect*: Dialect;
         params*: [][]const U8;     (* config's other keys, each "key=value", given as written *)
         retries*: INT;       (* times a request whose connection failed is made again *)
@@ -151,6 +152,7 @@ begin
         p.keyEnv := "ANTHROPIC_API_KEY";
     | else: return false;
     end;
+    p.key := "";   (* another provider's key is not this one's *)
     p.name := name;
     p.dialect := openai;
     if name = "claude" then p.dialect := anthropic; end;
@@ -828,8 +830,8 @@ proc models*(const p: Prov; var out: Buf.Buf; var why: Buf.Buf): ERROR;
 var cl: Http.Client; req, res: Http.Message; url, auth, text: Buf.Buf; d: Json.Doc; data: Json.Value; key, version, id: []const U8;
     i: INT; err: ERROR;
 begin
-    key := "";
-    if LEN(p.keyEnv) > 0 then
+    key := p.key;
+    if (LEN(key) = 0) and (LEN(p.keyEnv) > 0) then
         key := Sys.env(p.keyEnv);
         if LEN(key) = 0 then
             Fmt.write(why, "{} is not set", [Fmt.str(p.keyEnv)]);
@@ -889,8 +891,8 @@ var key: []const U8; body: Buf.Buf; a: Acc; tries, status, wait: INT; err: ERROR
 begin
     Amsg.init(m, Amsg.assistant);
     u := {};
-    key := "";
-    if LEN(r.prov^.keyEnv) > 0 then
+    key := r.prov^.key;
+    if (LEN(key) = 0) and (LEN(r.prov^.keyEnv) > 0) then
         key := Sys.env(r.prov^.keyEnv);
         if LEN(key) = 0 then
             Buf.str(why, r.prov^.keyEnv);

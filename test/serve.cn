@@ -47,6 +47,7 @@ echo 'project_map = no' >> "$dir/config/arno/config"
 echo 'safety = safe' >> "$dir/config/arno/config"
 echo 'workers = small' >> "$dir/config/arno/config"
 echo "searxng = http://127.0.0.1:$(started[0])" >> "$dir/config/arno/config"
+echo 'models.ollama = extra-one' >> "$dir/config/arno/config"
 
 $host $arno "$dir/proj"
 if status <> 0 then begin

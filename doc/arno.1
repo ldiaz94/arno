@@ -1812,6 +1812,27 @@ The API's base URL, to override the provider's.
 .It Cm key
 The name of the environment variable holding the API key, not the key
 itself.
+.It Cm api_key. Ns Ar NAME
+The API key of the provider
+.Ar NAME
+itself, used in place of its variable's:
+.Ql "api_key.claude = sk-ant-..." .
+Only before the first section.
+A host keeps keys here with
+.Cm config ,
+as
+.Xr arno-serve 5
+says, and the file is then made readable by you alone.
+.It Cm models. Ns Ar NAME
+More models of the provider
+.Ar NAME ,
+blank-separated, that its server does not list:
+.Ql "models.ollama-cloud = kimi-k3 glm-5" .
+.Ic /model
+completes them, and a host's
+.Cm models
+lists them, after the server's.
+Only before the first section.
 .It Cm dialect
 .Cm openai
 or
@@ -2229,7 +2250,10 @@ and
 to the conversation's scratch directory.
 .It Ev OLLAMA_API_KEY , OPENAI_API_KEY , GEMINI_API_KEY , ANTHROPIC_API_KEY
 API keys, as named by the provider or by
-.Cm key .
+.Cm key ,
+unless
+.Cm api_key. Ns Ar NAME
+gives the key.
 .El
 .Sh FILES
 .Bl -tag -width Ds -compact
