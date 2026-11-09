@@ -460,7 +460,7 @@ end;
    and a worker's in the lead's sums too. A worker lets the lead's
    place go while it waits for the model. *)
 proc ask(var a: Agent; var c: Astore.Conv; sys: []const U8; var why: Buf.Buf): ERROR;
-var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; cost: Aprice.Cost; err: ERROR;
+var r: Awire.Request; reply: Amsg.Msg; u: Awire.Usage; price: Aprice.Price; priced: BOOL; cost: Aprice.Cost; err: ERROR; asked: I64;
 begin
     r := {prov: a.prov, client: SYSTEM.ADR(a.client), system: sys, msgs: Msgs.all(c.msgs),
         tools: Atools.offered(not a.working and (LEN(a.worker) > 0), a.mode in {Aprompt.chat, Aprompt.pair, Aprompt.build},
@@ -470,7 +470,9 @@ begin
         r.tools := owned(a, r.tools);
         Thread.unlock(a.lead^.place);
     end;
+    asked := Sys.now();
     err := Awire.chat(r, reply, u, why);
+    Amsg.stamp(reply, asked, a.prov^.model);
     if a.working then
         take(a);
         Arena.reset(a.mem);
@@ -1236,6 +1238,7 @@ begin
         m := Msgs.add(c.msgs);
         Amsg.init(m^, Amsg.Role.assistant);
         Amsg.setText(m^, Buf.bytes(b));
+        Amsg.stamp(m^, Sys.now(), a.prov^.model);
     end;
     return err;
 end;

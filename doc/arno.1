@@ -2270,7 +2270,15 @@ Input history, one entry a line, newest last.
 One conversation each, as the Pascal arno wrote it.
 Beside the messages,
 .Ql turns
-keeps a record of each turn.
+keeps a record of each turn, and
+.Ql stamps ,
+one for each message, when it was said, in seconds since 1970, and the
+model of its turn:
+.Ql {"at":1794236874,"model":"..."} ,
+or
+.Ql {}
+if that is not known.
+A file from before stamps has none, and is read as it is.
 .It Pa ~/.local/share/arno/memory.json
 Remembered facts.
 .It Pa ~/.local/share/arno/projects/ Ns Ar root Ns Pa /AGENTS.md

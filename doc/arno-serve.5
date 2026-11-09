@@ -305,15 +305,17 @@ in seconds since 1970, and
 the model that speaks in the turn, a worker's for a worker's entry.
 It comes right after the
 .Cm push
-of each new
+of each
 .Ql user ,
 .Ql asst
 and
 .Ql think
-entry.
-A conversation loaded, or shown again after
-.Cm rewind ,
-keeps no times, and its entries are not stamped.
+entry: a new one, or one shown again, as a conversation loaded or after
+.Cm rewind
+is, with the time and the model its message was saved with.
+A reply and its thinking, one message, share a stamp then.
+A message saved before conversations kept stamps has none, and its
+entries are not stamped.
 .It Cm stats Ar json
 What the turn that ends took, right before its
 .Cm busy
@@ -971,12 +973,14 @@ arno -> host   usagelog [{"at":1794236875,"model":"deepseek-v4.1-flash:cloud",
                           "kind":"model"}]
 .Ed
 .Pp
-The line of entry 6 tried again, edited; a line taken out of the queue, not the last;
-and the conversation forgotten:
+The line of entry 6 tried again, edited, its entries stamped as they were
+saved; a line taken out of the queue, not the last; and the conversation
+forgotten:
 .Bd -literal -offset indent
 host -> arno   rewind 6
 arno -> host   reset
 arno -> host   push 0 user "fix the typo"
+arno -> host   stamp 0 1794236874 deepseek-v4.1-flash:cloud
 arno -> host   ...
 arno -> host   status "arno · chat ..." "fix the typo" 20261028-101500
 arno -> host   rewound 6

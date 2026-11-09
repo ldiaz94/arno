@@ -23,6 +23,10 @@
    conversation either one saved reads back the same in both, and
    writes back the same.
 
+   A message keeps, too, when it was said and in which model's turn
+   (stamp), which write leaves out, as no provider wants them: Astore
+   saves them beside the messages.
+
    Depends on Vec, Str, Buf, Heap and rjson's Json. Leaves out what a
    message means: turning one into a provider's own format is Awire's,
    and a conversation's order and turns are the agent's. *)
@@ -50,10 +54,13 @@ type
         tool*: []U8;         (* a tool's: the tool's name, "" in conversations older than it *)
         think*: []U8;        (* an assistant's thinking, kept for the rest of its turn *)
         thinkKey*: []U8;     (* the key its server streamed it under: reasoning or reasoning_content *)
+        at*: I64;            (* when it was said, in seconds since 1970; 0 if not known *)
+        model*: []U8;        (* the model that spoke in its turn; "" if not known *)
     end;
 
 const
     BadRole*: ERROR = "a message whose role is none of user, assistant and tool";
+    NsPerSecond = 1000000000;   (* Sys.now's unit *)
 
     (* the keys OpenAI-compatible servers put a model's thinking under:
        Ollama's, and Moonshot's, vLLM's and DeepSeek's *)
@@ -98,6 +105,7 @@ begin
     Str.free(Heap.heap, m.tool);
     Str.free(Heap.heap, m.think);
     Str.free(Heap.heap, m.thinkKey);
+    Str.free(Heap.heap, m.model);
     m := {};
 end;
 
@@ -106,6 +114,14 @@ proc setText*(var m: Msg; text: []const U8);
 begin
     Str.free(Heap.heap, m.text);
     m.text := keep(text);
+end;
+
+(* m stamped as said at, a time Sys.now gave, in the turn of model. *)
+proc stamp*(var m: Msg; at: I64; model: []const U8);
+begin
+    m.at := at div NsPerSecond;
+    Str.free(Heap.heap, m.model);
+    m.model := keep(model);
 end;
 
 (* A tool call, its strings copied, added to m's. *)

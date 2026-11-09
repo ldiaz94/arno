@@ -146,7 +146,7 @@ if status <> 0 then fail('the conversation is not saved as it was: ' + `cat $(sa
 // on from it: the system prompt, the turn before and the question
 expect(['--resume', id, 'and', 'more'], 0, 'out', '4 messages')
 expect(['--resume', id, 'fail'], 1, 'err', 'arno: HTTP 500: the stub fails, as asked')
-grep -qF '{"role":"user","content":"fail"}]}' $(saved[0])
+grep -qF '{"role":"user","content":"fail"}],"stamps":' $(saved[0])
 if status <> 0 then fail('the failed prompt is not kept: ' + `cat $(saved[0])`)
 expect(['--resume', 'nosuch', 'x'], 1, 'err', 'arno: no conversation nosuch')
 

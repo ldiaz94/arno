@@ -7,7 +7,7 @@
    The file is the Pascal arno's, key for key:
 
        {"title":"...","named":false,"model":"...","system":"...",
-        "messages":[...],"turns":[...]}
+        "messages":[...],"stamps":[...],"turns":[...]}
 
    title is the one the human gave it, and named says it was given; an
    untitled conversation is saved with a title taken from its first
@@ -16,6 +16,12 @@
    own system prompt, and turns, a record of each turn, are written
    only when there are some, as the Pascal arno wrote them. save writes
    a file byte for byte as that arno did, so either reads the other's.
+
+   stamps, arno's own, says of each message when it was said and in
+   which model's turn, {"at":SECONDS,"model":"..."}, or {} if that is
+   not known; it is written only when a message has a stamp, so a file
+   without one, older than stamps, is still the Pascal arno's, and is
+   read with no stamps.
 
    A file is written whole to a temporary beside it and renamed over
    it, so a crash leaves the old file, and another session reads the
@@ -555,6 +561,25 @@ begin
     end;
 end;
 
+(* Whether any of msgs has a stamp, which the file then keeps. *)
+proc stamped(msgs: []Amsg.Msg): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(msgs) - 1 do
+        if msgs[i].at > 0 then return true; end;
+    end;
+    return false;
+end;
+
+(* m's stamp, as stamps holds it, added to b. *)
+proc stamp(const m: Amsg.Msg; var b: Buf.Buf);
+begin
+    if m.at = 0 then Buf.str(b, "{}"); return; end;
+    Fmt.write(b, `{{"at":{},"model":`, [Fmt.int(INT(m.at))]);
+    Amsg.quote(b, m.model);
+    Buf.add(b, '}');
+end;
+
 (* c as the module's comment shows it, JSON, added to b. *)
 proc render*(const c: Conv; var b: Buf.Buf);
 var path: Buf.Buf; i: INT; msgs: []Amsg.Msg; turns: [][]U8;
@@ -582,6 +607,14 @@ begin
         Amsg.write(msgs[i], b);
     end;
     Buf.add(b, ']');
+    if stamped(msgs) then
+        Buf.str(b, `,"stamps":[`);
+        for i := 0 to LEN(msgs) - 1 do
+            if i > 0 then Buf.add(b, ','); end;
+            stamp(msgs[i], b);
+        end;
+        Buf.add(b, ']');
+    end;
     turns := Strs.all(c.turns);
     if LEN(turns) > 0 then
         Buf.str(b, `,"turns":[`);
@@ -614,7 +647,7 @@ end;
    Unreadable if its file isn't one. Its title is the one it was given,
    "" if it was untitled. *)
 proc load*(var c: Conv; id: []const U8): ERROR;
-var path, text: Buf.Buf; d: Json.Doc; v, msgs, turns: Json.Value; i: INT; t: Buf.Buf;
+var path, text: Buf.Buf; d: Json.Doc; v, msgs, stamps, s, turns: Json.Value; i: INT; t: Buf.Buf; m: ^Amsg.Msg;
 begin
     init(c, id);
     if not fit(id) then return BadId; end;
@@ -635,6 +668,14 @@ begin
     if Json.kind(SYSTEM.ADR(d), msgs) # Json.Kind.array then return Unreadable; end;
     for i := 0 to Json.len(SYSTEM.ADR(d), msgs) - 1 do
         try Amsg.read(SYSTEM.ADR(d), Json.item(SYSTEM.ADR(d), msgs, i), Msgs.add(c.msgs)^);
+    end;
+    stamps := Json.member(SYSTEM.ADR(d), v, "stamps");
+    for i := 0 to Json.len(SYSTEM.ADR(d), stamps) - 1 do
+        if i >= c.msgs.len then break; end;   (* a stamp too many *)
+        s := Json.item(SYSTEM.ADR(d), stamps, i);
+        m := SYSTEM.ADR(Msgs.all(c.msgs)[i]);
+        m^.at, _ := Json.toInt(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), s, "at"));
+        m^.model := Amsg.keep(Json.text(SYSTEM.ADR(d), Json.member(SYSTEM.ADR(d), s, "model")));
     end;
     turns := Json.member(SYSTEM.ADR(d), v, "turns");
     for i := 0 to Json.len(SYSTEM.ADR(d), turns) - 1 do
@@ -995,6 +1036,7 @@ begin
     expect("an untitled conversation's title, read back", back.title, "");
     expect("its model", back.model, "deepseek-v4.1-flash");
     if (back.msgs.len # 2) or (back.turns.len # 1) then fail("its messages and turns"); end;
+    if Msgs.all(back.msgs)[0].at # 0 then fail("a file without stamps, read with none"); end;
     done(back);
 
     (* titled, with a system prompt of its own *)
@@ -1020,6 +1062,28 @@ begin
         `{"role":"assistant","content":"I see."}]}`);
     said("20261016-120009", "forget me");
     if not forget("20261016-120009") or forget("20261016-120009") then fail("forget"); end;
+
+    (* stamps: kept beside the messages, {} for a message without one,
+       and read back *)
+    init(c, "20261016-120008");
+    m := Msgs.add(c.msgs);
+    Amsg.init(m^, Amsg.Role.user);
+    Amsg.setText(m^, "hi");
+    m^.at := 1794236874;
+    m^.model := Amsg.keep("m1");
+    m := Msgs.add(c.msgs);
+    Amsg.init(m^, Amsg.Role.assistant);
+    Amsg.setText(m^, "hello");
+    if save(c) # nil then fail("save"); end;
+    done(c);
+    expect("a stamped conversation's file", saved("20261016-120008", b),
+        `{"title":"hi","named":false,"model":"","messages":[{"role":"user","content":"hi"},` +
+        `{"role":"assistant","content":"hello"}],"stamps":[{"at":1794236874,"model":"m1"},{}]}`);
+    if load(back, "20261016-120008") # nil then fail("load"); end;
+    expect("a stamp's model, read back", Msgs.all(back.msgs)[0].model, "m1");
+    if (Msgs.all(back.msgs)[0].at # 1794236874) or (Msgs.all(back.msgs)[1].at # 0) then fail("the stamps' times, read back"); end;
+    done(back);
+    _ := forget("20261016-120008");
 
     (* a title cut at 60 bytes, back to where a character starts *)
     for i := 1 to 59 do Buf.add(long, 'a'); end;

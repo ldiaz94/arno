@@ -52,11 +52,12 @@
    too.
 
    Beside the Board's changes the host is told what a screen has no
-   use for: a stamp, the time and the model, on each new entry of the
-   human's, the model's reply or thinking; the stats of a turn as it
-   ends; and the sources a search found. usage gives the session's sums
-   in the same keys as stats, and usagelog the usage log (Astore) that
-   Agent writes a line of for every request.
+   use for: a stamp, the time and the model, on each entry of the
+   human's, the model's reply or thinking, new or, as its message kept
+   them, shown again; the stats of a turn as it ends; and the sources a
+   search found. usage gives the session's sums in the same keys as
+   stats, and usagelog the usage log (Astore) that Agent writes a line
+   of for every request.
 
    config reads, writes and tries the settings a host edits (Asettings),
    the host alone: a viewer never sends it.
@@ -155,7 +156,7 @@ var
     batch: Events.Vec;        (* the events being applied *)
     fields: Fields.Vec;       (* the host's message being handled *)
     lead: Buf.Buf;            (* the lead's model, as the last status said, which a new entry is stamped with *)
-    replaying: BOOL;          (* a conversation is shown again: its entries are old, and not stamped *)
+    replaying: BOOL;          (* a conversation is shown again: its entries are old, stamped as their messages kept *)
     direct: BOOL;             (* the loop calls on the session itself: what the session tells is applied at once *)
     marks: Marks.Vec;         (* the human's messages on the Board, in order *)
     began: I64;               (* Sys.clock as the turn began *)
@@ -400,23 +401,27 @@ end;
 
 (* c shown again from its start, on the job's thread, which has it, or
    on the loop's with no job: the board cleared, then each message as
-   it was told when it came, a human's with its index, for rewind; then
-   that the showing is over. As Ascreen's changed does. *)
+   it was told when it came, a human's with its index, for rewind, and
+   a human's or a reply with its stamp, if it kept one; then that the
+   showing is over. As Ascreen's changed does. *)
 proc changed(const c: Astore.Conv; _arg: ^U8);
-var m: []Amsg.Msg; calls: []Amsg.Call; images: [][]U8; i, k: INT; d: [20]U8;
+var m: []Amsg.Msg; calls: []Amsg.Call; images: [][]U8; i, k, n: INT; d, t: [20]U8; at: []const U8;
 begin
     post(switched, c.id, "", "", "", false);
     m := Msgs.all(c.msgs);
     for i := 0 to LEN(m) - 1 do
+        t, n := Str.fromInt(m[i].at);
+        at := t[0..n];
+        if m[i].at = 0 then at := ""; end;
         match m[i].role of
         | user:
             d, k := Str.fromInt(i);
-            post(typed, Aattach.shown(m[i].text), d[0..k], "", "", false);
+            post(typed, Aattach.shown(m[i].text), d[0..k], at, m[i].model, false);
             images := Images.all(m[i].images);
             for k := 0 to LEN(images) - 1 do post(pictured, images[k], "", "", "", false); end;
         | assistant:
-            if LEN(m[i].think) > 0 then post(thought, m[i].think, "", "", "", false); end;
-            post(said, m[i].text, "", "", "", false);
+            if LEN(m[i].think) > 0 then post(thought, m[i].think, "", at, m[i].model, false); end;
+            post(said, m[i].text, "", at, m[i].model, false);
             calls := Calls.all(m[i].calls);
             for k := 0 to LEN(calls) - 1 do post(called, calls[k].name, calls[k].args, "", "", false); end;
         | tool: post(answered, m[i].text, "", "", "", false);
@@ -1015,21 +1020,29 @@ begin
     return digits[0..k];
 end;
 
-(* The entries from n on that are new, the human's lines, replies and
-   thinking, each stamped: stamp N AT MODEL, AT in seconds since 1970,
-   MODEL the one that speaks. A conversation shown again has no times. *)
-proc stampFrom(n: INT);
-var e: []Aboard.Entry; i: INT; model: []const U8; d, t: [20]U8;
+(* The entries from n on, the human's lines, replies and thinking, each
+   stamped: stamp N AT MODEL, AT in seconds since 1970, MODEL model, or,
+   if that is "", the one that speaks now. *)
+proc stampAs(n: INT; at, model: []const U8);
+var e: []Aboard.Entry; i: INT; who: []const U8; d: [20]U8;
 begin
-    if replaying then return; end;
     e := Aboard.all();
     for i := n to LEN(e) - 1 do
         if e[i].kind in {Aboard.user, Aboard.Kind.reply, Aboard.Kind.think} then
-            model := Buf.bytes(lead);
-            if e[i].speaker > 0 then model := Aboard.model(e[i].speaker); end;
-            send(["stamp", num(i, d), num(Sys.now() div NsPerSecond, t), model]);
+            who := model;
+            if LEN(who) = 0 then who := Buf.bytes(lead); end;
+            if (LEN(model) = 0) and (e[i].speaker > 0) then who := Aboard.model(e[i].speaker); end;
+            send(["stamp", num(i, d), at, who]);
         end;
     end;
+end;
+
+(* The entries from n on that are new stamped now. A conversation shown
+   again is stamped by apply, from what its messages kept. *)
+proc stampFrom(n: INT);
+var t: [20]U8;
+begin
+    if not replaying then stampAs(n, num(Sys.now() div NsPerSecond, t), ""); end;
 end;
 
 (* Entry n of the Board is message msg of the conversation, for rewind. *)
@@ -1200,7 +1213,10 @@ begin
     | costed: Aview.spent(e.who, Buf.bytes(e.a));
     | ended: over(e.going);
     end;
-    if e.sort in {typed, said, thought} then stampFrom(n); end;
+    if e.sort in {typed, said, thought} then
+        stampFrom(n);
+        if replaying and (e.c.len > 0) then stampAs(n, Buf.bytes(e.c), Buf.bytes(e.d)); end;   (* what its message kept *)
+    end;
 end;
 
 (* The events the jobs queued, taken from the queue and then applied,

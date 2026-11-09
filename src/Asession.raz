@@ -606,6 +606,7 @@ var m: ^Amsg.Msg; err: ERROR; images: [][]U8; i: INT;
 begin
     m := Msgs.add(s.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
+    Amsg.stamp(m^, Sys.now(), s.conf.prov.model);
     Aattach.expand(m^, text);
     if s.agent.front.picture # nil then
         images := Images.all(m^.images);
@@ -1400,6 +1401,7 @@ begin
     Aahead.block(b, cmd, "", Buf.bytes(output));
     m := Msgs.add(s.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
+    Amsg.stamp(m^, Sys.now(), s.conf.prov.model);
     Amsg.setText(m^, Buf.bytes(b));
     failed(s, answer(s, why), Buf.bytes(why));
 end;
@@ -1490,6 +1492,7 @@ begin
     say(s, Apeer.shown(Buf.bytes(text)));
     m := Msgs.add(s.conv.msgs);
     Amsg.init(m^, Amsg.Role.user);
+    Amsg.stamp(m^, Sys.now(), s.conf.prov.model);
     Amsg.setText(m^, Buf.bytes(text));
     err := answer(s, why);
     Arena.reset(s.mem);

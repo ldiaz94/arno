@@ -643,7 +643,7 @@ end;
 
 (* A picture a line's @path brings is told to the host as image, its
    bytes, right after the line's own entry and before the reply's; and
-   again when the conversation is loaded. *)
+   again when the conversation is loaded, its entries stamped. *)
 proc picture;
 var want, path: Buf.Buf;
 begin
@@ -671,6 +671,7 @@ begin
     while not has("|info|loaded ") do   (* the loading told *)
         if not await("push|") then return; end;
     end;
+    mustHave("its entries stamped, as they were saved", "stamp|");
 end;
 
 (* A command is not a turn: busy does not tell it, for a host that reads
@@ -1005,12 +1006,15 @@ begin
 end;
 
 (* rewind cuts the conversation back to a message of the human's, which
-   the model no longer sees; an entry that is none is refused. *)
+   the model no longer sees, shown again with the stamps it was saved
+   with; an entry that is none is refused. *)
 proc rewinding;
-var n: Buf.Buf;
+var n, want: Buf.Buf;
 begin
     Buf.init(n, Heap.heap);
     defer Buf.done(n);
+    Buf.init(want, Heap.heap);
+    defer Buf.done(want);
     line("/new");
     _ := await("reset");
     clear();
@@ -1030,6 +1034,9 @@ begin
     mustHave("shown again", "reset\n");
     mustHave("the first stays", "|user|first\n");
     mustNotHave("the second is gone", "|user|second\n");
+    entryOf("first", n);
+    Fmt.write(want, "stamp|{}|", [Fmt.str(Buf.bytes(n))]);
+    mustHave("and is stamped again, as it was saved", Buf.bytes(want));
     clear();
     line("again");
     idle();
