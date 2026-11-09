@@ -224,17 +224,26 @@ begin
     return within(p, Buf.bytes(b));
 end;
 
+(* Whether the file at p, a resolved path, has no name but p: one
+   with a second hard link shares its contents with a name elsewhere,
+   maybe the human's, and writing it writes theirs. A directory, which
+   has a link for each one below it, is alone, as is a name with no
+   file yet. *)
+proc alone(p: []const U8): BOOL;
+var i: Sys.Info; e: INT;
+begin
+    i, e := Sys.info(p);
+    return (e < 0) or i.dir or (i.links <= 1);
+end;
+
 (* Whether path is in the scratch directory or the stage's copy, the
    model's own, so that a change there needs no approval. It is
    resolved like any path, so a link left there that points out
-   doesn't count. The Pascal arno
-   also refused a file with a second hard link, one sharing its
-   contents with a name elsewhere, maybe the human's; raz's Sys.Info
-   has no link count yet (proposed to raz as Info.links), so until
-   then that isn't checked. The stage's own .git, the file that points
-   it at its git directory, and all below it are not ours: git reads
-   settings from there that run programs (core.fsmonitor), so the model
-   may not write it without asking. *)
+   doesn't count; nor does a file with a second hard link (alone).
+   The stage's own .git, the file that points it at its git
+   directory, and all below it are not ours: git reads settings from
+   there that run programs (core.fsmonitor), so the model may not
+   write it without asking. *)
 proc ours*(path: []const U8): BOOL;
 var b: Buf.Buf; p: []const U8;
 begin
@@ -243,6 +252,7 @@ begin
     defer Buf.done(b);
     resolve(path, b);
     p := Buf.bytes(b);
+    if not alone(p) then return false; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
     if LEN(stage) = 0 then return false; end;
     return within(p, stage) and not gitMark(p);
@@ -300,6 +310,22 @@ begin
     return "no";
 end;
 
+(* A hard link to target made at path, by ln: raz's Sys makes none. *)
+proc hardLink(target, path: []const U8): BOOL;
+var pid, status: INT; how: Sys.Status;
+begin
+    pid := Sys.spawn({path: "/usr/bin/ln", args: ["ln", "-f", target, path]});
+    if pid < 0 then return false; end;
+    _, how, status := Sys.waitExit(pid);
+    return (how = Sys.Status.exited) and (status = 0);
+end;
+
+(* An empty file made at path. *)
+proc touch(path: []const U8);
+begin
+    Sys.close(Sys.openMode(path, {Sys.writing, Sys.creating}, 1A4H));
+end;
+
 proc main*: INT;
 var top, dir: []const U8;
 begin
@@ -344,6 +370,12 @@ begin
     expect("the stage's .git is not ours", yes(ours("../../proj2/.git")), "no");
     expect("nor below it", yes(ours("../../proj2/.git/config")), "no");
     expect("a file like it is", yes(ours("../../proj2/.gitignore")), "yes");
+    touch(cat(top, "/proj2/lone"));
+    expect("a file alone", yes(ours("../../proj2/lone")), "yes");
+    expect("a directory, with links of its own", yes(ours("../../proj2")), "yes");
+    touch(cat(top, "/out/theirs"));
+    if not hardLink(cat(top, "/out/theirs"), cat(top, "/proj2/twin")) then Out.str("Afence: no ln\n"); return 1; end;
+    expect("a file with a second hard link", yes(ours("../../proj2/twin")), "no");
     _ := Sys.setWorkDir(cat(top, "/out"));
     init;
     expect("unrooted", yes(rooted), "no");

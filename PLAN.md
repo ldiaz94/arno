@@ -658,9 +658,8 @@ one or more commits that build with `-Werror`.
 - **raz: a file's link count.** `Sys.Info` has no `st_nlink`; the
   scratch's `ours` cannot refuse a file hard-linked to one outside it,
   as the Pascal arno did (`92b6bea`). Proposed in raz's PROPOSALS.md
-  (`aa7f5df`); done in raz `261c3a0`, `Info.links`, not yet in a
-  release (0.17.2 lacks it). When `RAZVERSION` moves to one that has
-  it, `Afence.ours` refuses a file whose `links` is over 1.
+  (`aa7f5df`); done in raz `261c3a0`, `Info.links`. `Afence.ours`
+  refuses a file whose `links` is over 1 (a directory aside).
 - **rtui with pthreads.** `wake` is a write to a pipe and safe from a
   thread made by C; nothing else in rtui uses raz's `Thread`, and a
   job's thread wakes the loop as it should (3b).
