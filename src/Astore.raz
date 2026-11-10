@@ -364,6 +364,28 @@ begin
     return Buf.bytes(b);
 end;
 
+(* The path of the artifacts directory of the conversation id, into b,
+   not made. *)
+proc artifactsPath(id: []const U8; var b: Buf.Buf): []const U8;
+begin
+    Buf.reset(b);
+    Buf.str(b, dir());
+    Buf.str(b, "artifacts/");
+    Buf.str(b, id);
+    return Buf.bytes(b);
+end;
+
+(* The artifacts directory of the conversation id, into b, made if it
+   isn't there: where the documents the human asks for are kept, under
+   arno's directory rather than the cache, since they outlast the
+   conversation, and stay when it is deleted. *)
+proc artifacts*(id: []const U8; var b: Buf.Buf): []const U8;
+begin
+    _ := Sys.makeDir(artifactsPath("", b));
+    _ := Sys.makeDir(artifactsPath(id, b));
+    return Buf.bytes(b);
+end;
+
 (* The scratch directory of id emptied. *)
 proc clearScratch*(id: []const U8);
 var b: Buf.Buf;
@@ -374,8 +396,8 @@ begin
     _ := scratch(id, b);
 end;
 
-(* The scratch directory of old now the one of new, with what is in
-   it, as the work goes on under the new id. *)
+(* The scratch and artifacts directories of old now the ones of new,
+   with what is in them, as the work goes on under the new id. *)
 proc moveScratch*(old, new: []const U8);
 var a, b: Buf.Buf;
 begin
@@ -384,12 +406,34 @@ begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     _ := Sys.rename(scratch(old, a), scratchPath(new, b));
+    _ := Sys.rename(artifacts(old, a), artifactsPath(new, b));
+end;
+
+(* The artifacts directories made and left empty, not touched in the
+   last day: each session makes its conversation's, as it takes it up
+   and before each turn, so that the prompt's path is there; most never
+   get a file. Sys.removeDir leaves one that has any. *)
+proc sweepArtifacts;
+var names: Strs.Vec; all: [][]U8; i, e: INT; info: Sys.Info; b: Buf.Buf;
+begin
+    Strs.init(names, Heap.heap);
+    defer Strs.done(names);
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    namesIn(artifactsPath("", b), names);
+    all := Strs.all(names);
+    for i := 0 to LEN(all) - 1 do
+        info, e := Sys.linkInfo(artifactsPath(all[i], b));
+        if (e = 0) and info.dir and (Sys.now() - info.mtime > DayNs) then _ := Sys.removeDir(Buf.bytes(b)); end;
+        Str.free(Heap.heap, all[i]);
+    end;
 end;
 
 (* At start-up, removes the scratch directories left by conversations
    that are gone: those not touched in the last day, since another
    session may be in its first turn, writing there before its
-   conversation is saved, and that no conversation's file has the id of. *)
+   conversation is saved, and that no conversation's file has the id of.
+   Then the empty artifacts directories (sweepArtifacts). *)
 proc sweep*;
 var names: Strs.Vec; all: [][]U8; i, e: INT; info: Sys.Info; b, f: Buf.Buf;
 begin
@@ -411,6 +455,7 @@ begin
         Str.free(Heap.heap, all[i]);
     end;
     Strs.done(names);
+    sweepArtifacts;
 end;
 
 (* Whether name, an entry of the stage's directory, is of an arno that

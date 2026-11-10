@@ -94,13 +94,15 @@ const
 (* Staged as stage.json says of the project, else as config says; after init. *)
 proc stageStart(var s: Session); forward;
 
-(* The tools' scratch directory made the one of s's conversation. *)
+(* The tools' scratch and artifacts directories made the ones of s's
+   conversation, each made if it isn't there. *)
 proc useScratch(const s: Session);
 var b: Buf.Buf;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     Afence.useScratch(Astore.scratch(s.conv.id, b));
+    Afence.useArtifacts(Astore.artifacts(s.conv.id, b));
 end;
 
 (* arno's own directory for the project granted: its context file names
@@ -593,6 +595,7 @@ end;
 proc answer(var s: Session; var why: Buf.Buf): ERROR;
 var err: ERROR;
 begin
+    useScratch(s);   (* made again if the sweep of another arno took them, empty, while this one idled *)
     s.notesBefore := noteCount(s);
     err := Agent.turn(s.agent, s.conv, why);
     save(s);
@@ -850,6 +853,66 @@ begin
     if title.len = 0 then Astore.autoTitle(s.conv, title); end;
     Fmt.write(s.out, "loaded {}: {}, {} messages",
         [Fmt.str(s.conv.id), Fmt.str(Buf.bytes(title)), Fmt.int(s.conv.msgs.len)]);
+    say(s, Buf.bytes(s.out));
+end;
+
+(* The path of the newest file in dir, into b; false if it has none. *)
+proc newest(dir: []const U8; var b: Buf.Buf): BOOL;
+var d: Sys.Dir; name: []const U8; more: BOOL; path: Buf.Buf; info: Sys.Info; e: INT; best: I64;
+begin
+    if Sys.openDir(d, dir) < 0 then return false; end;
+    Buf.init(path, Heap.heap);
+    defer Buf.done(path);
+    best := -1;
+    name, more := Sys.nextEntry(d);
+    while more do
+        Buf.reset(path);
+        Fmt.write(path, "{}/{}", [Fmt.str(dir), Fmt.str(name)]);
+        info, e := Sys.linkInfo(Buf.bytes(path));
+        if (e = 0) and info.file and (info.mtime > best) then
+            best := info.mtime;
+            Buf.reset(b);
+            Buf.str(b, Buf.bytes(path));
+        end;
+        name, more := Sys.nextEntry(d);
+    end;
+    Sys.closeDir(d);
+    return best >= 0;
+end;
+
+(* /open: the artifact arg names, a path, or a name in the artifacts
+   directory, else the newest there, opened by xdg-open in a session of
+   its own, so that arno neither waits for the program it starts nor
+   takes it down on leaving. *)
+proc open(var s: Session; arg: []const U8);
+var path, out: Buf.Buf;
+begin
+    Buf.init(path, SYSTEM.ADR(s.mem.base));
+    Buf.init(out, SYSTEM.ADR(s.mem.base));
+    if LEN(arg) = 0 then
+        if not newest(Afence.artifacts, path) then
+            Fmt.write(s.out, "no artifacts yet, in {}", [Fmt.str(Afence.artifacts)]);
+            fail(s, Buf.bytes(s.out));
+            return;
+        end;
+    elsif arg[0] = '/' then
+        Buf.str(path, arg);
+    else
+        Fmt.write(path, "{}/{}", [Fmt.str(Afence.artifacts), Fmt.str(arg)]);
+    end;
+    if Sys.access(Buf.bytes(path), {}) # 0 then
+        Fmt.write(s.out, "no file {}", [Fmt.str(Buf.bytes(path))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    (* its output to /dev/null, since a program that held the pipe would
+       keep run waiting for its end *)
+    if Arun.run(["sh", "-c", `setsid -f xdg-open "$1" >/dev/null 2>&1`, "sh", Buf.bytes(path)], 4096, out) # 0 then
+        Fmt.write(s.out, "xdg-open could not be started for {}", [Fmt.str(Buf.bytes(path))]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    Fmt.write(s.out, "opened {}", [Fmt.str(Buf.bytes(path))]);
     say(s, Buf.bytes(s.out));
 end;
 
@@ -1424,6 +1487,7 @@ begin
     | "/list": list(arg, s.out); say(s, Buf.bytes(s.out));
     | "/load": load(s, arg);
     | "/export": export(s, arg);
+    | "/open": open(s, arg);
     | "/rename": rename(s, arg);
     | "/system": system(s, arg);
     | "/mode": mode(s, arg);

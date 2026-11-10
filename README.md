@@ -150,6 +150,7 @@ these are the ones to start with:
 | `/model [NAME]`, `/models`, `/provider [NAME]` | switch, or list, what answers |
 | `/budget [DOLLARS]` | what a turn may spend, workers included; 0 for no limit |
 | `/compact [FOCUS]` | replace the history with a summary |
+| `/open [FILE]` | open an artifact the model made (a document, page, drawing or sheet), the newest by default |
 | `/tools`, `/usage` | the tools on offer; tokens and cost |
 | `/mcp [login NAME]` | what became of each MCP server; log in to one |
 | `/test [COMMAND]` | set and run the project's test command |

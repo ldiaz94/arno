@@ -17,8 +17,9 @@
 
    The module only decides; asking is the caller's, Atools'.
 
-   The conversation's scratch directory is the model's own: inside, and
-   ours, which Atools takes as a change needing no approval. So is the
+   The conversation's scratch directory, and its artifacts directory,
+   where the documents the human asks for are kept, are the model's own:
+   inside, and ours, which Atools takes as a change needing no approval. So is the
    stage's copy of the project, while Astage has one up: the zone is then
    the copy, and root still the human's project, which the notes and
    the test command are kept under. Leaves out config's grant.
@@ -36,6 +37,7 @@ var
     root*: []const U8;           (* the human's project, as init found it: the zone, but while the stage is up *)
     stage*: []U8;                (* the stage's copy, resolved, from Heap; "" for none *)
     scratch*: []U8;        (* resolved, from Heap; set by useScratch, "" before *)
+    artifacts*: []U8;      (* the conversation's lasting files, resolved, from Heap; set by useArtifacts, "" before *)
     rooted*: BOOL;         (* zone holds a mark, rather than being the bare working directory *)
     grants: Strs.Vec;      (* the directories granted, resolved, each from Heap *)
     ready: BOOL;           (* grants made *)
@@ -164,7 +166,7 @@ begin
     end;
 end;
 
-(* Whether path is in the zone, in the scratch directory, or under a grant. *)
+(* Whether path is in the zone, in the scratch or artifacts directory, or under a grant. *)
 proc inside*(path: []const U8): BOOL;
 var b: Buf.Buf; p: []const U8; g: [][]U8; i: INT;
 begin
@@ -174,6 +176,7 @@ begin
     p := Buf.bytes(b);
     if within(p, zone) then return true; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
+    if (LEN(artifacts) > 0) and within(p, artifacts) then return true; end;
     g := Strs.all(grants);
     for i := 0 to LEN(g) - 1 do
         if within(p, g[i]) then return true; end;
@@ -191,6 +194,18 @@ begin
     resolve(path, b);
     if LEN(scratch) > 0 then Str.free(Heap.heap, scratch); end;
     scratch := keep(Buf.bytes(b));
+end;
+
+(* path, resolved, the conversation's artifacts directory from now on;
+   the one before it is let go. *)
+proc useArtifacts*(path: []const U8);
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    resolve(path, b);
+    if LEN(artifacts) > 0 then Str.free(Heap.heap, artifacts); end;
+    artifacts := keep(Buf.bytes(b));
 end;
 
 (* path, resolved, the stage's copy from now on, and the zone: the
@@ -236,8 +251,8 @@ begin
     return (e < 0) or i.dir or (i.links <= 1);
 end;
 
-(* Whether path is in the scratch directory or the stage's copy, the
-   model's own, so that a change there needs no approval. It is
+(* Whether path is in the scratch or artifacts directory or the
+   stage's copy, the model's own, so that a change there needs no approval. It is
    resolved like any path, so a link left there that points out
    doesn't count; nor does a file with a second hard link (alone).
    The stage's own .git, the file that points it at its git
@@ -247,13 +262,14 @@ end;
 proc ours*(path: []const U8): BOOL;
 var b: Buf.Buf; p: []const U8;
 begin
-    if (LEN(scratch) = 0) and (LEN(stage) = 0) then return false; end;
+    if (LEN(scratch) = 0) and (LEN(artifacts) = 0) and (LEN(stage) = 0) then return false; end;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     resolve(path, b);
     p := Buf.bytes(b);
     if not alone(p) then return false; end;
     if (LEN(scratch) > 0) and within(p, scratch) then return true; end;
+    if (LEN(artifacts) > 0) and within(p, artifacts) then return true; end;
     if LEN(stage) = 0 then return false; end;
     return within(p, stage) and not gitMark(p);
 end;
@@ -363,6 +379,11 @@ begin
     expect("granted", yes(inside("out/z")), "yes");
     forget;
     expect("forgotten", yes(inside("out/z")), "no");
+    useArtifacts("../../out");
+    expect("the artifacts directory, inside", yes(inside("out/z")), "yes");
+    expect("and ours", yes(ours("out/z")), "yes");
+    Str.free(Heap.heap, artifacts);
+    artifacts := artifacts[0..0];
     expect("not ours", yes(ours("../../proj2/x")), "no");
     useStage(cat(top, "/proj2"));
     expect("the stage is ours", yes(ours("../../proj2/x")), "yes");

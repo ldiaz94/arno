@@ -4,11 +4,11 @@
    It is made of sections, in this order: arno's own instructions, or
    the conversation's own system prompt in their place; the workspace,
    where the model is and when; the human's context files; the
-   project's map; the conversation's scratch directory, and the
-   artifacts the human asks for, made there; the project's notes; the
-   facts the human asked arno to remember; and what arno is, with the
-   commands and modes the human has. The mode's instructions, or a
-   worker's, end it; Agent adds them.
+   project's map; the conversation's scratch directory; its artifacts
+   directory, where what the human asks for is made; the project's
+   notes; the facts the human asked arno to remember; and what arno is,
+   with the commands and modes the human has. The mode's instructions,
+   or a worker's, end it; Agent adds them.
 
    What describes the human or the project rather than the conversation,
    the context files, the map and the remembered facts, is found once,
@@ -120,6 +120,7 @@ const
         {name: "/list", args: "[WORD]", desc: "recent conversations, filtered by title"},
         {name: "/load", args: "N|ID|WORD", desc: "resume a conversation"},
         {name: "/export", args: "[N|ID]", desc: "print a conversation as JSON"},
+        {name: "/open", args: "[FILE]", desc: "open an artifact, the newest if none is named"},
         {name: "/rename", args: "TITLE", desc: "name this conversation"},
         {name: "/system", args: "[TEXT|-]", desc: "show or set this conversation's own system prompt, - for arno's"},
         {name: "/mode", args: "[NAME]", desc: "show or set the mode"},
@@ -472,17 +473,18 @@ end;
 proc artifacts(var out: Buf.Buf; dir: []const U8);
 begin
     Fmt.write(out, "\n\n# Artifacts\nWhen the human asks for a document, a page, a drawing or a sheet, rather " +
-        "than code in the project, make it as a file in {} and end by saying its full path. Markdown, HTML, " +
+        "than code in the project, make it as a file in {}, which outlasts the conversation, and end by " +
+        "saying its full path. Work files that are not the artifact go in the scratch. Markdown, HTML, " +
         "SVG and tiza drawings (.tiza, described in man 5 tiza) are text: write them with edit. An HTML page " +
         "stands alone, its styles and scripts inline. The rest are made from text, with run or shell where " +
         "they are offered:\n" +
         "- docx: pandoc in.md -o out.docx\n" +
         "- xlsx: soffice --headless -env:UserInstallation=file://$ARNO_SCRATCH/lo --convert-to xlsx " +
-        "--outdir DIR in.csv\n" +
+        "--outdir {} in.csv\n" +
         "- png or svg of a drawing: tiza -o out.png in.tiza\n" +
         "- png of an svg: rsvg-convert -o out.png in.svg\n" +
         "Where neither is offered, write the source, say so, and give the command for the human to run.",
-        [Fmt.str(dir)]);
+        [Fmt.str(dir), Fmt.str(dir)]);
 end;
 
 (* The system prompt of c's next request, in mode, added to out: c's
@@ -511,9 +513,9 @@ begin
         Fmt.write(out, "\n\n# Scratch\n{} is yours to write, for this conversation: fixture trees, throwaway " +
             "files, output to compare. Nothing of the human's is there, so edit, move and remove in it are not " +
             "asked about, and check and run see its path as $ARNO_SCRATCH. What should last belongs in the " +
-            "project instead.", [Fmt.str(Afence.scratch)]);
-        artifacts(out, Afence.scratch);
+            "project, or, if the human asked for it, among the artifacts.", [Fmt.str(Afence.scratch)]);
     end;
+    if LEN(Afence.artifacts) > 0 then artifacts(out, Afence.artifacts); end;
     if LEN(Afence.stage) > 0 then stageText(out); end;
     if Apeer.reachable() then
         Buf.str(out, "\n\n");

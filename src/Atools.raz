@@ -991,8 +991,8 @@ begin
     return Buf.bytes(b);
 end;
 
-(* j made a jailed job, in mem: the copy and the scratch directory
-   writable, and jail_rw's directories, each ~ made $HOME; one that
+(* j made a jailed job, in mem: the copy, the scratch and the
+   artifacts directories writable, and jail_rw's directories, each ~ made $HOME; one that
    isn't an absolute path to a directory now is passed over, as it
    would keep the sandbox from being made. The network is cut off
    unless jail_net keeps it. *)
@@ -1002,6 +1002,7 @@ begin
     Strs.init(rw, mem);
     Strs.push(rw, Afence.stage);
     if LEN(Afence.scratch) > 0 then Strs.push(rw, Afence.scratch); end;
+    if LEN(Afence.artifacts) > 0 then Strs.push(rw, Afence.artifacts); end;
     word, rest := Str.field(jailRw);
     while LEN(word) > 0 do
         Buf.init(b, mem);

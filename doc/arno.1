@@ -470,6 +470,16 @@ comes back into the copy; see
 .Sx THE STAGE .
 .It Ic /export Op Ar n | id
 Print a conversation, by default this one, as JSON.
+.It Ic /open Op Ar file
+Open an artifact with
+.Xr xdg-open 1 ,
+without waiting for the program it starts:
+.Ar file
+in the artifacts directory, or a path from
+.Pa / ,
+or else the newest there.
+See
+.Sx Artifacts .
 .It Ic /rename Ar title
 Name this conversation; with no title, clear the name.
 .It Ic /system Op Ar text | Cm \-
@@ -1229,11 +1239,35 @@ and
 get its path as
 .Ev ARNO_SCRATCH .
 .Pp
-A document, a page, a drawing or a sheet you ask for is made there too,
+It lasts as long as its conversation:
+.Ic /load
+brings it back,
+.Ic /compact
+takes it along,
+.Ic /clear
+empties it and
+.Ic /new
+starts another.
+At start-up those whose conversation is no longer saved, and that have
+not changed in a day, are removed.
+.Ss Artifacts
+A document, a page, a drawing or a sheet you ask for is made in the
+conversation's artifacts directory,
+.Pa ~/.local/share/arno/artifacts/ Ns Ar id ,
 and the model ends by saying its path.
+Like the scratch directory it is inside the fence, its changes are not
+asked about, and it is writable in the jail; unlike it, it outlasts the
+conversation:
+.Ic /clear
+leaves it,
+.Ic /compact
+takes it along, and a conversation deleted leaves its artifacts behind.
+One left empty for a day is removed at start-up.
+.Pp
 Markdown, HTML, SVG and
 .Xr tiza 5
-drawings it writes as text; docx, xlsx and PNG it makes from text with
+drawings the model writes as text; docx, xlsx and PNG it makes from text
+with
 .Xr pandoc 1 ,
 .Xr soffice 1 ,
 .Xr tiza 1
@@ -1246,18 +1280,8 @@ or
 so list those in
 .Cm run
 for it to.
-.Pp
-It lasts as long as its conversation:
-.Ic /load
-brings it back,
-.Ic /compact
-takes it along,
-.Ic /clear
-empties it and
-.Ic /new
-starts another.
-At start-up those whose conversation is no longer saved, and that have
-not changed in a day, are removed.
+.Ic /open
+shows one.
 .Sh THE STAGE
 By default
 .Nm
@@ -2374,6 +2398,9 @@ Nothing trims it; remove it to start over.
 Locked while one session changes the files above, so that two sessions at
 once keep each other's changes.
 Each of those files is written whole and renamed into place.
+.It Pa ~/.local/share/arno/artifacts/ Ns Ar id
+Each conversation's artifacts: the documents, pages, drawings and
+sheets made for you.
 .It Pa ~/.cache/arno/scratch/ Ns Ar id
 Each conversation's scratch directory, and in it
 .Pa stage.diff ,
