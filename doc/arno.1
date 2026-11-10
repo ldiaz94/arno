@@ -9,7 +9,8 @@
 .Nm
 .Ar prompt ...
 .Nm
-.Fl \-resume Ar id prompt ...
+.Fl \-resume Ar id
+.Op Ar prompt ...
 .Nm
 .Fl \-serve
 .Nm
@@ -70,6 +71,10 @@ may be an id, a number from
 .Pq 1 is the conversation changed last
 or a word from a title, as for
 .Ic /load .
+With no prompt,
+.Fl \-resume Ar id
+runs a session that opens with
+.Ic /load Ar id .
 .Pp
 Every turn is saved, however it ends, so a conversation can be taken up
 again later.
@@ -77,15 +82,17 @@ Requests go straight to the provider's API, over HTTPS (HTTP for a local
 Ollama); the key is read from an environment variable and sent only to
 the provider.
 .Sh OPTIONS
-.Bl -tag -width "--attach [pid | -l]"
+.Bl -tag -width "--resume id [prompt ...]"
 .It Ar prompt ...
 One turn of a new conversation, then exit.
 An empty prompt is refused, with status 2, as a script's prompt file
 never written is a mistake and not a question.
-.It Fl \-resume Ar id prompt ...
+.It Fl \-resume Ar id Op Ar prompt ...
 One more turn of the saved conversation
 .Ar id .
 An unknown one is refused, with status 1.
+With no prompt, a session that opens with
+.Ic /load Ar id .
 .It Fl \-serve
 Run one session for the program that started
 .Nm ,

@@ -4,6 +4,7 @@
        arno                         a session, a line of input at a time
        arno PROMPT ...              a new conversation of one turn
        arno --resume ID PROMPT ...  one more turn of the saved one, ID
+       arno --resume ID             a session, opening with /load ID
        arno --serve                 one session for the program that runs it
        arno --attach [PID | -l]     a session run elsewhere, shown here
        arno -h | --help             the usage
@@ -55,7 +56,7 @@ const
     Usage = `
     usage: arno
            arno prompt ...
-           arno --resume id prompt ...
+           arno --resume id [prompt ...]
            arno --serve
            arno --attach [pid | -l]
            arno -h | --help
@@ -282,14 +283,16 @@ begin
     end;
 end;
 
-(* The session: a line at a time, until the input ends or /quit. *)
-proc session(var s: Asession.Session): INT;
+(* The session: opening, a line run first if it isn't "", then a line
+   at a time, until the input ends or /quit. *)
+proc session(var s: Asession.Session; opening: []const U8): INT;
 var text: []const U8; tty, more: BOOL;
 begin
     tty := Sys.isTerminal(Sys.stdin);
     Asession.prepare(s);
     say("arno · ", s.conf.prov.model, " via ");
     say(s.conf.prov.name, " · /help for commands\n", "");
+    if (LEN(opening) > 0) and not Asession.line(s, opening) then return 0; end;
     while true do
         if tty then say("> ", "", ""); end;
         text, more := readLine();
@@ -360,7 +363,7 @@ begin
 end;
 
 proc main*: INT;
-var s: Asession.Session; first, i: INT; prompt, failure: Buf.Buf; err: ERROR;
+var s: Asession.Session; first, i: INT; prompt, failure, opening: Buf.Buf; err: ERROR; resuming: BOOL;
 begin
     Arun.child();
     if (ARGC() >= 2) and ((Files.arg(1) = "-h") or (Files.arg(1) = "--help")) then
@@ -386,18 +389,22 @@ begin
     end;
     (* an empty prompt is a mistake of the script that made it, a
        prompt file never written, not a question for a model *)
-    if (ARGC() >= 2) and (LEN(Str.trim(Buf.bytes(prompt))) = 0) then
+    (* --resume ID alone is a session that opens with /load ID *)
+    resuming := (first = 3) and (ARGC() = 3);
+    Buf.init(opening, Heap.heap);
+    if resuming then Fmt.write(opening, "/load {}", [Fmt.str(Files.arg(2))]); end;
+    if (ARGC() >= 2) and not resuming and (LEN(Str.trim(Buf.bytes(prompt))) = 0) then
         say("arno: no prompt\n", "", "");
         _ := Sys.write(Sys.stderr, Usage);
         return 2;
     end;
 
     Astore.sweep;
-    if (ARGC() < 2) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
+    if ((ARGC() < 2) or resuming) and Sys.isTerminal(Sys.stdin) and Sys.isTerminal(Sys.stdout) then
         Asession.init(SYSTEM.ADR(s), Ascreen.front(), Ascreen.show, nil);
         s.changed := Ascreen.changed;
         defer Asession.leave;
-        if Ascreen.run(SYSTEM.ADR(s)) then return 0; end;
+        if Ascreen.run(SYSTEM.ADR(s), Buf.bytes(opening)) then return 0; end;
         say("arno: the terminal can't be used\n", "", "");
         return 1;
     end;
@@ -409,7 +416,7 @@ begin
     defer Asession.leave;
     _ := Sys.handle(Sys.sigInt);
     ended := true;
-    if ARGC() < 2 then return session(s); end;
+    if (ARGC() < 2) or resuming then return session(s, Buf.bytes(opening)); end;
     if (first = 3) and not Asession.resume(s, Files.arg(2)) then
         say("arno: no conversation ", Files.arg(2), "\n");
         return 1;

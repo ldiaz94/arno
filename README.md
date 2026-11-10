@@ -125,6 +125,7 @@ From the project you want to work on:
     arno                          # a session: the full screen on a terminal
     arno 'Explain how the config is loaded.'    # one turn, new conversation
     arno --resume ID 'Simplify it.'             # one more turn of a saved one
+    arno --resume 'Gcloud startup'              # a session, that conversation loaded
     arno --serve                  # one session, for a program that drives it
     arno --attach [PID | -l]      # show another arno's session here, and type into it
     arno -h | --version

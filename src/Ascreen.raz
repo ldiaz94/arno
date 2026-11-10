@@ -135,6 +135,7 @@ var
 
     (* a job's own *)
     job: Buf.Buf;       (* the line it runs; "" to prepare the session *)
+    opening: Buf.Buf;   (* a line the first job runs once the session is prepared, if not "" *)
     usageText: Buf.Buf; (* /usage made as the job begins, for Aview to answer from during it *)
     asking: BOOL;       (* the job is an editor's ask instead, in editorAsk *)
     editorAsk: Apeer.Ask;
@@ -373,8 +374,9 @@ begin
     end;
 end;
 
-(* A job: the line in job run, or the session prepared if it is "";
-   then the status line made again, and the loop told it ended. *)
+(* A job: the line in job run, or, if it is "", the session prepared
+   and opening run; then the status line made again, and the loop told
+   it ended. *)
 proc work(_arg: ^U8);
 var going: BOOL;
 begin
@@ -383,6 +385,7 @@ begin
         Asession.ask(session^, editorAsk);
     elsif job.len = 0 then
         Asession.prepare(session^);
+        if opening.len > 0 then going := Asession.line(session^, Buf.bytes(opening)); end;
     else
         going := Asession.line(session^, Buf.bytes(job));
     end;
@@ -1578,12 +1581,14 @@ end;
 
 (* The session s run on the screen until the human ends it: false, at
    once, if there is no terminal. s was made with front's procedures
-   and show, and changed. A job still running at the end is told to
+   and show, and changed. first, if it isn't "", is run as a line once
+   the session is prepared. A job still running at the end is told to
    stop, its questions answered no, and waited for. *)
-proc run*(s: ^Asession.Session): BOOL;
+proc run*(s: ^Asession.Session; first: []const U8): BOOL;
 var ran: BOOL;
 begin
     session := s;
+    Buf.str(opening, first);
     answerRead, answerWrite := Sys.pipe();
     TuiEdit.init(SYSTEM.ADR(editor), false);
     TuiEdit.focus(SYSTEM.ADR(editor));
@@ -1669,6 +1674,7 @@ begin
     Events.init(events, Heap.heap);
     Buf.init(reason, Heap.heap);
     Buf.init(job, Heap.heap);
+    Buf.init(opening, Heap.heap);
     Buf.init(usageText, Heap.heap);
     Buf.init(made, Heap.heap);
     Buf.init(heading, Heap.heap);
