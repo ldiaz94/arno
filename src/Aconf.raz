@@ -33,6 +33,10 @@
        effort         MODEL:LEVEL ..., the reasoning effort for each
                       model, as the param reasoning_effort@MODEL
 
+   Of these, only model may be a section's: a project runs on a model of
+   its own, and apply takes the deepest section's over the global one,
+   so that a tree of projects runs on a cheaper model, or a larger.
+
    The keys the rest of arno reads (run, max_steps, mcp and the
    others, Known below, and those PREFIX.NAME for a prefix of Prefixed,
    as check.unit and lsp.ts, or of Owned, as mcp_token.linear) are kept
@@ -73,7 +77,7 @@
    of arno means, and any file of the project's own: a section is the
    human's word, and a repository cloned grants itself nothing. *)
 module Aconf;
-import Awire, Amsg, Afence, Buf, Str, Sys, Files, Fmt, Heap, Mem, Out, Strs := Vec([]const U8), Ints := Vec(INT),
+import Awire, Aprice, Amsg, Afence, Buf, Str, Sys, Files, Fmt, Heap, Mem, Out, Strs := Vec([]const U8), Ints := Vec(INT),
     Sections := Vec(Section);
 import SYSTEM;
 
@@ -93,6 +97,7 @@ type
         sections: Sections.Vec; (* the global settings first, then each section, in the file's order *)
         params: Strs.Vec;       (* the provider's params, each its own block *)
         folds: Strs.Vec;        (* the values made of several lines, each its own block *)
+        globalModel: []const U8;   (* the model the global settings give, else the preset's: what apply puts back over a section's *)
     end;
 
 const
@@ -107,7 +112,7 @@ const
     (* the keys a section may set, which are one project's *)
     Sectioned: []const []const U8 = ["run", "run_ro", "run_env", "trust", "test_cmd", "safety", "context_files",
         "project_map", "prefetch", "shell", "jail_net", "jail_rw", "mode", "worker", "workers", "max_workers", "build_steps", "build_budget",
-        "max_steps", "turn_budget"];
+        "max_steps", "turn_budget", "model"];
 
     (* the prefixes of keys PREFIX.NAME, each name its own setting, that
        a section may set too: check.unit, check.fmt, lsp.ts *)
@@ -133,6 +138,7 @@ begin
     Sections.init(c.sections, Heap.heap);
     Sections.push(c.sections, {dir: "", rank: 0});
     _ := Awire.preset("ollama", c.prov);
+    c.globalModel := c.prov.model;
 end;
 
 proc dropParams(var c: Conf);
@@ -215,11 +221,22 @@ begin
     return get(c, Buf.bytes(key));
 end;
 
+proc warn(var c: Conf; a, b: []const U8); forward;
+
+(* Whether p's model runs on this machine: asked of a local host, and
+   not one the local Ollama passes on to its cloud, as NAME:cloud or
+   NAME:SIZE-cloud. *)
+proc local(const p: Awire.Prov): BOOL;
+begin
+    return (Str.hasPrefix(p.url, "http://localhost") or Str.hasPrefix(p.url, "http://127.0.0.1")) and
+        not Str.hasSuffix(p.model, "cloud");
+end;
+
 (* The sections whose directory holds root, the project's, resolved,
    applied, a deeper one over a shallower; the others not. Before,
    only the global settings are. *)
 proc apply*(var c: Conf; root: []const U8);
-var s: []Section; i: INT; dir, at: Buf.Buf;
+var s: []Section; i: INT; dir, at: Buf.Buf; name: []const U8; priced: BOOL;
 begin
     Buf.init(dir, Heap.heap);
     defer Buf.done(dir);
@@ -237,6 +254,21 @@ begin
         Afence.resolve(Buf.bytes(dir), at);
         s[i].rank := -1;
         if Afence.within(root, Buf.bytes(at)) then s[i].rank := at.len; end;
+    end;
+    (* the project's model, the deepest section's, else the global one: a
+       section is read but not applied, so it lands here, and every apply
+       puts back the global's before a section's *)
+    name := get(c, "model");
+    c.prov.model := c.globalModel;
+    if LEN(name) > 0 then
+        c.prov.model := name;
+        (* a model of the human's own machine is not priced, and need not
+           be; one the local daemon passes on to Ollama's cloud, NAME:cloud,
+           is billed, so it is worth a warning as any other host's *)
+        _, priced := Aprice.price(c.prov);
+        if not priced and not local(c.prov) then
+            warn(c, name, " is not in the price table: /usage and turn_budget leave it out");
+        end;
     end;
 end;
 
@@ -384,10 +416,13 @@ begin
     | "provider":
         if Awire.preset(value, c.prov) then
             dropParams(c);
+            c.globalModel := c.prov.model;
         else
             warn(c, "unknown provider ", value);
         end;
-    | "model": c.prov.model := value;
+    | "model":
+        c.prov.model := value;
+        c.globalModel := value;
     | "url": c.prov.url := value;
     | "key": c.prov.keyEnv := value;
     | "dialect":
@@ -683,10 +718,12 @@ begin
         provider = claude
         temperature = 0.5
         mcp_token.web = pass web
+        model = glm-5.3
         [~/r/arno]
         run = raz
         workers = fast cheap:cloud
         lsp.raz = raz-lsp
+        model = kimi-k3.1-pro
         [ /nowhere/home/r ]
         trust = robbie
         [w]
@@ -709,10 +746,20 @@ begin
     expect("a global key no section sets", get(c, "test_cmd"), "make test");
     expect("a bad section's key", get(c, "safety"), "");
     expect("a prefixed key in a section", get(c, "lsp.raz"), "raz-lsp");
+    expect("the deepest section's model", c.prov.model, "kimi-k3.1-pro");
     apply(c, "/nowhere/home/r");
     expect("the section of the root itself", get(c, "run"), "raz robbie");
+    expect("a model of a shallower section", c.prov.model, "glm-5.3");
     apply(c, "/nowhere/home/r2");
     expect("a sibling with a longer name", get(c, "run"), "tiza man fd");
+    expect("no section's model, the global's", c.prov.model, "deepseek-v4.1-flash:cloud");
+    (* an unpriced model is warned of when it is billed, through the
+       local daemon to the cloud too, but not when it runs here *)
+    c.prov.url := "http://localhost:11434/v1";
+    c.prov.model := "unpriced:cloud";
+    if local(c.prov) then Out.str("Aconf: a cloud model taken for a local one\n"); failed := true; end;
+    c.prov.model := "unpriced:7b";
+    if not local(c.prov) then Out.str("Aconf: a local model taken for a billed one\n"); failed := true; end;
     done(c);
 end;
 

@@ -1815,6 +1815,9 @@ One of the names under
 .Sx PROVIDERS .
 .It Cm model
 The model's name, as the provider knows it.
+A section may set its own, for one tree of projects, as
+.Sx Sections
+says.
 .It Cm url
 The API's base URL, to override the provider's.
 .It Cm key
@@ -2125,6 +2128,10 @@ run = raz robbie concha sauce make
 trust = make
 test_cmd = make check
 
+[~/r/arno]
+model = kimi-k3.1-pro
+max_steps = 120
+
 [~/w/webapp]
 safety = safe
 jail_net = yes
@@ -2134,11 +2141,24 @@ jail_rw = ~/.npm ~/.cache/ms-playwright
 A section may set only what is one project's:
 .Cm run , run_ro , run_env , trust , test_cmd , check.NAME , safety , shell ,
 .Cm jail_net , jail_rw , context_files , project_map , prefetch ,
-.Cm mode , worker , workers , max_workers , max_steps , turn_budget , build_steps ,
+.Cm mode , model , worker , workers , max_workers , max_steps , turn_budget , build_steps ,
 .Cm build_budget
 and
 .Cm lsp. Ns Ar ext .
-The provider's keys, and
+A section's
+.Cm model
+is the model its projects run on, one of the global
+.Cm provider Ns 's ,
+since a section cannot change the provider; the effort that model keeps
+.Pq Cm effort
+comes with it.
+A model that
+.Ic /usage
+keeps no price for is warned of, since
+.Cm turn_budget
+then leaves its turn out; a model run on this machine is not, as it costs
+nothing.
+The provider's other keys, and
 .Cm mcp , mcp_token. Ns Ar NAME
 and the rest, are for every project, and a section that sets one is
 warned of.
