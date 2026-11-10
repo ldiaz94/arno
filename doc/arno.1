@@ -1229,6 +1229,24 @@ and
 get its path as
 .Ev ARNO_SCRATCH .
 .Pp
+A document, a page, a drawing or a sheet you ask for is made there too,
+and the model ends by saying its path.
+Markdown, HTML, SVG and
+.Xr tiza 5
+drawings it writes as text; docx, xlsx and PNG it makes from text with
+.Xr pandoc 1 ,
+.Xr soffice 1 ,
+.Xr tiza 1
+and
+.Xr rsvg-convert 1 ,
+through
+.Ic run
+or
+.Ic shell ,
+so list those in
+.Cm run
+for it to.
+.Pp
 It lasts as long as its conversation:
 .Ic /load
 brings it back,

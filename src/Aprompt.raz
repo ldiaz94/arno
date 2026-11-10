@@ -4,10 +4,11 @@
    It is made of sections, in this order: arno's own instructions, or
    the conversation's own system prompt in their place; the workspace,
    where the model is and when; the human's context files; the
-   project's map; the conversation's scratch directory; the project's
-   notes; the facts the human asked arno
-   to remember; and what arno is, with the commands and modes the human
-   has. The mode's instructions, or a worker's, end it; Agent adds them.
+   project's map; the conversation's scratch directory, and the
+   artifacts the human asks for, made there; the project's notes; the
+   facts the human asked arno to remember; and what arno is, with the
+   commands and modes the human has. The mode's instructions, or a
+   worker's, end it; Agent adds them.
 
    What describes the human or the project rather than the conversation,
    the context files, the map and the remembered facts, is found once,
@@ -463,6 +464,27 @@ begin
     end;
 end;
 
+(* The artifacts section of the system prompt: a document, a page, a
+   drawing or a sheet the human asks for is made as a file in dir and
+   its path told. The text kinds are written with edit; the others are
+   made from text by a program the machine has, through run or shell,
+   in the jail, whose home is read-only: hence soffice's own profile. *)
+proc artifacts(var out: Buf.Buf; dir: []const U8);
+begin
+    Fmt.write(out, "\n\n# Artifacts\nWhen the human asks for a document, a page, a drawing or a sheet, rather " +
+        "than code in the project, make it as a file in {} and end by saying its full path. Markdown, HTML, " +
+        "SVG and tiza drawings (.tiza, described in man 5 tiza) are text: write them with edit. An HTML page " +
+        "stands alone, its styles and scripts inline. The rest are made from text, with run or shell where " +
+        "they are offered:\n" +
+        "- docx: pandoc in.md -o out.docx\n" +
+        "- xlsx: soffice --headless -env:UserInstallation=file://$ARNO_SCRATCH/lo --convert-to xlsx " +
+        "--outdir DIR in.csv\n" +
+        "- png or svg of a drawing: tiza -o out.png in.tiza\n" +
+        "- png of an svg: rsvg-convert -o out.png in.svg\n" +
+        "Where neither is offered, write the source, say so, and give the command for the human to run.",
+        [Fmt.str(dir)]);
+end;
+
 (* The system prompt of c's next request, in mode, added to out: c's
    own system prompt, or Own, then the sections. mem is for the work,
    say for a note dropped as stale. *)
@@ -490,6 +512,7 @@ begin
             "files, output to compare. Nothing of the human's is there, so edit, move and remove in it are not " +
             "asked about, and check and run see its path as $ARNO_SCRATCH. What should last belongs in the " +
             "project instead.", [Fmt.str(Afence.scratch)]);
+        artifacts(out, Afence.scratch);
     end;
     if LEN(Afence.stage) > 0 then stageText(out); end;
     if Apeer.reachable() then
