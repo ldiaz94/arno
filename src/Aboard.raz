@@ -393,12 +393,17 @@ end;
 
 (* The diff a question about the speaker's call running shows, which
    opens it: the call that asks, as running finds it, whoever spoke
-   since; another worker's call is not the one. *)
+   since; another worker's call is not the one. With no call running,
+   the question is the stage's, after the turn, and the diff opens an
+   entry of its own, under that name. *)
 proc detail*(d: []const U8);
 var e: ^Entry;
 begin
     e := running();
-    if e = nil then return; end;
+    if e = nil then
+        e := push(tool, "stage");
+        e^.done := true;
+    end;
     Buf.reset(e^.detail);
     Buf.str(e^.detail, d);
     e^.open := true;
@@ -1544,7 +1549,7 @@ begin
             start();
             emit("", plain, 0, 0);
         else
-            arguments(e^, w - 6);
+            if e^.args.len > 0 then arguments(e^, w - 6); end;   (* the stage's diff has none *)
             if e^.detail.len > 0 then diff(Str.trimRight(Buf.bytes(e^.detail)), Gutter, w - 6); end;
         end;
         s, more := head(Str.trimRight(Buf.bytes(e^.res)), MaxShown);
@@ -1867,6 +1872,13 @@ begin
     while (i < n) and (rowText(i) # "@@ -2,7 +2,7 @@") do INC(i); end;
     if (i + 5 >= n) or (rowText(i + 4) # "-line 5") or (rowText(i + 5) # "+line five") then
         Out.str("Aboard: a diff copied\n");
+        ok := false;
+    end;
+    (* the stage's diff, asked about after the turn, with no call running *)
+    clear;
+    detail("-a\n+b");
+    if (LEN(all()) # 1) or not all()[0].open or (all()[0].detail.len = 0) then
+        Out.str("Aboard: the stage's diff not shown\n");
         ok := false;
     end;
     if ok then return 0; end;
