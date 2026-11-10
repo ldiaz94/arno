@@ -43,7 +43,7 @@
    /clear or /compact, is handed to changed, for a screen to show it
    again. *)
 module Asession;
-import Agent, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Alogin, Afence, Arun, Amsg, Buf, Str,
+import Agent, Apage, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Alogin, Afence, Arun, Amsg, Buf, Str,
     Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item),
     Images := Vec([]U8);
 import SYSTEM;
@@ -880,14 +880,45 @@ begin
     return best >= 0;
 end;
 
+(* The web page of the markdown file md, made by Apage in the scratch's
+   view directory, its path into page: its look config's md_css, a
+   path, ~ for the home directory, else arno's own stylesheet, kept in
+   arno's directory. false, and why said, if it could not be made. *)
+proc rendered(var s: Session; md: []const U8; var page: Buf.Buf): BOOL;
+var css, why: Buf.Buf; own, name: []const U8;
+begin
+    Buf.init(css, SYSTEM.ADR(s.mem.base));
+    Buf.init(why, SYSTEM.ADR(s.mem.base));
+    own := Aconf.get(s.conf, "md_css");
+    if Str.hasPrefix(own, "~/") then
+        Fmt.write(css, "{}{}", [Fmt.str(Sys.env("HOME")), Fmt.str(own[1..LEN(own)])]);
+    elsif LEN(own) > 0 then
+        Buf.str(css, own);
+    else
+        Fmt.write(css, "{}page.css", [Fmt.str(Astore.dir())]);
+        _ := Apage.keepStyle(Buf.bytes(css));
+    end;
+    name := md[Str.findLast(md, "/") + 1..LEN(md) - LEN(".md")];
+    Fmt.write(page, "{}/view", [Fmt.str(Afence.scratch)]);
+    _ := Sys.makeDir(Buf.bytes(page));
+    Fmt.write(page, "/{}.html", [Fmt.str(name)]);
+    if Apage.render(md, Buf.bytes(css), Buf.bytes(page), why) then return true; end;
+    Fmt.write(s.out, "not made a page, so opened as it is: {}", [Fmt.str(Str.trim(Buf.bytes(why)))]);
+    say(s, Buf.bytes(s.out));
+    Buf.reset(s.out);
+    return false;
+end;
+
 (* /open: the artifact arg names, a path, or a name in the artifacts
    directory, else the newest there, opened by xdg-open in a session of
    its own, so that arno neither waits for the program it starts nor
-   takes it down on leaving. *)
+   takes it down on leaving. Markdown is opened as a web page made of
+   it (rendered). *)
 proc open(var s: Session; arg: []const U8);
-var path, out: Buf.Buf;
+var path, page, out: Buf.Buf;
 begin
     Buf.init(path, SYSTEM.ADR(s.mem.base));
+    Buf.init(page, SYSTEM.ADR(s.mem.base));
     Buf.init(out, SYSTEM.ADR(s.mem.base));
     if LEN(arg) = 0 then
         if not newest(Afence.artifacts, path) then
@@ -904,6 +935,10 @@ begin
         Fmt.write(s.out, "no file {}", [Fmt.str(Buf.bytes(path))]);
         fail(s, Buf.bytes(s.out));
         return;
+    end;
+    if Str.hasSuffix(Buf.bytes(path), ".md") and rendered(s, Buf.bytes(path), page) then
+        Buf.reset(path);
+        Buf.str(path, Buf.bytes(page));
     end;
     (* its output to /dev/null, since a program that held the pipe would
        keep run waiting for its end *)

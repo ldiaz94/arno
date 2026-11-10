@@ -475,7 +475,8 @@ begin
     Fmt.write(out, "\n\n# Artifacts\nWhen the human asks for a document, a page, a drawing or a sheet, rather " +
         "than code in the project, make it as a file in {}, which outlasts the conversation, and end by " +
         "saying its full path. Work files that are not the artifact go in the scratch. Markdown, HTML, " +
-        "SVG and tiza drawings (.tiza, described in man 5 tiza) are text: write them with edit. An HTML page " +
+        "SVG and tiza drawings (.tiza, described in man 5 tiza) are text: write them with edit. The human sees " +
+        "markdown as a styled web page, its YAML front matter's title and subtitle at its head. An HTML page " +
         "stands alone, its styles and scripts inline. The rest are made from text, with run or shell where " +
         "they are offered:\n" +
         "- docx: pandoc in.md -o out.docx\n" +

@@ -23,7 +23,7 @@ RNET ?= ../rnet
 TLS ?= openssl
 INC = -I src -I $(RNET)/tls/$(TLS)
 # the modules whose main is their test
-MODS = Aframe Aview Amsg Awire Astore Aconf Asettings Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Alogin Apeer Adiff Atools Alsp Agent Aboard Ahistory Aattach Acomplete
+MODS = Aframe Aview Amsg Awire Astore Aconf Asettings Afence Astage Afind Arun Ajailtest Aahead Amemory Aprice Aprompt Ahtml Amcp Alogin Apeer Adiff Atools Alsp Agent Aboard Ahistory Aattach Acomplete Apage
 SRC = $(wildcard src/*.raz)
 # what the program is also built from, so that a change there rebuilds it
 LIBS = $(wildcard $(RNET)/tls/$(TLS)/*.raz)

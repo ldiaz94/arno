@@ -1,0 +1,150 @@
+(* Apage: a markdown file as a web page, for /open to show in the
+   browser.
+
+   pandoc makes the page, standalone, with what it points at (images,
+   the stylesheet) put inside it, so that the page is one file that
+   reads the same wherever it is copied; math is MathML, which needs no
+   script from the network. The look is Style, arno's own stylesheet,
+   written next to the page's directory for pandoc to read, or one the
+   human names (config's md_css). Style comes after pandoc's own, so
+   it wins over it: a calm column of text, light or dark as the
+   system is, with its own colours for pandoc's highlighted code.
+
+       notes.md --pandoc--> view/notes.html  (Style, images inside)
+
+   Depends on Arun (to run pandoc), Buf, Fmt, Files, Str and Sys.
+   Leaves out a set of looks to choose from: one good sheet, and the
+   human's own in its place. *)
+module Apage;
+import Arun, Buf, Fmt, Files, Str, Sys, Heap, Out;
+
+const
+    (* arno's stylesheet; --arno-page marks a page that has it *)
+    Style* = `:root {
+  --arno-page: 1;
+  --text: #1f2328; --muted: #59636e; --bg: #fdfdfc; --rule: #d1d9e0;
+  --soft: #f3f4f1; --link: #0b62c4; --mark: #fff3b0;
+  --kw: #a2235a; --ty: #0b62c4; --st: #1b7c3a; --nu: #9a5b00; --co: #6e7781; --fu: #6639ba;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e6e6e3; --muted: #9da3ab; --bg: #16181b; --rule: #33373d;
+    --soft: #1f2226; --link: #6cb6ff; --mark: #5a4a00;
+    --kw: #ff8fb7; --ty: #6cb6ff; --st: #8ddb8c; --nu: #f0b35a; --co: #8b929a; --fu: #d2a8ff;
+  }
+}
+html { background: var(--bg); }
+body {
+  max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 5rem;
+  color: var(--text); background: var(--bg);
+  font: 17px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  hyphens: auto; text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 2.2em 0 0.6em; font-weight: 650; letter-spacing: -0.01em; }
+h1 { font-size: 2.1em; margin-top: 0; }
+h2 { font-size: 1.5em; padding-bottom: 0.25em; border-bottom: 1px solid var(--rule); }
+h3 { font-size: 1.2em; }
+h4, h5, h6 { font-size: 1em; color: var(--muted); }
+p, ul, ol, dl, table, pre, blockquote, figure { margin: 0 0 1.1em; }
+li + li { margin-top: 0.25em; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { font-weight: 650; }
+mark { background: var(--mark); color: inherit; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5em 0; }
+img, svg, video { max-width: 100%; height: auto; border-radius: 6px; }
+figcaption { color: var(--muted); font-size: 0.9em; text-align: center; }
+blockquote { margin-left: 0; padding: 0.1em 1em; color: var(--muted); border-left: 3px solid var(--rule); }
+code, pre, kbd { font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; }
+code { background: var(--soft); padding: 0.12em 0.35em; border-radius: 4px; }
+pre { background: var(--soft); padding: 0.9em 1.1em; border-radius: 8px; overflow-x: auto; line-height: 1.5; }
+pre code { background: none; padding: 0; }
+div.sourceCode { background: var(--soft); border-radius: 8px; margin: 0 0 1.1em; }
+div.sourceCode pre { margin: 0; background: none; overflow-x: auto; }
+kbd { border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; padding: 0 0.3em; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95em; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--rule); padding: 0.4em 0.75em; text-align: left; vertical-align: top; }
+th { background: var(--soft); font-weight: 600; }
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--soft) 50%, transparent); }
+header#title-block-header { margin-bottom: 2.5em; }
+p.subtitle, p.author, p.date { color: var(--muted); margin: 0.2em 0; }
+nav#TOC { border: 1px solid var(--rule); border-radius: 8px; padding: 0.6em 1.2em; margin-bottom: 2em; }
+input[type=checkbox] { margin-right: 0.4em; }
+code span.kw, code span.cf, code span.im { color: var(--kw); font-weight: normal; }
+code span.dt, code span.bu { color: var(--ty); }
+code span.st, code span.ss, code span.ch, code span.vs { color: var(--st); }
+code span.dv, code span.bn, code span.fl, code span.cn { color: var(--nu); }
+code span.co, code span.do, code span.cv, code span.an { color: var(--co); font-style: italic; }
+code span.fu, code span.at { color: var(--fu); }
+code span.op, code span.ot, code span.va { color: inherit; }
+@media print {
+  body { max-width: none; padding: 0; font-size: 11pt; }
+  a { color: inherit; }
+  pre, div.sourceCode { break-inside: avoid; }
+}
+`;
+
+(* md made a page at html, its look the stylesheet at css, which pandoc
+   reads and puts inside: false, with pandoc's word or the reason in
+   why, if it could not be made. Paths in md are found from its own
+   directory, as they would be from the file itself. *)
+proc render*(md, css, html: []const U8; var why: Buf.Buf): BOOL;
+var dir, title: []const U8; slash, status: INT; meta: Buf.Buf;
+begin
+    Buf.init(meta, Heap.heap);
+    defer Buf.done(meta);
+    slash := Str.findLast(md, "/");
+    dir := ".";
+    if slash > 0 then dir := md[0..slash]; end;
+    title := md[slash + 1..LEN(md)];
+    if Str.hasSuffix(title, ".md") then title := title[0..LEN(title) - 3]; end;
+    Fmt.write(meta, "pagetitle={}", [Fmt.str(title)]);
+    status := Arun.run(["pandoc", md, "--standalone", "--embed-resources", "--math-method=mathml", "--css", css,
+        "--resource-path", dir, "--metadata", Buf.bytes(meta), "--output", html], 4096, why);
+    if status = 0 then return true; end;
+    if (status = 127) and (why.len = 0) then Buf.str(why, "pandoc is not on PATH"); end;
+    return false;
+end;
+
+(* Style written to path, unless it is there already as this arno has
+   it; false if it could not be written. *)
+proc keepStyle*(path: []const U8): BOOL;
+var b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    if (Files.load(path, b) = 0) and (Buf.bytes(b) = Style) then return true; end;
+    return Files.write(path, Style);
+end;
+
+proc main*: INT;
+var why, page: Buf.Buf;
+begin
+    Buf.init(why, Heap.heap);
+    Buf.init(page, Heap.heap);
+    _ := Sys.makeDir("build");
+    _ := Sys.makeDir("build/page");
+    if not Files.write("build/page/a b.md", "# Notes\n\nSome *text*, and:\n\n~~~c\nint x = 1;\n~~~\n") or
+        not keepStyle("build/page/page.css") or not keepStyle("build/page/page.css") then
+        Out.str("Apage: the files could not be written\n");
+        return 1;
+    end;
+    if Arun.run(["pandoc", "--version"], 4096, why) # 0 then
+        Out.str("Apage: no pandoc, the page not made\n");
+        return 0;
+    end;
+    if not render("build/page/a b.md", "build/page/page.css", "build/page/a b.html", why) then
+        Out.str("Apage: not made: ");
+        Out.str(Buf.bytes(why));
+        Out.ln;
+        return 1;
+    end;
+    if (Files.load("build/page/a b.html", page) # 0) or (Str.find(Buf.bytes(page), "--arno-page") < 0) or
+        (Str.find(Buf.bytes(page), "<title>a b</title>") < 0) then
+        Out.str("Apage: the page lacks arno's style or its title\n");
+        return 1;
+    end;
+    return 0;
+end;
+
+end Apage.

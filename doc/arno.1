@@ -478,6 +478,7 @@ without waiting for the program it starts:
 in the artifacts directory, or a path from
 .Pa / ,
 or else the newest there.
+Markdown opens as a web page.
 See
 .Sx Artifacts .
 .It Ic /rename Ar title
@@ -1281,7 +1282,18 @@ so list those in
 .Cm run
 for it to.
 .Ic /open
-shows one.
+shows one; a markdown one it shows as a web page,
+.Xr pandoc 1
+making it in the scratch directory with arno's stylesheet, light or
+dark as the system is, or the one
+.Cm md_css
+names.
+Its YAML front matter's
+.Cm title
+and
+.Cm subtitle
+head the page.
+Without pandoc it is opened as it is.
 .Sh THE STAGE
 By default
 .Nm
@@ -2021,6 +2033,11 @@ Each is absolute or starts with
 .Ql ~ ;
 one that is not a directory when a command runs is passed over.
 The jail takes at most six.
+.It Cm md_css
+The stylesheet a markdown artifact is shown with, by
+.Ic /open ,
+in place of arno's own: a path, absolute or starting with
+.Ql ~ .
 .It Cm lsp. Ns Ar ext
 The language server, a command and its arguments, for the files whose
 name ends in
@@ -2398,6 +2415,10 @@ Nothing trims it; remove it to start over.
 Locked while one session changes the files above, so that two sessions at
 once keep each other's changes.
 Each of those files is written whole and renamed into place.
+.It Pa ~/.local/share/arno/page.css
+arno's stylesheet for markdown shown as a web page, written as
+.Ic /open
+first needs it.
 .It Pa ~/.local/share/arno/artifacts/ Ns Ar id
 Each conversation's artifacts: the documents, pages, drawings and
 sheets made for you.
