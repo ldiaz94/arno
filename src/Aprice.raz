@@ -4,14 +4,15 @@
    input, input read back from the provider's prompt cache, and output;
    and how many tokens the model's context window holds. They come from
    the providers' own pages, as of 2026-09-28 (Ollama Cloud's of
-   2026-10-11), and are kept by hand, so they fall behind; config's
+   2026-11-10), and are kept by hand, so they fall behind; config's
    price and context_window cover a model the table lacks, or a price
    that moved. A model run on the human's own machine costs nothing a
    token and isn't listed.
 
    Depends on Awire (a provider, and what a request cost in tokens),
    Str and Math. Leaves out the half price some models are billed off
-   peak, which the status line and the turns' ledger show, in stage 3. *)
+   peak, which the status line and the turns' ledger show, in stage 3;
+   and clef, whose page gives no output price. *)
 module Aprice;
 import Awire, Str, Math, Out;
 
@@ -52,18 +53,30 @@ const
         {model: "kimi-k2.7-code:cloud", inp: 0.95, cached: 0.19, out: 4.0, window: 262144},
         {model: "kimi-k3", inp: 3.0, cached: 0.30, out: 15.0, window: 1048576},
         {model: "kimi-k3:cloud", inp: 3.0, cached: 0.30, out: 15.0, window: 1048576},
+        {model: "kimi-k3.1-pro", inp: 2.0, cached: 0.20, out: 10.0, window: 1048576},
+        {model: "kimi-k2.6", inp: 0.95, cached: 0.16, out: 4.0, window: 262144},
         {model: "gemma4:31b", inp: 0.14, cached: 0.05, out: 0.40, window: 262144},
         {model: "gemma4:31b-cloud", inp: 0.14, cached: 0.05, out: 0.40, window: 262144},
         {model: "glm-5.3", inp: 1.40, cached: 0.26, out: 4.40, window: 1048576},
         {model: "glm-5.3:cloud", inp: 1.40, cached: 0.26, out: 4.40, window: 1048576},
         {model: "glm-5.3-flash", inp: 0.15, cached: 0.03, out: 0.50, window: 1048576},
         {model: "glm-5.3-flash:cloud", inp: 0.15, cached: 0.03, out: 0.50, window: 1048576},
+        {model: "glm-5.2", inp: 1.40, cached: 0.26, out: 4.40, window: 1048576},
         {model: "gpt-oss:120b", inp: 0.15, cached: 0.014, out: 0.60, window: 131072},
         {model: "gpt-oss:120b-cloud", inp: 0.15, cached: 0.014, out: 0.60, window: 131072},
+        {model: "gpt-oss:20b", inp: 0.07, cached: 0.035, out: 0.30, window: 131072},
         {model: "minimax-m2.7", inp: 0.30, cached: 0.06, out: 1.20, window: 196608},
         {model: "minimax-m2.7:cloud", inp: 0.30, cached: 0.06, out: 1.20, window: 196608},
+        {model: "minimax-m3", inp: 0.60, cached: 0.12, out: 2.40, window: 512000},
+        {model: "minimax-m3.1-flash", inp: 0.15, cached: 0.015, out: 0.60, window: 999424},
         {model: "nemotron-3-ultra", inp: 0.10, cached: 0.1, out: 3.0, window: 262144},
-        {model: "nemotron-3-ultra:cloud", inp: 0.10, cached: 0.1, out: 3.0, window: 262144}];
+        {model: "nemotron-3-ultra:cloud", inp: 0.10, cached: 0.1, out: 3.0, window: 262144},
+        {model: "nemotron-3-super", inp: 0.015, cached: 0.015, out: 0.60, window: 262144},
+        {model: "beam", inp: 0.125, cached: 0.015, out: 0.40, window: 1048576},
+        {model: "mimo-v2.6-flash", inp: 0.14, cached: 0.0028, out: 0.28, window: 1048576},
+        {model: "mimo-v2.6-pro", inp: 0.435, cached: 0.0036, out: 0.87, window: 1048576},
+        {model: "mistral-large-4", inp: 0.70, cached: 0.07, out: 2.10, window: 1048576},
+        {model: "muse-spark-open", inp: 1.25, cached: 0.15, out: 4.25, window: 1048576}];
 
 (* The row of model in Table, or -1. *)
 proc row(model: []const U8): INT;
@@ -139,6 +152,14 @@ begin
     if not known or (pr.inp # 1.32) then Out.str("Aprice: a tagged name\n"); return 1; end;
     if cost(pr, {inp: 1000000, cached: 500000, out: 1000000}) # 0.66 + 0.022 + 3.96 then
         Out.str("Aprice: cost\n");
+        return 1;
+    end;
+    (* a model the table gained, named as Ollama serves it: the tag before
+       the colon is priced *)
+    p := {model: "kimi-k3.1-pro:cloud"};
+    pr, known := price(p);
+    if not known or (pr.inp # 2.0) or (pr.out # 10.0) or (pr.window # 1048576) then
+        Out.str("Aprice: a model of the table's own\n");
         return 1;
     end;
     p := {model: "mine", params: ["price=2 8", "context_window=4096"]};
