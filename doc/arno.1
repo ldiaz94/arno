@@ -470,7 +470,7 @@ comes back into the copy; see
 .Sx THE STAGE .
 .It Ic /export Op Ar n | id
 Print a conversation, by default this one, as JSON.
-.It Ic /open Op Ar file
+.It Ic /open Op Ar file | n
 Open an artifact with
 .Xr xdg-open 1 ,
 without waiting for the program it starts:
@@ -481,6 +481,18 @@ or else the newest there.
 Markdown opens as a web page.
 See
 .Sx Artifacts .
+A number,
+.Ar n ,
+opens instead the page the last turn's reply cites as
+.Bq Ar n ,
+in the browser.
+.It Ic /sources
+List every page the searches of the last turn found, cited or not: its
+id, title and address, and the excerpt of it the search gave.
+The pages a reply cites are shown under it without asking; see
+.Ic search
+under
+.Sx TOOLS .
 .It Ic /rename Ar title
 Name this conversation; with no title, clear the name.
 .It Ic /system Op Ar text | Cm \-
@@ -1002,6 +1014,10 @@ title and address:
 [1] Rain \(pc https://example.org/rain
 .Ed
 .Pp
+.Ic /sources
+lists all the turn's searches found, with their excerpts, and
+.Ic /open Ar 1
+opens the page of id 1 in the browser.
 A host is told the pages instead, and shows the page of id 1 itself, as
 .Xr arno-serve 5
 says.

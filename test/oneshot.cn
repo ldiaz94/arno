@@ -188,6 +188,10 @@ configure(["searxng = http://127.0.0.1:$(port)"])
 expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'the tool said: [1] Found')
 holds('a search', 'out', 'a%20b')
 holds('the page the reply cites, under it', 'out', '[1] Found · http://x/')
+answering([], 'call search {"query":"a b"}' + #10 + '/sources' + #10 + '/open 7' + #10 + '/new' + #10 + '/sources')
+holds('/sources, a page with its address', 'out', '    http://x/')
+holds('/open of a page not found', 'err', "found no page [7]")
+holds('/sources of a turn that searched for nothing', 'out', 'searched the web for nothing')
 
 // a step delegated to a worker, which reports
 configure([])

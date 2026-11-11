@@ -963,17 +963,75 @@ begin
     return false;
 end;
 
-(* /open: the artifact arg names, a path, or a name in the artifacts
-   directory, else the newest there, opened by xdg-open in a session of
+(* what, a file or a web address, opened by xdg-open in a session of
    its own, so that arno neither waits for the program it starts nor
-   takes it down on leaving. Markdown is opened as a web page made of
-   it (rendered). *)
-proc open(var s: Session; arg: []const U8);
-var path, page, out: Buf.Buf;
+   takes it down on leaving; said, or that it couldn't be. *)
+proc launch(var s: Session; what: []const U8);
+var out: Buf.Buf;
 begin
+    Buf.init(out, SYSTEM.ADR(s.mem.base));
+    (* its output to /dev/null, since a program that held the pipe would
+       keep run waiting for its end *)
+    if Arun.run(["sh", "-c", `setsid -f xdg-open "$1" >/dev/null 2>&1`, "sh", what], 4096, out) # 0 then
+        Fmt.write(s.out, "xdg-open could not be started for {}", [Fmt.str(what)]);
+        fail(s, Buf.bytes(s.out));
+        return;
+    end;
+    Fmt.write(s.out, "opened {}", [Fmt.str(what)]);
+    say(s, Buf.bytes(s.out));
+end;
+
+(* /sources: every page the searches of the last turn found, cited or
+   not, each with its id, title, address and the excerpt the search
+   gave. *)
+proc sources(var s: Session);
+var v: Pages.Vec; p: []Atools.Source; i: INT;
+begin
+    _ := pages(s, v);
+    p := Pages.all(v);
+    if LEN(p) = 0 then
+        say(s, "the last turn searched the web for nothing");
+        return;
+    end;
+    for i := 0 to LEN(p) - 1 do
+        if i > 0 then Buf.str(s.out, "\n\n"); end;
+        Fmt.write(s.out, "[{}] {}\n    {}", [Fmt.int(p[i].id), Fmt.str(p[i].title), Fmt.str(p[i].url)]);
+        if LEN(p[i].excerpt) > 0 then Fmt.write(s.out, "\n    {}", [Fmt.str(p[i].excerpt)]); end;
+    end;
+    say(s, Buf.bytes(s.out));
+end;
+
+(* /open N: the page the last turn cites as [id], opened in the
+   browser. *)
+proc openSource(var s: Session; id: INT);
+var v: Pages.Vec; p: []Atools.Source; i: INT;
+begin
+    _ := pages(s, v);
+    p := Pages.all(v);
+    for i := 0 to LEN(p) - 1 do
+        if p[i].id = id then
+            launch(s, p[i].url);
+            return;
+        end;
+    end;
+    Fmt.write(s.out, "the last turn's searches found no page [{}]; /sources lists them", [Fmt.int(id)]);
+    fail(s, Buf.bytes(s.out));
+end;
+
+(* /open: the artifact arg names, a path, or a name in the artifacts
+   directory, else the newest there, opened by launch; a number is a
+   page the last turn found instead (openSource). Markdown is opened as
+   a web page made of it (rendered). *)
+proc open(var s: Session; arg: []const U8);
+var path, page: Buf.Buf; id: I64; ok: BOOL;
+begin
+    id, ok := Str.toInt(arg);
+    if ok then
+        openSource(s, INT(id));
+        return;
+    end;
     Buf.init(path, SYSTEM.ADR(s.mem.base));
     Buf.init(page, SYSTEM.ADR(s.mem.base));
-    Buf.init(out, SYSTEM.ADR(s.mem.base));
     if LEN(arg) = 0 then
         if not newest(Afence.artifacts, path) then
             Fmt.write(s.out, "no artifacts yet, in {}", [Fmt.str(Afence.artifacts)]);
@@ -994,15 +1052,7 @@ begin
         Buf.reset(path);
         Buf.str(path, Buf.bytes(page));
     end;
-    (* its output to /dev/null, since a program that held the pipe would
-       keep run waiting for its end *)
-    if Arun.run(["sh", "-c", `setsid -f xdg-open "$1" >/dev/null 2>&1`, "sh", Buf.bytes(path)], 4096, out) # 0 then
-        Fmt.write(s.out, "xdg-open could not be started for {}", [Fmt.str(Buf.bytes(path))]);
-        fail(s, Buf.bytes(s.out));
-        return;
-    end;
-    Fmt.write(s.out, "opened {}", [Fmt.str(Buf.bytes(path))]);
-    say(s, Buf.bytes(s.out));
+    launch(s, Buf.bytes(path));
 end;
 
 (* The conversation arg names as JSON, its file as it is; the current
@@ -1577,6 +1627,7 @@ begin
     | "/load": load(s, arg);
     | "/export": export(s, arg);
     | "/open": open(s, arg);
+    | "/sources": sources(s);
     | "/rename": rename(s, arg);
     | "/system": system(s, arg);
     | "/mode": mode(s, arg);
