@@ -305,6 +305,11 @@ While a command or an
 is typed, what it may become is shown over the foot of the transcript:
 C-n, C-p and the arrows choose, TAB or RET takes the one chosen, and Esc
 hides the menu until the input changes.
+A model or a provider is offered if its name holds every part typed,
+blanks between them, in whatever order and case:
+.Ql "/model 5 son"
+offers
+.Ql claude-sonnet-5-5 .
 .Pp
 A question, a path outside the project, an edit, a program to run, takes
 over the rule: one of its keys answers.

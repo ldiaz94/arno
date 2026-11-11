@@ -184,7 +184,8 @@ Directories and images work too, if the model takes images.
 | C-v | paste an image from the clipboard |
 | M-v | copy mode: move, select and copy (OSC 52) as in tmux |
 
-Completion offers commands and `@paths`. The man page has the other
+Completion offers commands and `@paths`; a model is found by any parts
+of its name, in any order (`/model 5 son`). The man page has the other
 keys, the copy-mode keys, and the config keys.
 
 ### What the model may do

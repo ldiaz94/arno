@@ -10,7 +10,9 @@
    after it if it must take an argument; its argument, for /mode,
    /provider, /model and /load: a mode, one of Awire's presets, a model
    of those the caller gives, and the conversations last changed, by
-   their ids, filtered by what is typed. An @path is completed from the
+   their ids, filtered by what is typed. A provider or a model is one
+   that holds every part typed, blanks between them, in whatever order:
+   /model 5 son finds claude-sonnet-5. An @path is completed from the
    directory it names so far, names that begin with what is typed of
    the last part, case aside, a hidden one only if that begins with a
    dot; a directory's with a slash after it, to go on into, a file's
@@ -102,6 +104,20 @@ begin
         if Str.eqFold(s[i..i + LEN(q)], q) then return true; end;
     end;
     return false;
+end;
+
+(* Whether s holds every part of q, in whatever order, case aside: the
+   parts are what blanks set apart, so that "5 son" finds
+   claude-sonnet-5. A q of no parts is held by every s. *)
+proc holdsAll(s, q: []const U8): BOOL;
+var part, rest: []const U8;
+begin
+    part, rest := Str.field(q);
+    while LEN(part) > 0 do
+        if not holds(s, part) then return false; end;
+        part, rest := Str.field(rest);
+    end;
+    return true;
 end;
 
 (* The item that writes path: @path and a blank after a file, a slash
@@ -219,7 +235,7 @@ begin
         if cmd = "/provider" then s := Awire.Presets; end;
         while LEN(s) > 0 do
             m, s := Str.field(s);
-            if (LEN(m) = 0) or not begins(m, arg) then continue; end;
+            if (LEN(m) = 0) or not holdsAll(m, arg) then continue; end;
             Buf.reset(b);
             Fmt.write(b, "{} {}", [Fmt.str(cmd), Fmt.str(m)]);
             add(Buf.bytes(b), "");
@@ -261,7 +277,7 @@ var all: []Item; b: Buf.Buf; i: INT;
 begin
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
-    all := complete(word, "m-one\nm-two\n");
+    all := complete(word, "m-one\nm-two\nclaude-sonnet-5\nclaude-sonnet-4-5\nclaude-opus-5\n");
     for i := 0 to LEN(all) - 1 do
         Fmt.write(b, "{}|{};", [Fmt.str(all[i].text), Fmt.str(all[i].desc)]);
     end;
@@ -294,6 +310,12 @@ begin
     expect("complete already", "/help", "");
     expect("a mode", "/mode p", "/mode pair|build a feature together, step by step;");
     expect("a model", "/model m-t", "/model m-two|;");
+    expect("by a part of its name", "/model TWO", "/model m-two|;");
+    expect("a part is not split", "/model claude-s", "/model claude-sonnet-5|;/model claude-sonnet-4-5|;");
+    expect("by parts in any order", "/model 5 son", "/model claude-sonnet-5|;/model claude-sonnet-4-5|;");
+    expect("by no part of any", "/model son 9", "");
+    expect("every one", "/model ", "/model m-one|;/model m-two|;/model claude-sonnet-5|;/model claude-sonnet-4-5|;" +
+        "/model claude-opus-5|;");
     _ := Sys.makeDir("build");
     _ := Sys.makeDir("build/complete");
     _ := Sys.makeDir("build/complete/a dir");
