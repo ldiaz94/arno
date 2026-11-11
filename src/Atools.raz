@@ -1877,6 +1877,14 @@ end;
 
 (* The web *)
 
+type
+    (* A page search found, as its result says it. *)
+    Source* = record
+        id*: INT;                 (* what the model cites it by, [id] *)
+        title*, url*: []const U8;
+        excerpt*: []const U8;     (* the snippet of it the search engine gave; "" for none *)
+    end;
+
 var
     searx: []U8;       (* the SearXNG search goes through, as config's searxng says; "" for none *)
     cited: INT;        (* the id of the turn's last search result, which the model cites it by, [n] *)
@@ -2261,6 +2269,59 @@ begin
         Buf.add(out, '\n');
     end;
     if out.len = 0 then Buf.str(out, "no results"); end;
+end;
+
+(* The next page of rest, a search's result or what is left of one, into
+   p, and rest moved past it; false when there are no more. A block
+   that isn't a page, as "no results", is passed over. p's texts are
+   parts of rest. *)
+proc source*(var rest: []const U8; var p: Source): BOOL;
+var block, head, id: []const U8; n: I64; ok: BOOL;
+begin
+    while LEN(rest) > 0 do
+        block, rest, _ := Str.cut(rest, "\n\n");
+        head, block, _ := Str.cut(block, "\n");
+        id, p.title, _ := Str.cut(head, "] ");
+        p.url, p.excerpt, _ := Str.cut(block, "\n");
+        if (LEN(p.url) = 0) or not Str.hasPrefix(id, "[") then continue; end;
+        n, ok := Str.toInt(id[1..LEN(id)]);
+        if not ok then continue; end;
+        p.id := INT(n);
+        p.excerpt := Str.trimRight(p.excerpt);
+        return true;
+    end;
+    return false;
+end;
+
+(* Whether text cites the page id as search's description tells the
+   model to, [2], or with others in one pair of brackets, [2, 5]. *)
+proc cites*(text: []const U8; id: INT): BOOL;
+var i, n: INT; c: U8; inside, hit: BOOL;
+begin
+    inside := false;   (* past a [ that only numbers have followed *)
+    hit := false;      (* id is one of them *)
+    n := -1;           (* the number being read; -1 between two *)
+    for i := 0 to LEN(text) - 1 do
+        c := text[i];
+        if c = '[' then
+            inside := true;
+            hit := false;
+            n := -1;
+        elsif inside and Str.isDigit(c) then
+            if n < 0 then n := 0; end;
+            if n <= id then n := n * 10 + INT(c - '0'); end;   (* no further than past id: it can't be id again *)
+        elsif inside and ((c = ',') or (c = ' ') or (c = ']')) then
+            if n = id then hit := true; end;
+            n := -1;
+            if c = ']' then
+                if hit then return true; end;
+                inside := false;
+            end;
+        else
+            inside := false;
+        end;
+    end;
+    return false;
 end;
 
 (* s cut to at most max bytes, at where a character starts. *)
@@ -2847,9 +2908,31 @@ begin
     end;
 end;
 
+(* The test of how a search's result is read back, and a citation found. *)
+proc sourcesTest;
+var rest: []const U8; p: Source; b: Buf.Buf;
+begin
+    Buf.init(b, Heap.heap);
+    defer Buf.done(b);
+    rest := "[1] Rain\nhttp://a/rain\nRain is water. \n\nno page\n\n[12] \nhttp://b\n\n";
+    while source(rest, p) do
+        Fmt.write(b, "{}|{}|{}|{};", [Fmt.int(p.id), Fmt.str(p.title), Fmt.str(p.url), Fmt.str(p.excerpt)]);
+    end;
+    expect("a search's pages", Buf.bytes(b), "1|Rain|http://a/rain|Rain is water.;12||http://b|;");
+    if not cites("Rain is water [1].", 1) or not cites("so [3, 12] say", 12) or not cites("[1][2]", 2) then
+        Out.str("Atools: a citation not found\n");
+        failed := true;
+    end;
+    if cites("see [12]", 1) or cites("see [12]", 2) or cites("a[i + 1] and [1 or so]", 1) or cites("1]", 1) then
+        Out.str("Atools: a citation found where there is none\n");
+        failed := true;
+    end;
+end;
+
 proc main*: INT;
 var dir, s, t, w: []const U8; long, store: Buf.Buf; i: INT; tools: []Awire.Tool;
 begin
+    sourcesTest;
     Arun.child();
     Buf.init(hostSaid, Heap.heap);
     if not Arena.init(mem, 1 shl 26) then return 1; end;

@@ -45,7 +45,7 @@
 module Asession;
 import Agent, Apage, Apeer, Astage, Aprompt, Amemory, Aahead, Aattach, Astore, Aconf, Awire, Aprice, Atools, Alsp, Amcp, Alogin, Afence, Arun, Amsg, Buf, Str,
     Sys, Files, Fmt, Heap, Arena, Math, Rt, Strs := Vec([]const U8), Msgs := Vec(Amsg.Msg), Items := Vec(Astore.Item),
-    Images := Vec([]U8);
+    Images := Vec([]U8), Pages := Vec(Atools.Source);
 import SYSTEM;
 
 type
@@ -68,6 +68,7 @@ type
         listedOf: Buf.Buf;     (* by which provider *)
         choices: Buf.Buf;      (* what models last gave: those listed, then config's models.NAME *)
         notesBefore: INT;      (* the project's notes as the turn began, which the stage shows the new ones after *)
+        sourced*: BOOL;        (* the front end is told a search's pages itself (Aserve), so none are shown after a turn *)
     end;
 
     (* What the status line says: the screen draws it in colour, text
@@ -589,15 +590,68 @@ begin
     Astage.down;
 end;
 
+(* The pages the searches of s's last turn found, in v, in the order
+   found, and where in the conversation that turn starts, after the
+   human's last message. The pages are read out of the searches'
+   results, so they are there for a conversation loaded too, and hold
+   while it does; v is of the command's memory. *)
+proc pages(var s: Session; var v: Pages.Vec): INT;
+var m: []Amsg.Msg; i, first: INT; rest: []const U8; p: Atools.Source;
+begin
+    Pages.init(v, SYSTEM.ADR(s.mem.base));
+    m := Msgs.all(s.conv.msgs);
+    first := LEN(m);
+    while (first > 0) and (m[first - 1].role # Amsg.Role.user) do DEC(first); end;
+    for i := first to LEN(m) - 1 do
+        if (m[i].role # Amsg.Role.tool) or (m[i].tool # "search") or Str.hasPrefix(m[i].text, "error:") then continue; end;
+        rest := m[i].text;
+        while Atools.source(rest, p) do Pages.push(v, p); end;
+    end;
+    return first;
+end;
+
+(* Whether the model cites the page id in one of turn, a turn's
+   messages. *)
+proc citedIn(turn: []Amsg.Msg; id: INT): BOOL;
+var i: INT;
+begin
+    for i := 0 to LEN(turn) - 1 do
+        if (turn[i].role = Amsg.Role.assistant) and Atools.cites(turn[i].text, id) then return true; end;
+    end;
+    return false;
+end;
+
+(* The pages the model cited in the turn just ended, shown under its
+   reply, a line each, its id, title and address: what the reply's [2]
+   stands for. Nothing is shown for a turn that cited none. *)
+proc cited(var s: Session);
+var v: Pages.Vec; p: []Atools.Source; m: []Amsg.Msg; i, first: INT;
+begin
+    first := pages(s, v);
+    p := Pages.all(v);
+    m := Msgs.all(s.conv.msgs);
+    Buf.reset(s.out);
+    for i := 0 to LEN(p) - 1 do
+        if not citedIn(m[first..LEN(m)], p[i].id) then continue; end;
+        if s.out.len > 0 then Buf.add(s.out, '\n'); end;
+        Fmt.write(s.out, "[{}] ", [Fmt.int(p[i].id)]);
+        if LEN(p[i].title) > 0 then Fmt.write(s.out, "{} \u{B7} ", [Fmt.str(p[i].title)]); end;
+        Buf.str(s.out, p[i].url);
+    end;
+    if s.out.len > 0 then say(s, Buf.bytes(s.out)); end;
+end;
+
 (* A turn of s's conversation on its last message, the human's:
-   Agent.turn's error, why saying why it failed. The conversation is
-   saved after. *)
+   Agent.turn's error, why saying why it failed. The pages it cited are
+   shown under it, unless the front end shows a search's pages itself,
+   and the conversation is saved after. *)
 proc answer(var s: Session; var why: Buf.Buf): ERROR;
 var err: ERROR;
 begin
     useScratch(s);   (* made again if the sweep of another arno took them, empty, while this one idled *)
     s.notesBefore := noteCount(s);
     err := Agent.turn(s.agent, s.conv, why);
+    if (err = nil) and not s.sourced then cited(s); end;
     save(s);
     propose(s);
     return err;

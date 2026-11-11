@@ -995,8 +995,14 @@ Water that falls from clouds.
 .Ed
 .Pp
 so that its reply says
-.Ql "Rain is water [1]." ,
-and a host shows the page of id 1, as
+.Ql "Rain is water [1]." .
+Under the reply arno shows each page it cites, a line each, its id,
+title and address:
+.Bd -literal -offset indent
+[1] Rain \(pc https://example.org/rain
+.Ed
+.Pp
+A host is told the pages instead, and shows the page of id 1 itself, as
 .Xr arno-serve 5
 says.
 Offered only when

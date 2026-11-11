@@ -1064,11 +1064,10 @@ end;
 
 (* The web pages a search, entry n, found, told: sources N JSON, an
    array of objects with id, url, title, excerpt, and retrievedAt, in
-   milliseconds since 1970. res is the search's result, a page a block
-   of three lines, the first "[ID] title", with the id the model cites
-   it by (Atools); an error, or nothing found, tells nothing. *)
+   milliseconds since 1970. res is the search's result, read by
+   Atools.source; an error, or nothing found, tells nothing. *)
 proc sources(n: INT; res: []const U8);
-var rest, block, title, url, excerpt, id: []const U8; more, ok: BOOL; cite, at: I64; d: [20]U8; first: BOOL;
+var rest: []const U8; p: Atools.Source; at: I64; d: [20]U8; first: BOOL;
 begin
     if Str.hasPrefix(res, "error:") then return; end;
     at := Sys.now() div NsPerMs;
@@ -1076,23 +1075,15 @@ begin
     Buf.add(scratch, '[');
     first := true;
     rest := res;
-    more := true;
-    while more do
-        block, rest, more := Str.cut(rest, "\n\n");
-        title, block, _ := Str.cut(block, "\n");
-        url, excerpt, _ := Str.cut(block, "\n");
-        id, title, _ := Str.cut(title, "] ");
-        if (LEN(url) = 0) or not Str.hasPrefix(id, "[") then continue; end;
-        cite, ok := Str.toInt(id[1..LEN(id)]);
-        if not ok then continue; end;
+    while Atools.source(rest, p) do
         if not first then Buf.add(scratch, ','); end;
         first := false;
-        Fmt.write(scratch, `{{"id":{},"url":`, [Fmt.int(INT(cite))]);
-        quoted(url);
+        Fmt.write(scratch, `{{"id":{},"url":`, [Fmt.int(p.id)]);
+        quoted(p.url);
         Buf.str(scratch, `,"title":`);
-        quoted(title);
+        quoted(p.title);
         Buf.str(scratch, `,"excerpt":`);
-        quoted(Str.trimRight(excerpt));
+        quoted(p.excerpt);
         Fmt.write(scratch, `,"retrievedAt":{}}}`, [Fmt.int(INT(at))]);
     end;
     Buf.add(scratch, ']');
@@ -1309,6 +1300,7 @@ begin
     Atools.hosting(hostRun, nil);
     Asession.init(SYSTEM.ADR(session), front(), show, nil);
     session.changed := changed;
+    session.sourced := true;   (* the host has each search's pages as sources *)
     Buf.str(current, session.conv.id);
     Aview.owning(Buf.bytes(hostName), Afence.zone);
     d, k := Str.fromInt(Sys.pid());

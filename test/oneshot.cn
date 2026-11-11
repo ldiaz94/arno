@@ -187,6 +187,7 @@ expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'there is no tool named 
 configure(["searxng = http://127.0.0.1:$(port)"])
 expect(['call', 'search', '{"query":"a b"}'], 0, 'out', 'the tool said: [1] Found')
 holds('a search', 'out', 'a%20b')
+holds('the page the reply cites, under it', 'out', '[1] Found · http://x/')
 
 // a step delegated to a worker, which reports
 configure([])
