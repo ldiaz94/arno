@@ -763,12 +763,20 @@ end;
    if there was no report. The report line names the worker's model
    and, if its conversation was kept, at convo ("" if not). *)
 proc told(var a: Agent; const w: Worker; convo: []const U8; var out: Buf.Buf): BOOL;
-var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf; cost, allowance: F64;
+var msgs: []Amsg.Msg; report: []const U8; b, path: Buf.Buf; cost, allowance: F64; i: INT; last: BOOL;
 begin
     msgs := Msgs.all(w.conv.msgs);
     report := "";
-    if msgs[LEN(msgs) - 1].role = Amsg.Role.assistant then report := Str.trim(msgs[LEN(msgs) - 1].text); end;
+    (* its last words; or, when it ended on a call with nothing said (a
+       model asked to hand back may answer with nothing), the last it did
+       say, which is better for the lead than no word at all *)
+    i := LEN(msgs) - 1;
+    while (i >= 0) and (LEN(report) = 0) do
+        if msgs[i].role = Amsg.Role.assistant then report := Str.trim(msgs[i].text); end;
+        DEC(i);
+    end;
     if LEN(report) = 0 then return false; end;
+    last := i + 1 = LEN(msgs) - 1;
     Buf.init(b, Heap.heap);
     defer Buf.done(b);
     Fmt.write(b, "{}\n\n{}", [Fmt.str(w.task), Fmt.str(report)]);
@@ -790,6 +798,7 @@ begin
     defer Buf.done(path);
     if keepReport(a, report, path) then Fmt.write(out, ", kept in {}", [Fmt.str(Buf.bytes(path))]); end;
     if LEN(convo) > 0 then Fmt.write(out, ", conversation in {}", [Fmt.str(convo)]); end;
+    if not last then Buf.str(out, ", which it ended without; the last it said"); end;
     Fmt.write(out, ":\n{}", [Fmt.str(report)]);
     return true;
 end;
