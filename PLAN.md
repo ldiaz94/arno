@@ -464,7 +464,7 @@ one or more commits that build with `-Werror`.
      into `projects/ROOT/`: each memory entry a file of `memory/`,
      the agents as roles in `roles/`, and an AGENTS.md naming each
      entry with its description (the whole memory was 30 KB a request
-     for Tangent; the index is 5) and a line for each of
+     for a work project; the index is 5) and a line for each of
      `.claude/rules/*.md`, its `paths:` and where to read it. arno
      grants its own directory for the project, so the model reads an
      entry without asking. One way: the file is arno-claude's alone, written
@@ -484,7 +484,7 @@ one or more commits that build with `-Werror`.
      a role's; `skill` lists them in its description, `name` an enum, and
      gives one's text when the work calls for it. Roles and skills share
      the reading of such a directory (`shelf`). Offered to workers too.
-   - [x] Claude Code's skills, made arno's. Tangent's Linear and release
+   - [x] Claude Code's skills, made arno's. A work project's Linear and release
      how-tos are its Claude Code skills, in the repository's
      `.claude/skills`. arno-claude writes the home's and the project's
      `SKILL.md`s, as it does agents, into `projects/ROOT/skills/`, named by
